@@ -1,0 +1,118 @@
+/* sim_particles.h — Horde-as-granular-particles simulation core (M1+M2).
+ *
+ * Renderer-agnostic. No external dependencies. Single-precision floats.
+ * Companion / successor of the continuum core (sim.h): same grid conventions,
+ * but the horde is now a set of DISCRETE agents simulated as a 2D granular
+ * material. Three ingredients:
+ *
+ *   1) GLOBAL NAVIGATION — a flow field. Dijkstra (8-neighbour) from the goal
+ *      cells over the nav grid gives a potential phi; a smoothed, normalized
+ *      direction field is derived from it and bilinearly sampled by agents.
+ *      Cost is O(grid), shared by all agents. Recomputed only when terrain or
+ *      goals change (lazy, via dirty flag).
+ *
+ *   2) LOCAL DYNAMICS — steering toward the flow direction with bounded
+ *      acceleration, plus per-agent speed variation and directional noise
+ *      (kills lockstep, gives the organic "boiling" look).
+ *
+ *   3) NON-PENETRATION — position-based dynamics (PBD). Overlapping discs are
+ *      separated by directly projecting positions (mass-weighted), iterated
+ *      a few times per step (Gauss-Seidel over a uniform grid rebuilt each
+ *      step with a counting sort). Unconditionally stable at packing density.
+ *      Effective velocity is recovered as (x_new - x_old)/dt, so crowd
+ *      pushing propagates as real momentum. Walls are handled through a
+ *      precomputed signed-distance field (chamfer transform of solid cells).
+ *
+ * Knobs that matter:
+ *   - pbd_iters  : crowd stiffness dial. 1-2 = soft/compressible crowd,
+ *                  4+ = rigid granular packing (analog of relax_iters).
+ *   - noise_ang  : per-step random steering perturbation (radians).
+ *   - v_jitter   : per-agent speed spread (fraction of v_max).
+ *
+ * Data layout is SoA; position/velocity arrays are public so the renderer
+ * can upload them directly as instance buffers. Agents are removed with
+ * swap-and-pop, so indices are NOT stable across simp_kill / drain.
+ *
+ * Determinism: fully deterministic given the same call sequence (internal
+ * xorshift RNG, no libc rand).
+ */
+#ifndef SIM_PARTICLES_H
+#define SIM_PARTICLES_H
+
+#include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct {
+    float v_max;      /* desired top speed (m/s)                  default 1.4  */
+    float v_jitter;   /* per-agent speed spread, fraction of v_max default 0.25 */
+    float a_max;      /* max steering acceleration (m/s^2)        default 8.0  */
+    float radius;     /* base agent radius (m)                    default 0.30 */
+    float r_jitter;   /* per-agent radius spread, fraction         default 0.15 */
+    float noise_ang;  /* steering noise half-angle (rad)          default 0.06 */
+    float damping;    /* velocity damping per second [0..1]       default 0.10 */
+    float v_clamp;    /* hard cap on recovered speed (m/s)        default 20.0 */
+    int   pbd_iters;  /* PBD relaxation iterations per step       default 3    */
+} SimPParams;
+
+typedef struct SimP SimP;
+
+/* ---- lifecycle ---------------------------------------------------------- */
+
+/* Nav grid is gw x gh cells of side cell_size (meters). World spans
+ * [0, gw*cell_size] x [0, gh*cell_size]. max_agents is a hard capacity. */
+SimP *simp_create(int gw, int gh, float cell_size, int max_agents);
+void  simp_destroy(SimP *s);
+
+SimPParams *simp_params(SimP *s);          /* live-tweakable               */
+
+/* ---- terrain & goals (nav grid coordinates) ----------------------------- */
+
+void  simp_set_wall(SimP *s, int cx, int cy, bool solid);
+void  simp_set_goal(SimP *s, int cx, int cy, bool goal);
+bool  simp_is_wall(const SimP *s, int cx, int cy);
+/* Force recompute of phi/flow/SDF now (otherwise done lazily on next step). */
+void  simp_terrain_commit(SimP *s);
+
+/* ---- agents -------------------------------------------------------------- */
+
+/* Returns agent index, or -1 if at capacity or (x,y) inside a wall.        */
+int   simp_spawn(SimP *s, float x, float y);
+/* Swap-and-pop removal: the last agent takes index i.                      */
+void  simp_kill(SimP *s, int i);
+int   simp_count(const SimP *s);
+
+/* Radial impulse (explosion): dv = strength * (1 - r/radius) away from
+ * (x,y), applied to every agent within radius. */
+void  simp_apply_impulse(SimP *s, float x, float y, float radius, float strength);
+
+/* ---- stepping ------------------------------------------------------------ */
+
+/* One fixed step. Agents stepping onto a goal cell are drained (killed);
+ * the number drained this step is returned. */
+int   simp_step(SimP *s, float dt);
+
+/* ---- read access for rendering / tests ----------------------------------- */
+
+const float *simp_px(const SimP *s);       /* x positions, simp_count() long */
+const float *simp_py(const SimP *s);
+const float *simp_vx(const SimP *s);
+const float *simp_vy(const SimP *s);
+const float *simp_radius_arr(const SimP *s);
+
+/* Flow-field direction at world point (bilinear, normalized; 0,0 in walls). */
+void  simp_sample_flow(const SimP *s, float x, float y, float *dx, float *dy);
+/* Signed distance to nearest wall at world point (positive = free space).  */
+float simp_sample_sdf(const SimP *s, float x, float y);
+
+/* Diagnostics: mean pairwise overlap depth (m) measured on last step.      */
+float simp_mean_overlap(const SimP *s);
+
+#ifdef __cplusplus
+}
+#endif
+#endif /* SIM_PARTICLES_H */
