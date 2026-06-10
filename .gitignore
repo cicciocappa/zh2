@@ -1,0 +1,6 @@
+# build artifacts (make / make sandbox)
+sandbox
+test_particles
+test_impulse
+test_dormant
+*.o
