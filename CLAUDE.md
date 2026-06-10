@@ -24,6 +24,9 @@ Il progetto ha DUE modelli di simulazione complementari:
    verificato). Ogni nemico è un disco 2D. Tre ingredienti:
    - **Flow field**: Dijkstra 8-vicini dai goal → `phi`; campo direzioni normalizzato
      e smussato (1 passata), campionato bilineare dagli agenti. Lazy via `nav_dirty`.
+     I muri sono attraversabili a costo enorme (`WALL_ENTER`, come nel core continuo):
+     le rotte aperte vincono sempre, ma un goal completamente murato continua ad
+     attrarre l'orda, che va a premere contro le mura (assedio).
    - **Steering**: verso il flow a velocità preferita per-agente, accelerazione
      limitata (`a_max`), rumore angolare per-step (`noise_ang`) + jitter di velocità
      e raggio per-agente (anti-lockstep).

@@ -9,7 +9,9 @@
  *      cells over the nav grid gives a potential phi; a smoothed, normalized
  *      direction field is derived from it and bilinearly sampled by agents.
  *      Cost is O(grid), shared by all agents. Recomputed only when terrain or
- *      goals change (lazy, via dirty flag).
+ *      goals change (lazy, via dirty flag). Walls are crossable at a huge
+ *      cost rather than blocked: open routes always win, but a fully sealed
+ *      goal still attracts the horde, which presses against its walls (siege).
  *
  *   2) LOCAL DYNAMICS — steering toward the flow direction with bounded
  *      acceleration, plus per-agent speed variation and directional noise

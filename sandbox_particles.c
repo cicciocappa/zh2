@@ -10,11 +10,12 @@
  *
  * Controls:
  *     LMB            paint the current brush
- *     RMB            explosion at cursor (simp_apply_impulse)
+ *     RMB            erase (clears wall+goal+spawner under the brush)
+ *     E / MMB        explosion at cursor (simp_apply_impulse)
  *     1              brush = WALL
  *     2              brush = SPAWNER
  *     3              brush = GOAL (drains agents)
- *     4              brush = ERASE (clears wall+goal+spawner)
+ *     4              brush = ERASE (same as RMB)
  *     [ / ]          brush size down / up
  *     - / =          pbd_iters down / up        (crowd stiffness)
  *     , / .          noise_ang down / up        (steering noise)
@@ -27,7 +28,7 @@
  *     V              toggle speed tint on agents
  *     F              toggle flow-field overlay
  *     C              clear agents (keep terrain)
- *     R              reset everything (default scene)
+ *     R              reset everything (empty world)
  *     ESC            quit
  */
 #include "sim_particles.h"
@@ -127,36 +128,14 @@ static void spawners_step(SimP *s, float dt) {
     }
 }
 
-/* Default scene: vertical wall at x=40 m with two 3 m gates, goal column on
- * the right edge, spawner strip + a pre-packed block of agents on the left. */
+/* Start from an empty world: no walls, no goals, no spawners, no agents.
+ * Paint everything with the brushes (like the first sandbox). */
 static SimP *scene_create(void) {
     SimP *s = simp_create(GW, GH, CELL, MAX_AGENTS);
     SDL_memset(spawn_flag, 0, sizeof spawn_flag);
     SDL_memset(spawn_acc, 0, sizeof spawn_acc);
     SDL_memset(goal_flag, 0, sizeof goal_flag);
-
-    const int wall_cx = 80;                       /* x = 40 m */
-    for (int cy = 0; cy < GH; cy++) {
-        float ym = ((float)cy + 0.5f) * CELL;
-        if (fabsf(ym - 20.0f) < 1.5f) continue;   /* gate 1 */
-        if (fabsf(ym - 40.0f) < 1.5f) continue;   /* gate 2 */
-        simp_set_wall(s, wall_cx, cy, true);
-        simp_set_wall(s, wall_cx + 1, cy, true);
-    }
-    for (int cy = 1; cy < GH - 1; cy++) {
-        simp_set_goal(s, GW - 2, cy, true);
-        goal_flag[cy * GW + GW - 2] = 1;
-        spawn_flag[cy * GW + 2] = (cy % 2 == 0);  /* sparse spawner strip */
-    }
     simp_terrain_commit(s);
-
-    /* pre-packed block: hex-ish lattice, step 0.70 m > max diameter 0.69 m */
-    for (int row = 0; row < 70; row++)
-    for (int col = 0; col < 48; col++) {
-        float x = 3.0f + (float)col * 0.70f + (row & 1 ? 0.35f : 0.0f);
-        float y = 5.5f + (float)row * 0.70f;
-        if (simp_spawn(s, x, y) < 0) break;
-    }
     return s;
 }
 
@@ -176,7 +155,7 @@ int main(void) {
     int   brush = B_WALL, size = 3;
     int   paused = 0, running = 1, spawning = 1;
     int   speed_tint = 1, show_flow = 0;
-    int   painting = 0;
+    int   painting = 0, erasing = 0;
     float boom_radius = 6.0f, boom_strength = 10.0f;
     long  drained_total = 0;
     double step_ms = 0.0;
@@ -187,24 +166,26 @@ int main(void) {
             switch (e.type) {
             case SDL_EVENT_QUIT: running = 0; break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                if (e.button.button == SDL_BUTTON_RIGHT) {
+                if (e.button.button == SDL_BUTTON_MIDDLE) {
                     simp_apply_impulse(s, e.button.x / PPM, e.button.y / PPM,
                                        boom_radius, boom_strength);
                     break;
                 }
-                if (e.button.button == SDL_BUTTON_LEFT) {
-                    painting = 1;
-                    paint(s, (int)(e.button.x / (CELL * PPM)),
-                             (int)(e.button.y / (CELL * PPM)), brush, size);
-                }
+                if (e.button.button == SDL_BUTTON_LEFT)  painting = 1;
+                if (e.button.button == SDL_BUTTON_RIGHT) erasing = 1;
+                paint(s, (int)(e.button.x / (CELL * PPM)),
+                         (int)(e.button.y / (CELL * PPM)),
+                      e.button.button == SDL_BUTTON_RIGHT ? B_ERASE : brush, size);
                 break;
             case SDL_EVENT_MOUSE_BUTTON_UP:
-                if (e.button.button == SDL_BUTTON_LEFT) painting = 0;
+                if (e.button.button == SDL_BUTTON_LEFT)  painting = 0;
+                if (e.button.button == SDL_BUTTON_RIGHT) erasing = 0;
                 break;
             case SDL_EVENT_MOUSE_MOTION:
-                if (painting)
+                if (painting || erasing)
                     paint(s, (int)(e.motion.x / (CELL * PPM)),
-                             (int)(e.motion.y / (CELL * PPM)), brush, size);
+                             (int)(e.motion.y / (CELL * PPM)),
+                          erasing ? B_ERASE : brush, size);
                 break;
             case SDL_EVENT_KEY_DOWN: {
                 SimPParams *P = simp_params(s);
@@ -230,6 +211,12 @@ int main(void) {
                 case SDLK_0: boom_radius = fminf(25.0f, boom_radius + 1.0f); break;
                 case SDLK_8: boom_strength = fmaxf(1.0f,  boom_strength - 2.0f); break;
                 case SDLK_I: boom_strength = fminf(40.0f, boom_strength + 2.0f); break;
+                case SDLK_E: {
+                    float mx, my; SDL_GetMouseState(&mx, &my);
+                    simp_apply_impulse(s, mx / PPM, my / PPM,
+                                       boom_radius, boom_strength);
+                    break;
+                }
                 case SDLK_SPACE: paused = !paused; break;
                 case SDLK_N:
                     if (paused) {

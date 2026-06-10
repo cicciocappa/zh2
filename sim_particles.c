@@ -99,6 +99,15 @@ static HNode heap_pop(Heap *h) {
     return top;
 }
 
+/* Walls are passable at a HUGE cost rather than blocked (same trick as the
+ * continuum core). Where any open route exists it always wins (a detour costs
+ * far less than this), so phi still guides the horde AROUND obstacles. But a
+ * fully walled-off goal is no longer unreachable: phi keeps decreasing toward
+ * it through the walls, so the horde is drawn to PRESS against the surrounding
+ * walls (siege) instead of ignoring the goal. Map detours top out well under
+ * WALL_ENTER (phi is in cell units; the whole grid is a few hundred cells). */
+#define WALL_ENTER 5000.0f
+
 static void recompute_phi(SimP *s) {
     const int n = s->gw * s->gh;
     for (int i = 0; i < n; i++) s->phi[i] = PHI_INF;
@@ -119,10 +128,11 @@ static void recompute_phi(SimP *s) {
             int nx = cx + DX[k], ny = cy + DY[k];
             if (nx < 0 || ny < 0 || nx >= s->gw || ny >= s->gh) continue;
             int j = ny * s->gw + nx;
-            if (s->solid[j]) continue;
-            /* forbid diagonal corner-cutting through walls */
-            if (k >= 4 && (s->solid[cy * s->gw + nx] || s->solid[ny * s->gw + cx])) continue;
             float nc = nd.c + DC[k];
+            if (s->solid[j]) nc += WALL_ENTER;
+            /* diagonal corner-cutting through walls pays the wall toll too */
+            else if (k >= 4 && (s->solid[cy * s->gw + nx] || s->solid[ny * s->gw + cx]))
+                nc += WALL_ENTER;
             if (nc < s->phi[j]) { s->phi[j] = nc; heap_push(&h, nc, j); }
         }
     }
@@ -144,8 +154,13 @@ static void recompute_flow(SimP *s) {
                 int nx = cx + dx, ny = cy + dy;
                 if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
                 int j = ny * gw + nx;
-                if (s->solid[j]) continue;
-                if (dx && dy && (s->solid[cy * gw + nx] || s->solid[ny * gw + cx])) continue;
+                /* wall neighbours stay in the running: their phi is lower than
+                 * ours only when our own phi went THROUGH that wall (sealed
+                 * pocket), in which case the flow points INTO the wall and the
+                 * horde presses against it (siege). On open routes wall phi is
+                 * higher by >= WALL_ENTER, so it never wins. */
+                if (dx && dy && !s->solid[j] &&
+                    (s->solid[cy * gw + nx] || s->solid[ny * gw + cx])) continue;
                 if (s->phi[j] < best) { best = s->phi[j]; bx = (float)dx; by = (float)dy; }
             }
             float len = sqrtf(bx * bx + by * by);
