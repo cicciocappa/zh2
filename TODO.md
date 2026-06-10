@@ -21,13 +21,18 @@ poi scala, poi gioco.
 - [x] **Layer di handle** (id stabili ↔ indici swap-and-pop) — prerequisito per
       targeting e effetti. Generation counter per evitare handle pendenti.
       FATTO: slot map per design M3.1, `test_handles` PASS.
-- [ ] **z fittizia per il volo balistico**: per-agente `z, vz`; durante il volo
+- [x] **z fittizia per il volo balistico**: per-agente `z, vz`; durante il volo
       (z > 0) niente collisioni né steering, gravità semplice; all'atterraggio
       rientro nella simulazione. Impulsi forti assegnano anche vz.
-- [ ] **Cadaveri**: alla morte → decal (default, costo zero) + per una frazione
+      FATTO per design M3.2 (atterraggi riportati come HANDLE, non indici);
+      fase volo in `test_impulse` PASS.
+- [x] **Cadaveri**: alla morte → decal (default, costo zero) + per una frazione
       configurabile → ostacolo passivo temporaneo (disco statico nella griglia
       di collisione, TTL qualche secondo). Obiettivo: barricate di corpi ai
       colli di bottiglia che deviano il flusso.
+      FATTO per design M3.3 ma con implementazione "ghost" (invm=0 in coda
+      agli array SoA, niente casi speciali nel PBD); `test_corpses` PASS,
+      pennello KILL nel sandbox per la verifica visiva delle barricate.
 - [x] **Danno ad area / query spaziali di gameplay** sulla stessa griglia di
       collisione: `simp_query_circle` (buffer di indici) + `simp_query_nearest`.
       FATTO per design M3.4 (+ rebuild della griglia a fine step per query

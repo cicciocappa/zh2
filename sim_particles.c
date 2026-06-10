@@ -28,6 +28,9 @@ static inline float rng_fsym(uint32_t *st) {          /* [-1,1) */
 }
 
 #define PHI_INF 1e30f
+#define GRAV 9.81f            /* fake-z gravity (m/s^2) */
+#define CORPSE_CAP 4096       /* fixed corpse pool: a cost guarantee */
+#define TAKEOFF_VZ 1.0f       /* vertical speed that flips SIMP_FLYING */
 
 /* --------------------------------------------------------------- the state */
 
@@ -54,7 +57,17 @@ struct SimP {
     float *vpref;          /* per-agent preferred speed */
     float *invm;           /* inverse mass (~ 1/r^2) */
     uint32_t *seed;        /* per-agent RNG state */
-    uint8_t *dormant;      /* 1 = stands still until woken */
+    uint8_t *aflags;       /* behaviour flags (SIMP_DORMANT, SIMP_FLYING) */
+    float *z, *vz;         /* fake third axis for ballistic flight */
+
+    /* agents landed during the last step (handles: drain-safe) */
+    SimPHandle *landed;
+    int landed_n;
+
+    /* corpse pool: static obstacle discs, TTL-managed */
+    int   corpse_count;
+    float *cpx, *cpy, *crad, *cttl;
+    float corpse_rmax;     /* largest radius ever in pool (search reach) */
 
     /* slot map: stable handles over swap-and-pop (see header) */
     int      *slot_to_index;  /* cap : slot -> dense index, -1 if free   */
@@ -63,12 +76,18 @@ struct SimP {
     int      *slot_free;      /* cap : LIFO stack of free slots          */
     int       slot_free_top;
 
-    /* collision grid (uniform, rebuilt each step via counting sort) */
+    /* collision grid (uniform, rebuilt each step via counting sort).
+     * Binned entries: grounded agents (dense index) + corpse "ghosts"
+     * (index >= grid_total, ghost data lives past the agents in the SoA
+     * arrays). Flying agents are NOT binned. */
     int   cgw, cgh;
     float ccell, inv_ccell;
     int  *ccount;          /* cgw*cgh + 1 : counts then prefix sums */
     int  *cstart;          /* prefix sums (cgw*cgh + 1) */
-    int  *corder;          /* cap : agent indices sorted by cell */
+    int  *corder;          /* cap + CORPSE_CAP : entries sorted by cell */
+    int   grid_total;      /* agent count at the last rebuild */
+    int   grid_ghosts;     /* corpse ghosts binned at the last rebuild */
+    bool  grid_stale;      /* set by kill/corpse_add: indices unreliable */
 
     SimPParams params;
     uint32_t rng;          /* sim-level RNG (spawn jitter) */
@@ -295,6 +314,8 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->params.damping   = 0.10f;
     s->params.v_clamp   = 20.0f;
     s->params.pbd_iters = 3;
+    s->params.landing_damp = 0.30f;
+    s->params.wall_h    = 2.0f;
 
     const size_t n = (size_t)gw * gh;
     s->solid  = (uint8_t *)calloc(n, 1);
@@ -305,17 +326,32 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->sdf    = (float *)malloc(n * sizeof(float));
 
     s->cap = max_agents;
-    s->px = (float *)malloc((size_t)max_agents * sizeof(float));
-    s->py = (float *)malloc((size_t)max_agents * sizeof(float));
+    /* px/py/rad/invm/seed carry CORPSE_CAP extra slots: corpse ghosts are
+     * appended there before binning so the PBD kernel sees them as plain
+     * zero-inverse-mass discs (no special cases in the hot loop) */
+    const size_t capg = (size_t)max_agents + CORPSE_CAP;
+    s->px = (float *)malloc(capg * sizeof(float));
+    s->py = (float *)malloc(capg * sizeof(float));
     s->qx = (float *)malloc((size_t)max_agents * sizeof(float));
     s->qy = (float *)malloc((size_t)max_agents * sizeof(float));
     s->vx = (float *)calloc((size_t)max_agents, sizeof(float));
     s->vy = (float *)calloc((size_t)max_agents, sizeof(float));
-    s->rad   = (float *)malloc((size_t)max_agents * sizeof(float));
+    s->rad   = (float *)malloc(capg * sizeof(float));
     s->vpref = (float *)malloc((size_t)max_agents * sizeof(float));
-    s->invm  = (float *)malloc((size_t)max_agents * sizeof(float));
-    s->seed  = (uint32_t *)malloc((size_t)max_agents * sizeof(uint32_t));
-    s->dormant = (uint8_t *)calloc((size_t)max_agents, 1);
+    s->invm  = (float *)malloc(capg * sizeof(float));
+    s->seed  = (uint32_t *)malloc(capg * sizeof(uint32_t));
+    s->aflags = (uint8_t *)calloc((size_t)max_agents, 1);
+    s->z  = (float *)calloc((size_t)max_agents, sizeof(float));
+    s->vz = (float *)calloc((size_t)max_agents, sizeof(float));
+    s->landed = (SimPHandle *)malloc((size_t)max_agents * sizeof(SimPHandle));
+    s->landed_n = 0;
+
+    s->cpx  = (float *)malloc(CORPSE_CAP * sizeof(float));
+    s->cpy  = (float *)malloc(CORPSE_CAP * sizeof(float));
+    s->crad = (float *)malloc(CORPSE_CAP * sizeof(float));
+    s->cttl = (float *)malloc(CORPSE_CAP * sizeof(float));
+    s->corpse_count = 0;
+    s->corpse_rmax = 0.0f;
 
     /* slot map: all slots free, prefilled so the first pops give 0,1,2... */
     s->slot_to_index = (int *)malloc((size_t)max_agents * sizeof(int));
@@ -338,7 +374,10 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
      * before the first rebuild: an empty grid is a valid grid for count 0 */
     s->ccount = (int *)calloc((size_t)s->cgw * s->cgh + 1, sizeof(int));
     s->cstart = (int *)calloc((size_t)s->cgw * s->cgh + 1, sizeof(int));
-    s->corder = (int *)malloc((size_t)max_agents * sizeof(int));
+    s->corder = (int *)malloc(capg * sizeof(int));
+    s->grid_total = 0;
+    s->grid_ghosts = 0;
+    s->grid_stale = false;
 
     s->rng = 0x9E3779B9u;
     s->nav_dirty = true;
@@ -352,7 +391,8 @@ void simp_destroy(SimP *s) {
     free(s->px); free(s->py); free(s->qx); free(s->qy);
     free(s->vx); free(s->vy);
     free(s->rad); free(s->vpref); free(s->invm); free(s->seed);
-    free(s->dormant);
+    free(s->aflags); free(s->z); free(s->vz); free(s->landed);
+    free(s->cpx); free(s->cpy); free(s->crad); free(s->cttl);
     free(s->slot_to_index); free(s->index_to_slot);
     free(s->slot_gen); free(s->slot_free);
     free(s->ccount); free(s->cstart); free(s->corder);
@@ -397,7 +437,8 @@ int simp_spawn(SimP *s, float x, float y) {
     s->rad[i]   = s->params.radius * rj;
     s->vpref[i] = s->params.v_max * vj;
     s->invm[i]  = 1.0f / (s->rad[i] * s->rad[i]);   /* mass ~ r^2 */
-    s->dormant[i] = 0;
+    s->aflags[i] = 0;
+    s->z[i] = 0.0f; s->vz[i] = 0.0f;
     /* count < cap guarantees the free stack is non-empty */
     int slot = s->slot_free[--s->slot_free_top];
     s->slot_to_index[slot] = i;
@@ -407,7 +448,7 @@ int simp_spawn(SimP *s, float x, float y) {
 
 int simp_spawn_dormant(SimP *s, float x, float y) {
     int i = simp_spawn(s, x, y);
-    if (i >= 0) s->dormant[i] = 1;
+    if (i >= 0) s->aflags[i] |= SIMP_DORMANT;
     return i;
 }
 
@@ -416,6 +457,7 @@ void simp_kill(SimP *s, int i) {
     s->slot_gen[slot]++;                       /* wrap is fine (12 bits used) */
     s->slot_to_index[slot] = -1;
     s->slot_free[s->slot_free_top++] = slot;
+    s->grid_stale = true;
     int last = --s->count;
     if (i == last) return;
     s->px[i] = s->px[last]; s->py[i] = s->py[last];
@@ -423,7 +465,8 @@ void simp_kill(SimP *s, int i) {
     s->vx[i] = s->vx[last]; s->vy[i] = s->vy[last];
     s->rad[i] = s->rad[last]; s->vpref[i] = s->vpref[last];
     s->invm[i] = s->invm[last]; s->seed[i] = s->seed[last];
-    s->dormant[i] = s->dormant[last];
+    s->aflags[i] = s->aflags[last];
+    s->z[i] = s->z[last]; s->vz[i] = s->vz[last];
     int ls = s->index_to_slot[last];
     s->slot_to_index[ls] = i;
     s->index_to_slot[i] = ls;
@@ -434,34 +477,44 @@ int simp_count(const SimP *s) { return s->count; }
 bool simp_free_at(const SimP *s, float x, float y, float r) {
     if (x < r || y < r || x > s->world_w - r || y > s->world_h - r) return false;
     if (simp_sample_sdf(s, x, y) < r) return false;
-    /* The grid covers agents [0, grid_n) with positions as of the last
-     * rebuild; agents spawned since are checked linearly. After kills
-     * (count < grid_n) the grid references dead slots: full brute force. */
-    int grid_n = s->cstart[s->cgw * s->cgh];
-    bool grid_ok = (grid_n >= 0 && grid_n <= s->count);
-    int tail = grid_ok ? grid_n : 0;
-    if (grid_ok && grid_n > 0) {
+    /* The grid covers grounded agents [0, grid_total) + corpse ghosts, with
+     * positions as of the last rebuild (end of step: exact). Agents spawned
+     * since are checked linearly; spawns also recycle ghost slots, which
+     * degrades corpse blocking for the rest of the frame — harmless. After
+     * kills the grid references dead slots: full brute force. Airborne
+     * agents never block a spawn point. */
+    if (!s->grid_stale && s->grid_total <= s->count) {
         float rmax = s->params.radius * (1.0f + s->params.r_jitter);
+        if (s->corpse_rmax > rmax) rmax = s->corpse_rmax;
         float reach = r + rmax;
-        /* one extra cell of margin: positions drift after the rebuild
-         * (bounded by v_clamp*dt + projections, well under one cell) */
-        int x0 = clampi((int)((x - reach) * s->inv_ccell) - 1, 0, s->cgw - 1);
-        int x1 = clampi((int)((x + reach) * s->inv_ccell) + 1, 0, s->cgw - 1);
-        int y0 = clampi((int)((y - reach) * s->inv_ccell) - 1, 0, s->cgh - 1);
-        int y1 = clampi((int)((y + reach) * s->inv_ccell) + 1, 0, s->cgh - 1);
+        int x0 = clampi((int)((x - reach) * s->inv_ccell), 0, s->cgw - 1);
+        int x1 = clampi((int)((x + reach) * s->inv_ccell), 0, s->cgw - 1);
+        int y0 = clampi((int)((y - reach) * s->inv_ccell), 0, s->cgh - 1);
+        int y1 = clampi((int)((y + reach) * s->inv_ccell), 0, s->cgh - 1);
         for (int cy = y0; cy <= y1; cy++) for (int cx = x0; cx <= x1; cx++) {
             int c = cy * s->cgw + cx;
             for (int k = s->cstart[c]; k < s->cstart[c + 1]; k++) {
-                int i = s->corder[k];
+                int i = s->corder[k];      /* agent or ghost: same arrays */
                 float dx = s->px[i] - x, dy = s->py[i] - y;
                 float rs = r + s->rad[i];
                 if (dx * dx + dy * dy < rs * rs) return false;
             }
         }
+        for (int i = s->grid_total; i < s->count; i++) {
+            float dx = s->px[i] - x, dy = s->py[i] - y;
+            float rs = r + s->rad[i];
+            if (dx * dx + dy * dy < rs * rs) return false;
+        }
+        return true;
     }
-    for (int i = tail; i < s->count; i++) {
+    for (int i = 0; i < s->count; i++) {
         float dx = s->px[i] - x, dy = s->py[i] - y;
         float rs = r + s->rad[i];
+        if (dx * dx + dy * dy < rs * rs) return false;
+    }
+    for (int j = 0; j < s->corpse_count; j++) {
+        float dx = s->cpx[j] - x, dy = s->cpy[j] - y;
+        float rs = r + s->crad[j];
         if (dx * dx + dy * dy < rs * rs) return false;
     }
     return true;
@@ -470,14 +523,15 @@ bool simp_free_at(const SimP *s, float x, float y, float r) {
 void simp_wake_radius(SimP *s, float x, float y, float radius) {
     const float r2 = radius * radius;
     for (int i = 0; i < s->count; i++) {
-        if (!s->dormant[i]) continue;
+        if (!(s->aflags[i] & SIMP_DORMANT)) continue;
         float dx = s->px[i] - x, dy = s->py[i] - y;
-        if (dx * dx + dy * dy <= r2) s->dormant[i] = 0;
+        if (dx * dx + dy * dy <= r2) s->aflags[i] &= (uint8_t)~SIMP_DORMANT;
     }
 }
 
 void simp_wake_all(SimP *s) {
-    memset(s->dormant, 0, (size_t)s->count);
+    for (int i = 0; i < s->count; i++)
+        s->aflags[i] &= (uint8_t)~SIMP_DORMANT;
 }
 
 /* ------------------------------------------------------------- handles */
@@ -504,19 +558,18 @@ int simp_index_of(const SimP *s, SimPHandle h) {
 /* ------------------------------------------------------- spatial queries */
 
 /* The collision grid is coherent with current positions only between the
- * end of a step and the next spawn/kill (same guard as simp_apply_impulse).
- * Cell positions can additionally drift within the step that built them,
- * but queries are meant to run after the step, where they are exact. */
+ * end of a step (final rebuild) and the next spawn/kill/corpse_add. The
+ * grid bins grounded agents + corpse ghosts; queries skip the ghosts and,
+ * by construction, never see airborne agents. */
 static inline bool grid_current(const SimP *s) {
-    return s->cstart[s->cgw * s->cgh] == s->count;
+    return !s->grid_stale && s->grid_total == s->count;
 }
 
 int simp_query_circle(const SimP *s, float x, float y, float r,
                       int *out, int max_out, uint32_t flags) {
-    (void)flags;                                /* reserved (flying, ...) */
     const float r2 = r * r;
     int n = 0;
-    if (grid_current(s)) {
+    if (grid_current(s) && !(flags & SIMP_QUERY_FLYING)) {
         int x0 = clampi((int)((x - r) * s->inv_ccell), 0, s->cgw - 1);
         int x1 = clampi((int)((x + r) * s->inv_ccell), 0, s->cgw - 1);
         int y0 = clampi((int)((y - r) * s->inv_ccell), 0, s->cgh - 1);
@@ -525,6 +578,7 @@ int simp_query_circle(const SimP *s, float x, float y, float r,
             int c = cy * s->cgw + cx;
             for (int k = s->cstart[c]; k < s->cstart[c + 1]; k++) {
                 int i = s->corder[k];
+                if (i >= s->count) continue;               /* corpse ghost */
                 float dx = s->px[i] - x, dy = s->py[i] - y;
                 if (dx * dx + dy * dy > r2) continue;
                 if (n == max_out) return n;
@@ -533,6 +587,8 @@ int simp_query_circle(const SimP *s, float x, float y, float r,
         }
     } else {
         for (int i = 0; i < s->count; i++) {
+            if (!(flags & SIMP_QUERY_FLYING) && (s->aflags[i] & SIMP_FLYING))
+                continue;
             float dx = s->px[i] - x, dy = s->py[i] - y;
             if (dx * dx + dy * dy > r2) continue;
             if (n == max_out) return n;
@@ -547,6 +603,7 @@ int simp_query_nearest(const SimP *s, float x, float y, float r_max) {
     float best_d2 = r_max * r_max;
     if (!grid_current(s)) {
         for (int i = 0; i < s->count; i++) {
+            if (s->aflags[i] & SIMP_FLYING) continue;
             float dx = s->px[i] - x, dy = s->py[i] - y;
             float d2 = dx * dx + dy * dy;
             if (d2 <= best_d2) { best_d2 = d2; best = i; }
@@ -576,6 +633,7 @@ int simp_query_nearest(const SimP *s, float x, float y, float r_max) {
                 int c = cy * s->cgw + cx;
                 for (int k = s->cstart[c]; k < s->cstart[c + 1]; k++) {
                     int i = s->corder[k];
+                    if (i >= s->count) continue;           /* corpse ghost */
                     float dx = s->px[i] - x, dy = s->py[i] - y;
                     float d2 = dx * dx + dy * dy;
                     if (d2 <= best_d2) { best_d2 = d2; best = i; }
@@ -586,53 +644,94 @@ int simp_query_nearest(const SimP *s, float x, float y, float r_max) {
     return best;
 }
 
-void simp_apply_impulse(SimP *s, float x, float y, float radius, float strength) {
-    /* coarse cull through the collision grid */
-    int x0 = clampi((int)((x - radius) * s->inv_ccell), 0, s->cgw - 1);
-    int x1 = clampi((int)((x + radius) * s->inv_ccell), 0, s->cgw - 1);
-    int y0 = clampi((int)((y - radius) * s->inv_ccell), 0, s->cgh - 1);
-    int y1 = clampi((int)((y + radius) * s->inv_ccell), 0, s->cgh - 1);
-    const float r2 = radius * radius;
-    /* grid may be stale (impulses usually arrive between steps): fall back
-     * to brute force if it has not been built for the current count */
-    bool grid_ok = (s->cstart[s->cgw * s->cgh] == s->count);
-    if (grid_ok) {
+static inline void impulse_one(SimP *s, int i, float x, float y,
+                               float radius, float strength, float up_ratio) {
+    float dx = s->px[i] - x, dy = s->py[i] - y;
+    float d2 = dx * dx + dy * dy;
+    if (d2 > radius * radius) return;
+    float d = sqrtf(d2);
+    float fall = 1.0f - d / radius;
+    float nx, ny;
+    if (d > 1e-5f) { nx = dx / d; ny = dy / d; }
+    else { nx = rng_fsym(&s->rng); ny = rng_fsym(&s->rng);
+           float l = sqrtf(nx*nx + ny*ny) + 1e-6f; nx /= l; ny /= l; }
+    s->vx[i] += strength * fall * nx;
+    s->vy[i] += strength * fall * ny;
+    if (up_ratio > 0.0f) {
+        s->vz[i] += strength * fall * up_ratio;
+        if (s->vz[i] > TAKEOFF_VZ) s->aflags[i] |= SIMP_FLYING;
+    }
+}
+
+void simp_apply_impulse_ex(SimP *s, float x, float y, float radius,
+                           float strength, float up_ratio) {
+    /* gridded path skips corpse ghosts and (being unbinned) the already-
+     * airborne; the brute-force fallback boosts the airborne too */
+    if (!s->grid_stale && s->grid_total == s->count) {
+        int x0 = clampi((int)((x - radius) * s->inv_ccell), 0, s->cgw - 1);
+        int x1 = clampi((int)((x + radius) * s->inv_ccell), 0, s->cgw - 1);
+        int y0 = clampi((int)((y - radius) * s->inv_ccell), 0, s->cgh - 1);
+        int y1 = clampi((int)((y + radius) * s->inv_ccell), 0, s->cgh - 1);
         for (int cy = y0; cy <= y1; cy++) for (int cx = x0; cx <= x1; cx++) {
             int c = cy * s->cgw + cx;
             for (int k = s->cstart[c]; k < s->cstart[c + 1]; k++) {
                 int i = s->corder[k];
-                float dx = s->px[i] - x, dy = s->py[i] - y;
-                float d2 = dx * dx + dy * dy;
-                if (d2 > r2) continue;
-                float d = sqrtf(d2);
-                float fall = 1.0f - d / radius;
-                float nx, ny;
-                if (d > 1e-5f) { nx = dx / d; ny = dy / d; }
-                else { nx = rng_fsym(&s->rng); ny = rng_fsym(&s->rng);
-                       float l = sqrtf(nx*nx + ny*ny) + 1e-6f; nx /= l; ny /= l; }
-                s->vx[i] += strength * fall * nx;
-                s->vy[i] += strength * fall * ny;
+                if (i >= s->count) continue;               /* corpse ghost */
+                impulse_one(s, i, x, y, radius, strength, up_ratio);
             }
         }
     } else {
-        for (int i = 0; i < s->count; i++) {
-            float dx = s->px[i] - x, dy = s->py[i] - y;
-            float d2 = dx * dx + dy * dy;
-            if (d2 > r2) continue;
-            float d = sqrtf(d2);
-            float fall = 1.0f - d / radius;
-            if (d > 1e-5f) { s->vx[i] += strength * fall * dx / d;
-                             s->vy[i] += strength * fall * dy / d; }
-        }
+        for (int i = 0; i < s->count; i++)
+            impulse_one(s, i, x, y, radius, strength, up_ratio);
     }
 }
+
+void simp_apply_impulse(SimP *s, float x, float y, float radius, float strength) {
+    simp_apply_impulse_ex(s, x, y, radius, strength, 0.0f);
+}
+
+/* ------------------------------------------------------------- corpses */
+
+int simp_corpse_add(SimP *s, float x, float y, float radius, float ttl) {
+    int i;
+    if (s->corpse_count < CORPSE_CAP) i = s->corpse_count++;
+    else {
+        /* full: replace the closest-to-expiry corpse (cost guarantee) */
+        i = 0;
+        for (int j = 1; j < CORPSE_CAP; j++)
+            if (s->cttl[j] < s->cttl[i]) i = j;
+    }
+    s->cpx[i] = x; s->cpy[i] = y;
+    s->crad[i] = radius; s->cttl[i] = ttl;
+    if (radius > s->corpse_rmax) s->corpse_rmax = radius;
+    s->grid_stale = true;        /* binned as a ghost at the next rebuild */
+    return i;
+}
+
+int simp_corpse_count(const SimP *s) { return s->corpse_count; }
+const float *simp_corpse_px(const SimP *s)  { return s->cpx; }
+const float *simp_corpse_py(const SimP *s)  { return s->cpy; }
+const float *simp_corpse_rad(const SimP *s) { return s->crad; }
 
 /* --------------------------------------------------------------- stepping */
 
 static void rebuild_grid(SimP *s) {
     const int nc = s->cgw * s->cgh;
+    /* corpse ghosts: copy the pool past the live agents as invm=0 discs so
+     * the PBD kernel treats them like any other (immovable) body */
+    const int ng = s->corpse_count;
+    for (int j = 0; j < ng; j++) {
+        int g = s->count + j;
+        s->px[g] = s->cpx[j]; s->py[g] = s->cpy[j];
+        s->rad[g] = s->crad[j];
+        s->invm[g] = 0.0f;
+        s->seed[g] = 0xC0FF1234u + (uint32_t)j;   /* determinism (d==0 path) */
+    }
+    const int total = s->count + ng;
+    const uint8_t *fl = s->aflags;
     memset(s->ccount, 0, (size_t)(nc + 1) * sizeof(int));
-    for (int i = 0; i < s->count; i++) {
+    for (int i = 0; i < total; i++) {
+        if (i < s->count && (fl[i] & SIMP_FLYING)) continue;  /* airborne */
         int cx = clampi((int)(s->px[i] * s->inv_ccell), 0, s->cgw - 1);
         int cy = clampi((int)(s->py[i] * s->inv_ccell), 0, s->cgh - 1);
         s->ccount[cy * s->cgw + cx]++;
@@ -641,11 +740,15 @@ static void rebuild_grid(SimP *s) {
     for (int c = 0; c < nc; c++) { s->cstart[c] = acc; acc += s->ccount[c]; }
     s->cstart[nc] = acc;
     memcpy(s->ccount, s->cstart, (size_t)(nc + 1) * sizeof(int)); /* reuse as cursor */
-    for (int i = 0; i < s->count; i++) {
+    for (int i = 0; i < total; i++) {
+        if (i < s->count && (fl[i] & SIMP_FLYING)) continue;
         int cx = clampi((int)(s->px[i] * s->inv_ccell), 0, s->cgw - 1);
         int cy = clampi((int)(s->py[i] * s->inv_ccell), 0, s->cgh - 1);
         s->corder[s->ccount[cy * s->cgw + cx]++] = i;
     }
+    s->grid_total = s->count;
+    s->grid_ghosts = ng;
+    s->grid_stale = false;
 }
 
 static void pbd_iteration(SimP *s) {
@@ -674,6 +777,8 @@ static void pbd_iteration(SimP *s) {
                         float rsum = ri + s->rad[j];
                         float d2 = dx * dx + dy * dy;
                         if (d2 >= rsum * rsum) continue;
+                        float wj = s->invm[j];
+                        if (wi + wj <= 0.0f) continue;  /* corpse vs corpse */
                         float d = sqrtf(d2);
                         float nxv, nyv;
                         if (d > 1e-5f) { nxv = dx / d; nyv = dy / d; }
@@ -690,7 +795,6 @@ static void pbd_iteration(SimP *s) {
                          * exploding into huge recovered velocities */
                         float capd = 0.30f * rsum;
                         if (overlap > capd) overlap = capd;
-                        float wj = s->invm[j];
                         float inv = 1.0f / (wi + wj);
                         float ci = overlap * wi * inv;
                         float cj = overlap * wj * inv;
@@ -707,17 +811,21 @@ static void pbd_iteration(SimP *s) {
 }
 
 static void wall_projection(SimP *s) {
+    const float wall_h = s->params.wall_h;
     for (int i = 0; i < s->count; i++) {
-        float d = simp_sample_sdf(s, s->px[i], s->py[i]);
         float r = s->rad[i];
-        if (d < r) {
-            float gx, gy;
-            sdf_grad(s, s->px[i], s->py[i], &gx, &gy);
-            float push = r - d;
-            s->px[i] += gx * push;
-            s->py[i] += gy * push;
+        /* above wall_h walls are overflown; low flyers slam into them */
+        if (!((s->aflags[i] & SIMP_FLYING) && s->z[i] > wall_h)) {
+            float d = simp_sample_sdf(s, s->px[i], s->py[i]);
+            if (d < r) {
+                float gx, gy;
+                sdf_grad(s, s->px[i], s->py[i], &gx, &gy);
+                float push = r - d;
+                s->px[i] += gx * push;
+                s->py[i] += gy * push;
+            }
         }
-        /* hard world bounds */
+        /* hard world bounds (flyers included: they slide along the edge) */
         s->px[i] = clampf(s->px[i], r, s->world_w - r);
         s->py[i] = clampf(s->py[i], r, s->world_h - r);
     }
@@ -732,12 +840,17 @@ int simp_step(SimP *s, float dt) {
     s->diag_overlap_sum = 0.0f;
     s->diag_overlap_n = 0;
 
+    s->landed_n = 0;
+
     /* 1) steering toward flow field + noise, bounded acceleration.
      * Dormant agents steer toward zero velocity: they stand still, but a
-     * push (PBD, impulse) still moves them and they brake back to rest. */
+     * push (PBD, impulse) still moves them and they brake back to rest.
+     * Flying agents are ballistic: no steering, no damping. */
     for (int i = 0; i < s->count; i++) {
+        uint8_t fl = s->aflags[i];
+        if (fl & SIMP_FLYING) continue;
         float fx = 0.0f, fy = 0.0f;
-        if (!s->dormant[i]) {
+        if (!(fl & SIMP_DORMANT)) {
             simp_sample_flow(s, s->px[i], s->py[i], &fx, &fy);
             if (P->noise_ang > 0.0f && (fx != 0.0f || fy != 0.0f)) {
                 float a = P->noise_ang * rng_fsym(&s->seed[i]);
@@ -754,11 +867,26 @@ int simp_step(SimP *s, float dt) {
         s->vy[i] = (s->vy[i] + dvy) * damp;
     }
 
-    /* 2) integrate (save pre-projection position) */
+    /* 2) integrate (save pre-projection position); fly the fake z axis */
     for (int i = 0; i < s->count; i++) {
         s->qx[i] = s->px[i]; s->qy[i] = s->py[i];
         s->px[i] += s->vx[i] * dt;
         s->py[i] += s->vy[i] * dt;
+        if (s->aflags[i] & SIMP_FLYING) {
+            s->vz[i] -= GRAV * dt;
+            s->z[i]  += s->vz[i] * dt;
+            if (s->z[i] <= 0.0f) {                       /* touchdown */
+                s->z[i] = 0.0f; s->vz[i] = 0.0f;
+                s->aflags[i] &= (uint8_t)~SIMP_FLYING;
+                s->vx[i] *= P->landing_damp;
+                s->vy[i] *= P->landing_damp;
+                /* recovered velocity is (px-qx)/dt: bend qx so the recovery
+                 * yields the damped speed, or the damp would be overwritten */
+                s->qx[i] = s->px[i] - s->vx[i] * dt;
+                s->qy[i] = s->py[i] - s->vy[i] * dt;
+                s->landed[s->landed_n++] = simp_handle_of(s, i);
+            }
+        }
     }
 
     /* 3) constraints: agent-agent (PBD) + walls, iterated */
@@ -768,10 +896,13 @@ int simp_step(SimP *s, float dt) {
         wall_projection(s);
     }
 
-    /* 4) recover effective velocity from positional change */
+    /* 4) recover effective velocity from positional change. Flyers keep
+     * their integrated velocity (they take no projections; clamping would
+     * cut hard launches short). */
     const float inv_dt = 1.0f / dt;
     const float vc = P->v_clamp;
     for (int i = 0; i < s->count; i++) {
+        if (s->aflags[i] & SIMP_FLYING) continue;
         float nvx = (s->px[i] - s->qx[i]) * inv_dt;
         float nvy = (s->py[i] - s->qy[i]) * inv_dt;
         float sp2 = nvx * nvx + nvy * nvy;
@@ -788,11 +919,22 @@ int simp_step(SimP *s, float dt) {
      * "arriving" anywhere. */
     int drained = 0;
     for (int i = s->count - 1; i >= 0; i--) {
-        if (s->dormant[i]) continue;
+        if (s->aflags[i] & SIMP_DORMANT) continue;
         int cx = clampi((int)(s->px[i] * s->inv_cell), 0, s->gw - 1);
         int cy = clampi((int)(s->py[i] * s->inv_cell), 0, s->gh - 1);
         if (s->goal[cy * s->gw + cx]) { simp_kill(s, i); drained++; }
     }
+
+    /* 5b) corpse decay: swap-and-pop on expiry (no handles point here) */
+    for (int j = s->corpse_count - 1; j >= 0; j--) {
+        s->cttl[j] -= dt;
+        if (s->cttl[j] <= 0.0f) {
+            int last = --s->corpse_count;
+            s->cpx[j] = s->cpx[last]; s->cpy[j] = s->cpy[last];
+            s->crad[j] = s->crad[last]; s->cttl[j] = s->cttl[last];
+        }
+    }
+    if (s->corpse_count == 0) s->corpse_rmax = 0.0f;
 
     /* 6) rebuild the grid on final positions: the mid-step grid is stale by
      * the PBD/wall corrections (and by the drain), so spatial queries and
@@ -809,7 +951,10 @@ const float *simp_py(const SimP *s) { return s->py; }
 const float *simp_vx(const SimP *s) { return s->vx; }
 const float *simp_vy(const SimP *s) { return s->vy; }
 const float *simp_radius_arr(const SimP *s) { return s->rad; }
-const uint8_t *simp_dormant_arr(const SimP *s) { return s->dormant; }
+const uint8_t *simp_flags_arr(const SimP *s) { return s->aflags; }
+const float *simp_z_arr(const SimP *s) { return s->z; }
+int simp_landed_count(const SimP *s) { return s->landed_n; }
+const SimPHandle *simp_landed(const SimP *s) { return s->landed; }
 
 float simp_mean_overlap(const SimP *s) {
     return s->diag_overlap_n ? s->diag_overlap_sum / (float)s->diag_overlap_n : 0.0f;

@@ -13,6 +13,9 @@ impulsi. Tutto ciò che si aggiunge deve restare mappabile su compute shader
 
 ## 3.1 Layer di handle (id stabili)
 
+> **IMPLEMENTATO** come da design (+ accessor `simp_slot_of` per il pattern
+> dati-di-gioco-per-slot). `test_handles` PASS.
+
 **Problema.** `simp_kill` fa swap-and-pop: gli indici densi `0..count-1` cambiano
 sotto i piedi. Il gameplay (torretta che "punta lo zombie 4711") ha bisogno di
 riferimenti che sopravvivono alle rimozioni e rilevano il riuso.
@@ -66,6 +69,14 @@ stato riusato.
 ---
 
 ## 3.2 z fittizia (volo balistico)
+
+> **IMPLEMENTATO.** Deviazioni: gli atterraggi sono riportati come **handle**
+> (`simp_landed`), non indici — il drain nello stesso step li invaliderebbe;
+> `dormant` è confluito negli `aflags` (bit `SIMP_DORMANT` + `SIMP_FLYING`);
+> il recovery di velocità salta i volanti, e all'atterraggio si piega `qx/qy`
+> così il recovery restituisce la velocità smorzata (altrimenti il damp
+> verrebbe sovrascritto); drain valido anche in volo (annotato). I volanti
+> sono clampati ai bordi del mondo anche in quota.
 
 **Problema.** Le esplosioni devono *scagliare* gli zombie, non solo spingerli
 sul piano. Serve un volo parabolico durante il quale l'agente non collide con
@@ -121,6 +132,15 @@ il drain vale anche in volo, irrilevante per il gioco — annotarlo).
 
 ## 3.3 Cadaveri come ostacoli
 
+> **IMPLEMENTATO.** Deviazione principale: invece del branch sul range di
+> indici nel PBD, i cadaveri vengono copiati come **ghost** (`invm = 0`) in
+> coda agli agenti negli array SoA prima del binning — il kernel PBD resta
+> senza casi speciali (unica guardia: coppia ghost-ghost, somma masse nulle).
+> Pool a rimpiazzo del più-vicino-a-scadenza invece del ring puro (convive
+> con lo swap-and-pop dell'expiry). I cadaveri bloccano anche `simp_free_at`.
+> `test_corpses` usa una barriera deterministica invece del cull al 25% (più
+> robusto); la barricata emergente si verifica nel sandbox (pennello KILL).
+
 **Problema.** I morti devono (a) lasciare un segno visivo, (b) per una frazione,
 ostacolare fisicamente i vivi → barricate emergenti ai colli di bottiglia.
 
@@ -170,6 +190,13 @@ mostrare il flusso che si biforca attorno al mucchio. Sanity: cadaveri immobili
 ---
 
 ## 3.4 Query spaziali di gameplay
+
+> **IMPLEMENTATO.** Deviazione: la griglia viene ricostruita a FINE step
+> (il binning di metà step è stantio per le correzioni PBD/wall e il drain),
+> quindi le query tra uno step e l'altro sono esatte, non approssimate; il
+> fallback brute force resta per le chiamate fuori sequenza (guardia
+> `grid_stale`/`grid_total`, non più `cstart[nc]==count`). `test_query` PASS
+> contro brute force, inclusi i due pattern d'uso (handle, kill decrescente).
 
 **Problema.** Torrette e AoE devono chiedere "chi c'è qui intorno?" senza
 strutture dati proprie e senza O(N).

@@ -35,7 +35,61 @@ int main(void) {
     printf("peak speed after blast: %.1f m/s | settled max: %.1f m/s | bad: %d\n",
            peak, settled, bad);
     int ok = bad == 0 && peak > 8.0f && settled < 6.0f;
-    printf(ok ? "PASS\n" : "FAIL\n");
     simp_destroy(s);
+
+    /* --- ballistic flight (M3.2): fresh sim, no goal so nobody drains ---- */
+    s = simp_create(100, 100, 0.5f, 5000);
+    simp_terrain_commit(s);
+    for (int r = 0; r < 30; r++) for (int c = 0; c < 30; c++)
+        simp_spawn(s, 15.0f + c * 0.7f, 15.0f + r * 0.6f);
+    int n0 = simp_count(s);
+    for (int i = 0; i < 60; i++) simp_step(s, 1.0f/60.0f);
+
+    simp_apply_impulse_ex(s, 25.0f, 24.0f, 8.0f, 15.0f, 0.5f);
+    const uint8_t *fl = simp_flags_arr(s);
+    int nfly = 0;
+    SimPHandle track = SIMP_HANDLE_INVALID;
+    float track_vx = 0.0f;
+    for (int k = 0; k < simp_count(s); k++) {
+        if (!(fl[k] & SIMP_FLYING)) continue;
+        nfly++;
+        if (track == SIMP_HANDLE_INVALID) {
+            track = simp_handle_of(s, k);
+            track_vx = simp_vx(s)[k];
+        }
+    }
+
+    /* vz peaks at 7.5 m/s -> airborne ~1.53 s = 92 steps; allow 120 */
+    int landed_total = 0, last_fly_step = -1, bad_fly = 0;
+    float vx_drift = 0.0f;
+    for (int t = 0; t < 120; t++) {
+        simp_step(s, 1.0f/60.0f);
+        landed_total += simp_landed_count(s);
+        int ti = simp_index_of(s, track);
+        if (ti >= 0 && (fl[ti] & SIMP_FLYING)) {
+            float dv = fabsf(simp_vx(s)[ti] - track_vx);
+            if (dv > vx_drift) vx_drift = dv;
+        }
+        for (int k = 0; k < simp_count(s); k++) {
+            if (fl[k] & SIMP_FLYING) last_fly_step = t;
+            if (!isfinite(simp_px(s)[k]) || !isfinite(simp_z_arr(s)[k])) bad_fly++;
+        }
+    }
+    int still_fly = 0;
+    for (int k = 0; k < simp_count(s); k++) {
+        if (fl[k] & SIMP_FLYING) still_fly++;
+        if (simp_z_arr(s)[k] != 0.0f) bad_fly++;
+    }
+    printf("flight: launched=%d landed=%d last airborne step=%d "
+           "vx drift=%.4f still flying=%d bad=%d count %d->%d\n",
+           nfly, landed_total, last_fly_step, (double)vx_drift, still_fly,
+           bad_fly, n0, simp_count(s));
+    int ok_fly = nfly > 20 && landed_total == nfly && still_fly == 0 &&
+                 last_fly_step <= 100 && vx_drift == 0.0f && bad_fly == 0 &&
+                 simp_count(s) == n0;
+    simp_destroy(s);
+
+    ok = ok && ok_fly;
+    printf(ok ? "PASS\n" : "FAIL\n");
     return ok ? 0 : 1;
 }

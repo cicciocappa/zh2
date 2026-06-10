@@ -19,7 +19,12 @@
  *     4              brush = ERASE (same as RMB)
  *     5              brush = PACK (one-shot: places dormant agents under the
  *                    brush; drag/repaint to pack the area denser)
+ *     6              brush = KILL (kills agents under the brush; ~30% leave
+ *                    a corpse: a static obstacle the crowd shoves around)
  *     W              wake all sleepers ("sunrise")
+ *     7 / U          explosion up_ratio down / up (vertical kick: zombies
+ *                    above ~1 m/s vz take off, fly over walls above 2 m,
+ *                    and land with most horizontal momentum gone)
  *     [ / ]          brush size down / up
  *     - / =          pbd_iters down / up        (crowd stiffness)
  *     , / .          noise_ang down / up        (steering noise)
@@ -53,8 +58,8 @@
 #define SPAWN_RATE      1.5f             /* agents/sec per spawner cell */
 #define DT              (1.0f / 60.0f)
 
-enum { B_WALL, B_SPAWN, B_GOAL, B_ERASE, B_PACK };
-static const char *BRUSH_NAME[] = { "WALL", "SPAWN", "GOAL", "ERASE", "PACK" };
+enum { B_WALL, B_SPAWN, B_GOAL, B_ERASE, B_PACK, B_KILL };
+static const char *BRUSH_NAME[] = { "WALL", "SPAWN", "GOAL", "ERASE", "PACK", "KILL" };
 
 /* Spawners live in the sandbox, not in the core: the core only knows walls
  * and goals. spawn_acc accumulates fractional spawns per cell. */
@@ -93,6 +98,29 @@ static void terrain_render(const SimP *s, Uint32 *px) {
 static uint8_t goal_flag[GW * GH];
 
 static void paint(SimP *s, int cx, int cy, int brush, int size) {
+    if (brush == B_KILL) {
+        /* per-event, not per-cell: circle query then kill in DESCENDING
+         * index order (indices die on each kill); ~30% leave a corpse */
+        static int kbuf[8192];
+        float wx = ((float)cx + 0.5f) * CELL, wy = ((float)cy + 0.5f) * CELL;
+        int n = simp_query_circle(s, wx, wy, ((float)size + 0.5f) * CELL,
+                                  kbuf, 8192, 0);
+        const float *px = simp_px(s), *py = simp_py(s);
+        const float *rad = simp_radius_arr(s);
+        /* query returns grid order: sort ascending, then walk backward */
+        for (int a = 1; a < n; a++) {
+            int v = kbuf[a], b = a - 1;
+            while (b >= 0 && kbuf[b] > v) { kbuf[b + 1] = kbuf[b]; b--; }
+            kbuf[b + 1] = v;
+        }
+        for (int k = n - 1; k >= 0; k--) {
+            int i = kbuf[k];
+            if (rand() % 100 < 30)
+                simp_corpse_add(s, px[i], py[i], rad[i] * 0.95f, 12.0f);
+            simp_kill(s, i);
+        }
+        return;
+    }
     for (int dy = -size; dy <= size; dy++)
     for (int dx = -size; dx <= size; dx++) {
         int x = cx + dx, y = cy + dy;
@@ -161,8 +189,9 @@ static void spawners_step(SimP *s, float dt) {
     }
 }
 
-static void boom(SimP *s, float x, float y, float radius, float strength) {
-    simp_apply_impulse(s, x, y, radius, strength);
+static void boom(SimP *s, float x, float y, float radius, float strength,
+                 float up_ratio) {
+    simp_apply_impulse_ex(s, x, y, radius, strength, up_ratio);
     /* the blast is heard beyond where it is felt: wake a wider circle */
     simp_wake_radius(s, x, y, radius * 2.0f);
 }
@@ -195,7 +224,7 @@ int main(void) {
     int   paused = 0, running = 1, spawning = 1;
     int   speed_tint = 1, show_flow = 0;
     int   painting = 0, erasing = 0;
-    float boom_radius = 6.0f, boom_strength = 10.0f;
+    float boom_radius = 6.0f, boom_strength = 10.0f, boom_up = 0.5f;
     long  drained_total = 0;
     double step_ms = 0.0;
 
@@ -207,7 +236,7 @@ int main(void) {
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 if (e.button.button == SDL_BUTTON_MIDDLE) {
                     boom(s, e.button.x / PPM, e.button.y / PPM,
-                         boom_radius, boom_strength);
+                         boom_radius, boom_strength, boom_up);
                     break;
                 }
                 if (e.button.button == SDL_BUTTON_LEFT)  painting = 1;
@@ -235,7 +264,10 @@ int main(void) {
                 case SDLK_3: brush = B_GOAL;  break;
                 case SDLK_4: brush = B_ERASE; break;
                 case SDLK_5: brush = B_PACK;  break;
+                case SDLK_6: brush = B_KILL;  break;
                 case SDLK_W: simp_wake_all(s); break;
+                case SDLK_7: boom_up = fmaxf(0.0f, boom_up - 0.1f); break;
+                case SDLK_U: boom_up = fminf(2.0f, boom_up + 0.1f); break;
                 case SDLK_LEFTBRACKET:  if (size > 0)  size--; break;
                 case SDLK_RIGHTBRACKET: if (size < 20) size++; break;
                 case SDLK_MINUS:
@@ -254,7 +286,8 @@ int main(void) {
                 case SDLK_I: boom_strength = fminf(40.0f, boom_strength + 2.0f); break;
                 case SDLK_E: {
                     float mx, my; SDL_GetMouseState(&mx, &my);
-                    boom(s, mx / PPM, my / PPM, boom_radius, boom_strength);
+                    boom(s, mx / PPM, my / PPM, boom_radius, boom_strength,
+                         boom_up);
                     break;
                 }
                 case SDLK_SPACE: paused = !paused; break;
@@ -313,29 +346,48 @@ int main(void) {
             }
         }
 
-        /* agents: batched rects sized by radius. Pass 0 = dormant (always
-         * its own color), pass 1 = awake slow (or all awake when tint is
-         * off), pass 2 = awake fast (speed tint only). */
+        /* corpses: dark static discs under everything else */
+        {
+            int nc = simp_corpse_count(s);
+            const float *cpx = simp_corpse_px(s), *cpy = simp_corpse_py(s);
+            const float *crad = simp_corpse_rad(s);
+            for (int j = 0; j < nc; j++) {
+                float rp = crad[j] * PPM;
+                rects[j].x = cpx[j] * PPM - rp;
+                rects[j].y = cpy[j] * PPM - rp;
+                rects[j].w = 2 * rp; rects[j].h = 2 * rp;
+            }
+            SDL_SetRenderDrawColor(ren, 70, 60, 58, 255);
+            SDL_RenderFillRects(ren, rects, nc);
+        }
+
+        /* agents: batched rects sized by radius (flying ones scale up with
+         * altitude). Pass 0 = dormant (always its own color), pass 1 =
+         * awake slow (or all awake when tint is off), pass 2 = awake fast
+         * (speed tint only). */
         int n_dormant = 0;
         {
             const float *apx = simp_px(s), *apy = simp_py(s);
             const float *avx = simp_vx(s), *avy = simp_vy(s);
             const float *ar  = simp_radius_arr(s);
-            const uint8_t *dor = simp_dormant_arr(s);
+            const float *az  = simp_z_arr(s);
+            const uint8_t *afl = simp_flags_arr(s);
             int n = simp_count(s);
             int passes = speed_tint ? 3 : 2;
             for (int pass = 0; pass < passes; pass++) {
                 int m = 0;
                 for (int i = 0; i < n; i++) {
                     int p;
-                    if (dor[i]) p = 0;
+                    if (afl[i] & SIMP_DORMANT) p = 0;
                     else if (!speed_tint) p = 1;
+                    else if (afl[i] & SIMP_FLYING) p = 2;
                     else {
                         float sp = sqrtf(avx[i] * avx[i] + avy[i] * avy[i]);
                         p = sp > 1.6f ? 2 : 1;
                     }
                     if (p != pass) continue;
                     float rp = ar[i] * PPM;
+                    if (afl[i] & SIMP_FLYING) rp *= 1.0f + 0.12f * az[i];
                     rects[m].x = apx[i] * PPM - rp;
                     rects[m].y = apy[i] * PPM - rp;
                     rects[m].w = 2 * rp; rects[m].h = 2 * rp;
@@ -362,12 +414,13 @@ int main(void) {
         SimPParams *P = simp_params(s);
         char title[256];
         snprintf(title, sizeof title,
-                 "Horde particles | brush:%s sz:%d | n:%d sleep:%d drained:%ld | "
-                 "pbd:%d noise:%.2f vmax:%.1f | boom r:%.0f s:%.0f | "
-                 "%.2f ms %s%s",
-                 BRUSH_NAME[brush], size, simp_count(s), n_dormant, drained_total,
+                 "Horde particles | brush:%s sz:%d | n:%d sleep:%d corpses:%d "
+                 "drained:%ld | pbd:%d noise:%.2f vmax:%.1f | "
+                 "boom r:%.0f s:%.0f up:%.1f | %.2f ms %s%s",
+                 BRUSH_NAME[brush], size, simp_count(s), n_dormant,
+                 simp_corpse_count(s), drained_total,
                  P->pbd_iters, (double)P->noise_ang, (double)P->v_max,
-                 (double)boom_radius, (double)boom_strength,
+                 (double)boom_radius, (double)boom_strength, (double)boom_up,
                  step_ms, paused ? "PAUSED" : "running",
                  spawning ? "" : " SPAWN-OFF");
         SDL_SetWindowTitle(win, title);

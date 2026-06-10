@@ -68,16 +68,18 @@ int main(void) {
      * marches off unobstructed and drains. (Waking the far side also works
      * but is slow: the marchers have to shove through the sleeping pack.) */
     simp_wake_radius(s, x0 + side - 2.0f, y0 + 0.5f * side, 4.0f);
-    const uint8_t *dor = simp_dormant_arr(s);
+    const uint8_t *dor = simp_flags_arr(s);
     int sleepers = 0;
-    for (int i = 0; i < simp_count(s); i++) sleepers += dor[i];
+    for (int i = 0; i < simp_count(s); i++)
+        sleepers += (dor[i] & SIMP_DORMANT) ? 1 : 0;
     int woken = n0 - sleepers;
     printf("wake_radius: %d woken, %d still dormant\n", woken, sleepers);
     int ok_subset = (woken > 0) && (sleepers > 0);
 
     for (int t = 0; t < 1800; t++) drained += simp_step(s, DT);
     int sleepers2 = 0;
-    for (int i = 0; i < simp_count(s); i++) sleepers2 += dor[i];
+    for (int i = 0; i < simp_count(s); i++)
+        sleepers2 += (dor[i] & SIMP_DORMANT) ? 1 : 0;
     printf("1800 steps later: drained=%d, dormant=%d, alive=%d\n",
            drained, sleepers2, simp_count(s));
     int ok_march = (drained > woken / 2) && (sleepers2 == sleepers);

@@ -31,12 +31,31 @@
  *   - noise_ang  : per-step random steering perturbation (radians).
  *   - v_jitter   : per-agent speed spread (fraction of v_max).
  *
- * BEHAVIOUR STATE — each agent is either awake (follows the flow field) or
- * dormant (steers toward zero velocity: stands still, but still collides,
- * absorbs pushes and reacts to impulses). Dormant agents are not drained by
- * goal cells. Spawn them with simp_spawn_dormant (sleeping packs placed on
- * the map) and wake them with simp_wake_radius (explosions, noise) or
- * simp_wake_all (scripted events: sunrise, alarms).
+ * BEHAVIOUR STATE — per-agent flag byte (simp_flags_arr):
+ *   - SIMP_DORMANT: steers toward zero velocity: stands still, but still
+ *     collides, absorbs pushes and reacts to impulses; not drained by goal
+ *     cells. Spawn with simp_spawn_dormant (sleeping packs placed on the
+ *     map), wake with simp_wake_radius (explosions, noise) or simp_wake_all
+ *     (scripted events: sunrise, alarms).
+ *   - SIMP_FLYING: ballistic flight on a fake third axis (z, vz). While
+ *     airborne: no steering, no damping, no collisions (excluded from the
+ *     collision grid), walls ignored above wall_h. Gravity pulls z back to
+ *     0; on landing the flag clears, horizontal momentum is mostly killed
+ *     (landing_damp) and the agent is reported in the landed buffer (as
+ *     handles — fall damage is gameplay's job). Launch via
+ *     simp_apply_impulse_ex with up_ratio > 0. Flying agents can leave the
+ *     world bounds temporarily; they are clamped back on landing. Goal
+ *     cells DO drain overflying agents (simplification, revisit if needed).
+ *
+ * CORPSES — passive infinite-mass discs in the same collision grid (the
+ * living shove around them: emergent barricades at chokepoints). Fixed-size
+ * pool, TTL-based; when full, the closest-to-expiry corpse is replaced, so
+ * capacity is a cost guarantee, not an error. Corpses block simp_free_at
+ * (no spawning into a pile) but are invisible to queries and impulses, and
+ * never marked in the nav grid: the flow detour around piles emerges from
+ * PBD alone. Internally they ride along as "ghost" entries appended past
+ * the live agents before binning, with inverse mass 0 — the PBD kernel
+ * needs no special cases.
  *
  * Data layout is SoA; position/velocity arrays are public so the renderer
  * can upload them directly as instance buffers. Agents are removed with
@@ -66,6 +85,8 @@ typedef struct {
     float damping;    /* velocity damping per second [0..1]       default 0.10 */
     float v_clamp;    /* hard cap on recovered speed (m/s)        default 20.0 */
     int   pbd_iters;  /* PBD relaxation iterations per step       default 3    */
+    float landing_damp; /* horizontal speed kept on landing [0..1] default 0.30 */
+    float wall_h;     /* flight altitude that clears walls (m)    default 2.0  */
 } SimPParams;
 
 typedef struct SimP SimP;
@@ -126,11 +147,14 @@ int        simp_index_of(const SimP *s, SimPHandle h);
 
 /* ---- spatial queries (gameplay: turrets, AoE) ----------------------------- */
 
+#define SIMP_QUERY_FLYING 0x1u   /* include airborne agents (forces brute force) */
+
 /* Fill out[] with the indices of agents whose center lies within r of (x,y);
- * returns how many were written (saturating at max_out). flags is reserved
- * (pass 0). Walks the collision grid (cost ~ queried area) when it is
- * current — i.e. when called after simp_step, before any spawn/kill — and
- * falls back to brute force otherwise.
+ * returns how many were written (saturating at max_out). Flying agents are
+ * excluded unless SIMP_QUERY_FLYING is set; corpses are never returned.
+ * Walks the collision grid (cost ~ queried area) when it is current — i.e.
+ * when called after simp_step, before any spawn/kill/corpse_add — and falls
+ * back to brute force otherwise.
  * USAGE TRAP: returned indices die on the first kill. Either convert them
  * to handles before applying game logic, or kill strictly in decreasing
  * index order (swap-and-pop only moves indices greater than the killed one). */
@@ -140,9 +164,42 @@ int simp_query_circle(const SimP *s, float x, float y, float r,
  * the collision grid from the center outward; same staleness rules.        */
 int simp_query_nearest(const SimP *s, float x, float y, float r_max);
 
+/* ---- behaviour flags ------------------------------------------------------ */
+
+#define SIMP_DORMANT 0x1u    /* stands still until woken                       */
+#define SIMP_FLYING  0x2u    /* airborne: no steering, no collisions           */
+
+const uint8_t *simp_flags_arr(const SimP *s);
+const float   *simp_z_arr(const SimP *s);   /* altitude (m), 0 = on the ground */
+
+/* Agents that touched down during the last step, reported as handles (safe
+ * across the drain that may follow within the same step). For fall damage. */
+int               simp_landed_count(const SimP *s);
+const SimPHandle *simp_landed(const SimP *s);
+
+/* ---- impulses ------------------------------------------------------------- */
+
 /* Radial impulse (explosion): dv = strength * (1 - r/radius) away from
  * (x,y), applied to every agent within radius. */
 void  simp_apply_impulse(SimP *s, float x, float y, float radius, float strength);
+/* Same, plus a vertical kick: vz += strength * falloff * up_ratio. Agents
+ * whose vz exceeds ~1 m/s take off (SIMP_FLYING). Corpses are unaffected.
+ * Note: the gridded fast path skips agents already airborne (they are not
+ * binned); brute-force fallback boosts them too. */
+void  simp_apply_impulse_ex(SimP *s, float x, float y, float radius,
+                            float strength, float up_ratio);
+
+/* ---- corpses (passive obstacles) ------------------------------------------ */
+
+/* Add a static corpse disc (typical: at a kill site, radius ~0.9x the dead
+ * agent, ttl a few seconds). Pool is fixed-size; when full the closest-to-
+ * expiry corpse is replaced. Returns the pool index (not stable, no handles:
+ * gameplay should not point at corpses). */
+int   simp_corpse_add(SimP *s, float x, float y, float radius, float ttl);
+int   simp_corpse_count(const SimP *s);
+const float *simp_corpse_px(const SimP *s);
+const float *simp_corpse_py(const SimP *s);
+const float *simp_corpse_rad(const SimP *s);
 
 /* ---- stepping ------------------------------------------------------------ */
 
@@ -157,7 +214,6 @@ const float *simp_py(const SimP *s);
 const float *simp_vx(const SimP *s);
 const float *simp_vy(const SimP *s);
 const float *simp_radius_arr(const SimP *s);
-const uint8_t *simp_dormant_arr(const SimP *s); /* 1 = dormant, 0 = awake */
 
 /* Flow-field direction at world point (bilinear, normalized; 0,0 in walls). */
 void  simp_sample_flow(const SimP *s, float x, float y, float *dx, float *dy);

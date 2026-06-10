@@ -42,10 +42,23 @@ Il progetto ha DUE modelli di simulazione complementari:
      schiacciamenti) producono velocità balistiche (osservato: 160 m/s).
    - **Impulso radiale** (`simp_apply_impulse`): esplosioni come dv con falloff
      lineare; usa la griglia se aggiornata, altrimenti brute force.
-   - **Stato comportamentale**: per-agente `dormant` (sveglio segue il flow,
-     dormiente frena verso velocità zero ma collide e assorbe spinte; non viene
-     drenato dai goal). `simp_spawn_dormant` per i branchi piazzati sulla mappa,
-     `simp_wake_radius` / `simp_wake_all` per i risvegli (esplosioni, alba).
+   - **Stato comportamentale** (`simp_flags_arr`, byte di flag per agente):
+     `SIMP_DORMANT` = frena verso velocità zero ma collide e assorbe spinte,
+     non drenato dai goal (`simp_spawn_dormant`, `simp_wake_radius/all`);
+     `SIMP_FLYING` = volo balistico su z fittizia (M3.2): niente steering né
+     collisioni (escluso dalla griglia), sorvola i muri sopra `wall_h` (2 m),
+     gravità 9.81, all'atterraggio `landing_damp` (0.3) ammazza il momento
+     orizzontale (via bend di `qx`: il recovery di velocità lo rispetti) e
+     l'agente finisce nel buffer `simp_landed` come HANDLE (drain-safe), per
+     il danno da caduta. Lancio con `simp_apply_impulse_ex(..., up_ratio)`.
+     Il drain vale anche in volo (semplificazione annotata).
+   - **Cadaveri** (M3.3): dischi statici a massa infinita nella stessa griglia
+     (`simp_corpse_add`, pool fisso 4096, TTL; pieno = rimpiazza il più vicino
+     a scadenza). Implementati come "ghost" appesi in coda agli agenti negli
+     array SoA prima del binning, con `invm = 0`: il kernel PBD non ha casi
+     speciali (solo guardia coppia ghost-ghost). Bloccano `simp_free_at`,
+     invisibili a query e impulsi, MAI marcati nel nav grid: la deviazione
+     del flusso attorno ai mucchi emerge dal solo PBD (barricate ai varchi).
    - **Spawn senza burst**: `simp_free_at(x,y,r)` dice se un disco ci sta senza
      sovrapporsi ad agenti o muri (griglia se attuale, altrimenti brute force).
      Emettere solo dove è libero elimina l'espulsione PBD allo spawn e fa
@@ -70,7 +83,15 @@ Il progetto ha DUE modelli di simulazione complementari:
   cunei granulari contro il muro, getti a ventaglio oltre i varchi, verificato
   visivamente sui frame PPM). ~3.5 ms/step single-thread.
 - `test_impulse`: esplosione in folla impaccata → picco 14 m/s, rientro sotto
-  4 m/s in pochi secondi, zero NaN.
+  4 m/s in pochi secondi, zero NaN. Fase volo (M3.2): 356 lanciati con
+  `up_ratio` 0.5 → tutti atterrati entro il tempo balistico (step 87 ≈
+  2·vz/g), vx ESATTAMENTE costante in volo, `landed` = lanciati, conteggio
+  conservato.
+- `test_corpses` (M3.3): corridoio 4 m, colonna di 200; aperto drena 145 in
+  45 s, sigillato da 9 cadaveri drena 0; cadaveri immobili al bit sotto piena
+  pressione della folla, penetrazione residua peggiore 1.8 cm; il TTL svuota
+  il pool puntuale. La barricata parziale emergente (pennello KILL) si
+  verifica a occhio nel sandbox.
 - `test_handles`: 1000 spawn + kill casuali + 3 round di riuso slot contro
   shadow map brute force: ogni handle vivo risolve alla posizione giusta, ogni
   handle morto dà -1 anche dopo il riciclo dello slot.
@@ -78,7 +99,8 @@ Il progetto ha DUE modelli di simulazione complementari:
   O(N) (zero mismatch), saturazione del buffer, scenario torretta
   (nearest→handle→kill, esercita anche il fallback a griglia stantia) e AoE
   con kill per indice decrescente. Il secondo counting sort di fine step costa
-  ~0.4 ms a 13k (3.41→3.85 ms/step in `test_particles`).
+  ~0.4 ms a 13k (3.41→3.85 ms/step in `test_particles`; 4.09 dopo M3.2+3.3,
+  i flag nei loop caldi — primo candidato se M4 chiede margine).
 - `test_dormant`: branco piazzato via `simp_free_at` (zero coppie sovrapposte),
   fermo immobile per 300 step con goal attivo, `wake_radius` sveglia solo il
   sottoinsieme (che marcia e drena), `wake_all` svuota la mappa. Nota: svegliare
@@ -94,13 +116,17 @@ Il progetto ha DUE modelli di simulazione complementari:
 - `test_impulse.c` — smoke test esplosione (picco + assestamento).
 - `test_dormant.c` — verifica stato dormiente, `simp_free_at`, risvegli.
 - `test_handles.c` / `test_query.c` — verifica handle (M3.1) e query (M3.4).
+- `test_corpses.c` — verifica cadaveri-ostacolo (M3.3); il volo (M3.2) è
+  dentro `test_impulse.c`.
 - `M3_DESIGN.md` — design tecnico di M3 (handle, volo, cadaveri, query, tipi,
   densità→costo): API, dettagli, piani di verifica.
 - `sandbox_particles.c` — sandbox interattivo SDL3 (pennelli muro/spawner/goal/
-  pack, RMB = esplosione che sveglia anche i dormienti, W = sveglia tutti,
-  manopole live, pausa/step, overlay flow field). Gli spawner sono stato del
-  sandbox, non del core; il pennello PACK piazza dormienti one-shot (ridipingere
-  riempie i buchi, idempotente). Controlli nell'header del file.
+  pack/kill, RMB = esplosione che sveglia anche i dormienti e lancia in aria
+  (manopola `up_ratio` su 7/U), W = sveglia tutti, manopole live, pausa/step,
+  overlay flow field). Gli spawner sono stato del sandbox, non del core; il
+  pennello PACK piazza dormienti one-shot (ridipingere riempie i buchi,
+  idempotente); il pennello KILL uccide sotto il pennello e il ~30% lascia un
+  cadavere (barricate emergenti). Controlli nell'header del file.
 - `Makefile` — `make test` (entrambi, no deps) · `make sandbox` (SDL3) ·
   `make clean`. SDL3 compilato dai sorgenti sta in `~/.local`: il Makefile
   imposta `PKG_CONFIG_PATH` da solo, e `sdl3.pc` porta già l'rpath giusto.
