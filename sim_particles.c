@@ -56,6 +56,13 @@ struct SimP {
     uint32_t *seed;        /* per-agent RNG state */
     uint8_t *dormant;      /* 1 = stands still until woken */
 
+    /* slot map: stable handles over swap-and-pop (see header) */
+    int      *slot_to_index;  /* cap : slot -> dense index, -1 if free   */
+    int      *index_to_slot;  /* cap : dense index -> slot               */
+    uint16_t *slot_gen;       /* cap : bumped on kill, 12 bits used      */
+    int      *slot_free;      /* cap : LIFO stack of free slots          */
+    int       slot_free_top;
+
     /* collision grid (uniform, rebuilt each step via counting sort) */
     int   cgw, cgh;
     float ccell, inv_ccell;
@@ -310,6 +317,17 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->seed  = (uint32_t *)malloc((size_t)max_agents * sizeof(uint32_t));
     s->dormant = (uint8_t *)calloc((size_t)max_agents, 1);
 
+    /* slot map: all slots free, prefilled so the first pops give 0,1,2... */
+    s->slot_to_index = (int *)malloc((size_t)max_agents * sizeof(int));
+    s->index_to_slot = (int *)malloc((size_t)max_agents * sizeof(int));
+    s->slot_gen      = (uint16_t *)calloc((size_t)max_agents, sizeof(uint16_t));
+    s->slot_free     = (int *)malloc((size_t)max_agents * sizeof(int));
+    for (int k = 0; k < max_agents; k++) {
+        s->slot_to_index[k] = -1;
+        s->slot_free[k] = max_agents - 1 - k;
+    }
+    s->slot_free_top = max_agents;
+
     /* collision grid: cell side = 2 * max plausible radius */
     float rmax = s->params.radius * (1.0f + s->params.r_jitter);
     s->ccell = 2.0f * rmax * 1.05f;
@@ -335,6 +353,8 @@ void simp_destroy(SimP *s) {
     free(s->vx); free(s->vy);
     free(s->rad); free(s->vpref); free(s->invm); free(s->seed);
     free(s->dormant);
+    free(s->slot_to_index); free(s->index_to_slot);
+    free(s->slot_gen); free(s->slot_free);
     free(s->ccount); free(s->cstart); free(s->corder);
     free(s);
 }
@@ -378,6 +398,10 @@ int simp_spawn(SimP *s, float x, float y) {
     s->vpref[i] = s->params.v_max * vj;
     s->invm[i]  = 1.0f / (s->rad[i] * s->rad[i]);   /* mass ~ r^2 */
     s->dormant[i] = 0;
+    /* count < cap guarantees the free stack is non-empty */
+    int slot = s->slot_free[--s->slot_free_top];
+    s->slot_to_index[slot] = i;
+    s->index_to_slot[i] = slot;
     return i;
 }
 
@@ -388,6 +412,10 @@ int simp_spawn_dormant(SimP *s, float x, float y) {
 }
 
 void simp_kill(SimP *s, int i) {
+    int slot = s->index_to_slot[i];
+    s->slot_gen[slot]++;                       /* wrap is fine (12 bits used) */
+    s->slot_to_index[slot] = -1;
+    s->slot_free[s->slot_free_top++] = slot;
     int last = --s->count;
     if (i == last) return;
     s->px[i] = s->px[last]; s->py[i] = s->py[last];
@@ -396,6 +424,9 @@ void simp_kill(SimP *s, int i) {
     s->rad[i] = s->rad[last]; s->vpref[i] = s->vpref[last];
     s->invm[i] = s->invm[last]; s->seed[i] = s->seed[last];
     s->dormant[i] = s->dormant[last];
+    int ls = s->index_to_slot[last];
+    s->slot_to_index[ls] = i;
+    s->index_to_slot[i] = ls;
 }
 
 int simp_count(const SimP *s) { return s->count; }
@@ -447,6 +478,112 @@ void simp_wake_radius(SimP *s, float x, float y, float radius) {
 
 void simp_wake_all(SimP *s) {
     memset(s->dormant, 0, (size_t)s->count);
+}
+
+/* ------------------------------------------------------------- handles */
+
+SimPHandle simp_handle_of(const SimP *s, int index) {
+    if (index < 0 || index >= s->count) return SIMP_HANDLE_INVALID;
+    int slot = s->index_to_slot[index];
+    return ((uint32_t)(s->slot_gen[slot] & 0xFFFu) << 20) | (uint32_t)(slot + 1);
+}
+
+int simp_slot_of(const SimP *s, int index) {
+    if (index < 0 || index >= s->count) return -1;
+    return s->index_to_slot[index];
+}
+
+int simp_index_of(const SimP *s, SimPHandle h) {
+    if (h == SIMP_HANDLE_INVALID) return -1;
+    int slot = (int)(h & 0xFFFFFu) - 1;
+    if (slot < 0 || slot >= s->cap) return -1;
+    if ((h >> 20) != (uint32_t)(s->slot_gen[slot] & 0xFFFu)) return -1;
+    return s->slot_to_index[slot];
+}
+
+/* ------------------------------------------------------- spatial queries */
+
+/* The collision grid is coherent with current positions only between the
+ * end of a step and the next spawn/kill (same guard as simp_apply_impulse).
+ * Cell positions can additionally drift within the step that built them,
+ * but queries are meant to run after the step, where they are exact. */
+static inline bool grid_current(const SimP *s) {
+    return s->cstart[s->cgw * s->cgh] == s->count;
+}
+
+int simp_query_circle(const SimP *s, float x, float y, float r,
+                      int *out, int max_out, uint32_t flags) {
+    (void)flags;                                /* reserved (flying, ...) */
+    const float r2 = r * r;
+    int n = 0;
+    if (grid_current(s)) {
+        int x0 = clampi((int)((x - r) * s->inv_ccell), 0, s->cgw - 1);
+        int x1 = clampi((int)((x + r) * s->inv_ccell), 0, s->cgw - 1);
+        int y0 = clampi((int)((y - r) * s->inv_ccell), 0, s->cgh - 1);
+        int y1 = clampi((int)((y + r) * s->inv_ccell), 0, s->cgh - 1);
+        for (int cy = y0; cy <= y1; cy++) for (int cx = x0; cx <= x1; cx++) {
+            int c = cy * s->cgw + cx;
+            for (int k = s->cstart[c]; k < s->cstart[c + 1]; k++) {
+                int i = s->corder[k];
+                float dx = s->px[i] - x, dy = s->py[i] - y;
+                if (dx * dx + dy * dy > r2) continue;
+                if (n == max_out) return n;
+                out[n++] = i;
+            }
+        }
+    } else {
+        for (int i = 0; i < s->count; i++) {
+            float dx = s->px[i] - x, dy = s->py[i] - y;
+            if (dx * dx + dy * dy > r2) continue;
+            if (n == max_out) return n;
+            out[n++] = i;
+        }
+    }
+    return n;
+}
+
+int simp_query_nearest(const SimP *s, float x, float y, float r_max) {
+    int best = -1;
+    float best_d2 = r_max * r_max;
+    if (!grid_current(s)) {
+        for (int i = 0; i < s->count; i++) {
+            float dx = s->px[i] - x, dy = s->py[i] - y;
+            float d2 = dx * dx + dy * dy;
+            if (d2 <= best_d2) { best_d2 = d2; best = i; }
+        }
+        return best;
+    }
+    /* ring scan: cells at Chebyshev distance `ring` from the center cell.
+     * An agent in ring m is at least (m-1)*ccell away from (x,y), so we can
+     * stop as soon as that lower bound exceeds the best hit. */
+    int ccx = clampi((int)(x * s->inv_ccell), 0, s->cgw - 1);
+    int ccy = clampi((int)(y * s->inv_ccell), 0, s->cgh - 1);
+    int max_ring = (int)(r_max * s->inv_ccell) + 1;
+    for (int ring = 0; ring <= max_ring; ring++) {
+        if (best >= 0) {
+            float lb = (float)(ring - 1) * s->ccell;
+            if (lb > 0.0f && lb * lb > best_d2) break;
+        }
+        int x0 = ccx - ring, x1 = ccx + ring;
+        int y0 = ccy - ring, y1 = ccy + ring;
+        for (int cy = y0; cy <= y1; cy++) {
+            if (cy < 0 || cy >= s->cgh) continue;
+            /* full rows on top/bottom of the ring, only the two side
+             * columns in between (visit each ring cell exactly once) */
+            int step = (cy == y0 || cy == y1) ? 1 : (x1 - x0 > 0 ? x1 - x0 : 1);
+            for (int cx = x0; cx <= x1; cx += step) {
+                if (cx < 0 || cx >= s->cgw) continue;
+                int c = cy * s->cgw + cx;
+                for (int k = s->cstart[c]; k < s->cstart[c + 1]; k++) {
+                    int i = s->corder[k];
+                    float dx = s->px[i] - x, dy = s->py[i] - y;
+                    float d2 = dx * dx + dy * dy;
+                    if (d2 <= best_d2) { best_d2 = d2; best = i; }
+                }
+            }
+        }
+    }
+    return best;
 }
 
 void simp_apply_impulse(SimP *s, float x, float y, float radius, float strength) {
@@ -656,6 +793,12 @@ int simp_step(SimP *s, float dt) {
         int cy = clampi((int)(s->py[i] * s->inv_cell), 0, s->gh - 1);
         if (s->goal[cy * s->gw + cx]) { simp_kill(s, i); drained++; }
     }
+
+    /* 6) rebuild the grid on final positions: the mid-step grid is stale by
+     * the PBD/wall corrections (and by the drain), so spatial queries and
+     * impulses between steps would miss agents that drifted across a cell
+     * boundary. A counting sort is two passes over the agents: cheap. */
+    rebuild_grid(s);
     return drained;
 }
 

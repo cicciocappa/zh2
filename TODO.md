@@ -18,8 +18,9 @@ poi scala, poi gioco.
 
 ## M3 — Fisica di gioco
 
-- [ ] **Layer di handle** (id stabili ↔ indici swap-and-pop) — prerequisito per
+- [x] **Layer di handle** (id stabili ↔ indici swap-and-pop) — prerequisito per
       targeting e effetti. Generation counter per evitare handle pendenti.
+      FATTO: slot map per design M3.1, `test_handles` PASS.
 - [ ] **z fittizia per il volo balistico**: per-agente `z, vz`; durante il volo
       (z > 0) niente collisioni né steering, gravità semplice; all'atterraggio
       rientro nella simulazione. Impulsi forti assegnano anche vz.
@@ -27,9 +28,10 @@ poi scala, poi gioco.
       configurabile → ostacolo passivo temporaneo (disco statico nella griglia
       di collisione, TTL qualche secondo). Obiettivo: barricate di corpi ai
       colli di bottiglia che deviano il flusso.
-- [ ] **Danno ad area / query spaziali di gameplay** sulla stessa griglia di
-      collisione: `simp_query_circle(x, y, r, callback)` o riempimento di un
-      buffer di indici.
+- [x] **Danno ad area / query spaziali di gameplay** sulla stessa griglia di
+      collisione: `simp_query_circle` (buffer di indici) + `simp_query_nearest`.
+      FATTO per design M3.4 (+ rebuild della griglia a fine step per query
+      esatte), `test_query` PASS contro brute force.
 - [ ] **Tipi di nemico** come soli parametri: tank (massa ×10, raggio ×1.5),
       runner (v_max ×2), screamer (modifica locale temporanea del costo Dijkstra).
 - [x] **Stato dormiente + spawn senza burst** (`dormant`, `simp_free_at`,

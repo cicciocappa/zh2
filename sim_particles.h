@@ -107,6 +107,39 @@ bool  simp_free_at(const SimP *s, float x, float y, float r);
 void  simp_wake_radius(SimP *s, float x, float y, float radius);
 void  simp_wake_all(SimP *s);
 
+/* ---- handles (stable references across swap-and-pop) --------------------- */
+
+/* Dense indices are invalidated by every kill; handles survive. Slot map
+ * with generation counter: bits 31..20 = generation, bits 19..0 = slot+1
+ * (0 stays invalid). Limits: 2^20-1 concurrent agents, a stale handle can
+ * only false-positive after 4096 reuses of the same slot.
+ * Game-side per-agent data (HP, type, ...) should be indexed by SLOT
+ * (simp_slot_of), which is stable for the agent's whole life. */
+typedef uint32_t SimPHandle;
+#define SIMP_HANDLE_INVALID 0u
+
+SimPHandle simp_handle_of(const SimP *s, int index);
+int        simp_slot_of(const SimP *s, int index);
+/* Dense index of a live handle, or -1 if it was killed (even if the slot
+ * has been reused since). */
+int        simp_index_of(const SimP *s, SimPHandle h);
+
+/* ---- spatial queries (gameplay: turrets, AoE) ----------------------------- */
+
+/* Fill out[] with the indices of agents whose center lies within r of (x,y);
+ * returns how many were written (saturating at max_out). flags is reserved
+ * (pass 0). Walks the collision grid (cost ~ queried area) when it is
+ * current — i.e. when called after simp_step, before any spawn/kill — and
+ * falls back to brute force otherwise.
+ * USAGE TRAP: returned indices die on the first kill. Either convert them
+ * to handles before applying game logic, or kill strictly in decreasing
+ * index order (swap-and-pop only moves indices greater than the killed one). */
+int simp_query_circle(const SimP *s, float x, float y, float r,
+                      int *out, int max_out, uint32_t flags);
+/* Index of the closest agent within r_max of (x,y), or -1. Ring scan over
+ * the collision grid from the center outward; same staleness rules.        */
+int simp_query_nearest(const SimP *s, float x, float y, float r_max);
+
 /* Radial impulse (explosion): dv = strength * (1 - r/radius) away from
  * (x,y), applied to every agent within radius. */
 void  simp_apply_impulse(SimP *s, float x, float y, float radius, float strength);

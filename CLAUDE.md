@@ -50,6 +50,16 @@ Il progetto ha DUE modelli di simulazione complementari:
      sovrapporsi ad agenti o muri (griglia se attuale, altrimenti brute force).
      Emettere solo dove è libero elimina l'espulsione PBD allo spawn e fa
      auto-strozzare gli emitter alla portata dell'uscita (flusso da tunnel).
+   - **Handle stabili** (M3.1): slot map con generation counter sopra lo
+     swap-and-pop. `simp_handle_of` / `simp_index_of` / `simp_slot_of`; i dati
+     di gioco per-agente (HP, tipo…) vanno indicizzati per SLOT, stabile per
+     tutta la vita dell'agente. 20 bit slot + 12 bit gen, 0 = invalid.
+   - **Query spaziali** (M3.4): `simp_query_circle` (indici nel raggio, satura
+     a max_out) e `simp_query_nearest` (scansione ad anelli con lower bound).
+     Esatte tra uno step e l'altro: la griglia viene RICOSTRUITA a fine step
+     (le correzioni PBD/wall e il drain rendono stantio il binning di metà
+     step). Trappola documentata nell'header: gli indici ritornati muoiono al
+     primo kill — convertirli subito in handle, o killare per indice decrescente.
 
 ## Stato verificato (core particellare)
 
@@ -61,6 +71,14 @@ Il progetto ha DUE modelli di simulazione complementari:
   visivamente sui frame PPM). ~3.5 ms/step single-thread.
 - `test_impulse`: esplosione in folla impaccata → picco 14 m/s, rientro sotto
   4 m/s in pochi secondi, zero NaN.
+- `test_handles`: 1000 spawn + kill casuali + 3 round di riuso slot contro
+  shadow map brute force: ogni handle vivo risolve alla posizione giusta, ogni
+  handle morto dà -1 anche dopo il riciclo dello slot.
+- `test_query`: 10k agenti, 200 query circle e 200 nearest contro brute force
+  O(N) (zero mismatch), saturazione del buffer, scenario torretta
+  (nearest→handle→kill, esercita anche il fallback a griglia stantia) e AoE
+  con kill per indice decrescente. Il secondo counting sort di fine step costa
+  ~0.4 ms a 13k (3.41→3.85 ms/step in `test_particles`).
 - `test_dormant`: branco piazzato via `simp_free_at` (zero coppie sovrapposte),
   fermo immobile per 300 step con goal attivo, `wake_radius` sveglia solo il
   sottoinsieme (che marcia e drena), `wake_all` svuota la mappa. Nota: svegliare
@@ -75,6 +93,9 @@ Il progetto ha DUE modelli di simulazione complementari:
   in `frames/`.
 - `test_impulse.c` — smoke test esplosione (picco + assestamento).
 - `test_dormant.c` — verifica stato dormiente, `simp_free_at`, risvegli.
+- `test_handles.c` / `test_query.c` — verifica handle (M3.1) e query (M3.4).
+- `M3_DESIGN.md` — design tecnico di M3 (handle, volo, cadaveri, query, tipi,
+  densità→costo): API, dettagli, piani di verifica.
 - `sandbox_particles.c` — sandbox interattivo SDL3 (pennelli muro/spawner/goal/
   pack, RMB = esplosione che sveglia anche i dormienti, W = sveglia tutti,
   manopole live, pausa/step, overlay flow field). Gli spawner sono stato del
