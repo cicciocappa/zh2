@@ -32,6 +32,15 @@ poi scala, poi gioco.
       buffer di indici.
 - [ ] **Tipi di nemico** come soli parametri: tank (massa ×10, raggio ×1.5),
       runner (v_max ×2), screamer (modifica locale temporanea del costo Dijkstra).
+- [x] **Stato dormiente + spawn senza burst** (`dormant`, `simp_free_at`,
+      `simp_spawn_dormant`, `simp_wake_radius/all`): emitter auto-strozzati,
+      branchi one-shot che dormono finché non svegliati (esplosione, alba).
+      FATTO: `test_dormant` PASS, pennello PACK + tasto W nel sandbox.
+- [ ] **Estensioni dello stato comportamentale**: wake per contagio (un sveglio
+      a contatto con un dormiente lo sveglia → onda di risveglio nel branco),
+      wake per prossimità del giocatore/rumore; più avanti stato "attacking"
+      (vedi questione aperta sul drain). Valutare anche recinzioni distruttibili
+      come contenimento alternativo dei branchi (muri con HP).
 - [ ] Densità → costo Dijkstra (Continuum Crowds): accumulare densità per cella
       nav durante il rebuild della griglia, ricalcolo flow a bassa frequenza
       (~0.5 s). L'orda aggira gli ingorghi da sola.
@@ -61,6 +70,9 @@ poi scala, poi gioco.
 
 - [ ] Rendering vero: instanced sprites (vec4 x,y,angolo,frame per istanza),
       variazione tinta/scala per hash dell'indice; valutare VAT per il vicino.
+      Scelta dello sprite/animazione in base alla velocità della particella:
+      sopra una soglia → zombie che rotola/cade (così ogni residuo schizzo di
+      fisica diventa leggibile come azione invece che come glitch).
 - [ ] Torrette: piazzamento (= muri + sorgente di danno), targeting via query
       spaziali, proiettili/raycast sulla griglia.
 - [ ] Wave/spawner, economia, HP/danno, condizioni di vittoria/sconfitta.

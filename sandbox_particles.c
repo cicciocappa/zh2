@@ -11,11 +11,15 @@
  * Controls:
  *     LMB            paint the current brush
  *     RMB            erase (clears wall+goal+spawner under the brush)
- *     E / MMB        explosion at cursor (simp_apply_impulse)
+ *     E / MMB        explosion at cursor (also wakes sleepers around it)
  *     1              brush = WALL
- *     2              brush = SPAWNER
+ *     2              brush = SPAWNER (continuous emitter, throttles itself
+ *                    when there is no free space: tunnel-mouth flow)
  *     3              brush = GOAL (drains agents)
  *     4              brush = ERASE (same as RMB)
+ *     5              brush = PACK (one-shot: places dormant agents under the
+ *                    brush; drag/repaint to pack the area denser)
+ *     W              wake all sleepers ("sunrise")
  *     [ / ]          brush size down / up
  *     - / =          pbd_iters down / up        (crowd stiffness)
  *     , / .          noise_ang down / up        (steering noise)
@@ -49,8 +53,8 @@
 #define SPAWN_RATE      1.5f             /* agents/sec per spawner cell */
 #define DT              (1.0f / 60.0f)
 
-enum { B_WALL, B_SPAWN, B_GOAL, B_ERASE };
-static const char *BRUSH_NAME[] = { "WALL", "SPAWN", "GOAL", "ERASE" };
+enum { B_WALL, B_SPAWN, B_GOAL, B_ERASE, B_PACK };
+static const char *BRUSH_NAME[] = { "WALL", "SPAWN", "GOAL", "ERASE", "PACK" };
 
 /* Spawners live in the sandbox, not in the core: the core only knows walls
  * and goals. spawn_acc accumulates fractional spawns per cell. */
@@ -58,6 +62,12 @@ static uint8_t spawn_flag[GW * GH];
 static float   spawn_acc[GW * GH];
 
 static float frand(void) { return (float)rand() / (float)RAND_MAX; }
+
+/* conservative spawn-admission radius: the largest radius simp_spawn can roll */
+static float spawn_rmax(SimP *s) {
+    const SimPParams *P = simp_params(s);
+    return P->radius * (1.0f + P->r_jitter);
+}
 
 static void speed_ramp(float t, Uint8 *r, Uint8 *g, Uint8 *b) {
     if (t < 0) t = 0;
@@ -109,23 +119,52 @@ static void paint(SimP *s, int cx, int cy, int brush, int size) {
             simp_set_goal(s, x, y, false);
             spawn_flag[i] = 0; goal_flag[i] = 0;
             break;
+        case B_PACK: {
+            /* one-shot placement, no emitter state: one jittered attempt per
+             * cell per paint event; simp_free_at makes repainting idempotent
+             * (it only fills the gaps, up to packing density) */
+            float wx = ((float)x + frand()) * CELL;
+            float wy = ((float)y + frand()) * CELL;
+            if (simp_free_at(s, wx, wy, spawn_rmax(s)))
+                simp_spawn_dormant(s, wx, wy);
+            break;
+        }
         }
     }
 }
 
 static void spawners_step(SimP *s, float dt) {
+    /* Emitters ask for clearance beyond the agent radius: in a congested
+     * mouth the neighbours are already overlapping each other under crowd
+     * pressure, and a newborn admitted into an exactly-fitting pocket
+     * becomes the pressure relief valve (it pops out at high speed). The
+     * cushion makes the emitter throttle a bit earlier instead. */
+    float rchk = spawn_rmax(s) + 0.5f * simp_params(s)->radius;
     for (int cy = 1; cy < GH - 1; cy++)
     for (int cx = 1; cx < GW - 1; cx++) {
         int i = cy * GW + cx;
         if (!spawn_flag[i]) continue;
         spawn_acc[i] += SPAWN_RATE * dt;
-        while (spawn_acc[i] >= 1.0f) {
+        /* cap the accumulator: a blocked emitter must not bank up spawns
+         * and release them as a burst once space frees */
+        if (spawn_acc[i] > 1.0f) spawn_acc[i] = 1.0f;
+        if (spawn_acc[i] >= 1.0f) {
             spawn_acc[i] -= 1.0f;
             float x = ((float)cx + frand()) * CELL;
             float y = ((float)cy + frand()) * CELL;
+            /* only emit into free space: no overlap -> no PBD ejection.
+             * If the mouth is congested the credit is forfeited, so the
+             * emitter self-throttles to the drain rate of the exit. */
+            if (!simp_free_at(s, x, y, rchk)) continue;
             if (simp_spawn(s, x, y) < 0) return;     /* at capacity */
         }
     }
+}
+
+static void boom(SimP *s, float x, float y, float radius, float strength) {
+    simp_apply_impulse(s, x, y, radius, strength);
+    /* the blast is heard beyond where it is felt: wake a wider circle */
+    simp_wake_radius(s, x, y, radius * 2.0f);
 }
 
 /* Start from an empty world: no walls, no goals, no spawners, no agents.
@@ -167,8 +206,8 @@ int main(void) {
             case SDL_EVENT_QUIT: running = 0; break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 if (e.button.button == SDL_BUTTON_MIDDLE) {
-                    simp_apply_impulse(s, e.button.x / PPM, e.button.y / PPM,
-                                       boom_radius, boom_strength);
+                    boom(s, e.button.x / PPM, e.button.y / PPM,
+                         boom_radius, boom_strength);
                     break;
                 }
                 if (e.button.button == SDL_BUTTON_LEFT)  painting = 1;
@@ -195,6 +234,8 @@ int main(void) {
                 case SDLK_2: brush = B_SPAWN; break;
                 case SDLK_3: brush = B_GOAL;  break;
                 case SDLK_4: brush = B_ERASE; break;
+                case SDLK_5: brush = B_PACK;  break;
+                case SDLK_W: simp_wake_all(s); break;
                 case SDLK_LEFTBRACKET:  if (size > 0)  size--; break;
                 case SDLK_RIGHTBRACKET: if (size < 20) size++; break;
                 case SDLK_MINUS:
@@ -213,8 +254,7 @@ int main(void) {
                 case SDLK_I: boom_strength = fminf(40.0f, boom_strength + 2.0f); break;
                 case SDLK_E: {
                     float mx, my; SDL_GetMouseState(&mx, &my);
-                    simp_apply_impulse(s, mx / PPM, my / PPM,
-                                       boom_radius, boom_strength);
+                    boom(s, mx / PPM, my / PPM, boom_radius, boom_strength);
                     break;
                 }
                 case SDLK_SPACE: paused = !paused; break;
@@ -273,40 +313,47 @@ int main(void) {
             }
         }
 
-        /* agents: batched rects sized by radius, tinted by speed */
+        /* agents: batched rects sized by radius. Pass 0 = dormant (always
+         * its own color), pass 1 = awake slow (or all awake when tint is
+         * off), pass 2 = awake fast (speed tint only). */
+        int n_dormant = 0;
         {
             const float *apx = simp_px(s), *apy = simp_py(s);
             const float *avx = simp_vx(s), *avy = simp_vy(s);
             const float *ar  = simp_radius_arr(s);
+            const uint8_t *dor = simp_dormant_arr(s);
             int n = simp_count(s);
-            if (speed_tint) {
-                /* two passes so each color is one batched draw call */
-                for (int pass = 0; pass < 2; pass++) {
-                    int m = 0;
-                    for (int i = 0; i < n; i++) {
-                        float sp = sqrtf(avx[i] * avx[i] + avy[i] * avy[i]);
-                        int fast = sp > 1.6f;
-                        if (fast != pass) continue;
-                        float rp = ar[i] * PPM;
-                        rects[m].x = apx[i] * PPM - rp;
-                        rects[m].y = apy[i] * PPM - rp;
-                        rects[m].w = 2 * rp; rects[m].h = 2 * rp;
-                        m++;
-                    }
-                    Uint8 r, g, b;
-                    speed_ramp(pass ? 1.0f : 0.25f, &r, &g, &b);
-                    SDL_SetRenderDrawColor(ren, r, g, b, 255);
-                    SDL_RenderFillRects(ren, rects, m);
-                }
-            } else {
+            int passes = speed_tint ? 3 : 2;
+            for (int pass = 0; pass < passes; pass++) {
+                int m = 0;
                 for (int i = 0; i < n; i++) {
+                    int p;
+                    if (dor[i]) p = 0;
+                    else if (!speed_tint) p = 1;
+                    else {
+                        float sp = sqrtf(avx[i] * avx[i] + avy[i] * avy[i]);
+                        p = sp > 1.6f ? 2 : 1;
+                    }
+                    if (p != pass) continue;
                     float rp = ar[i] * PPM;
-                    rects[i].x = apx[i] * PPM - rp;
-                    rects[i].y = apy[i] * PPM - rp;
-                    rects[i].w = 2 * rp; rects[i].h = 2 * rp;
+                    rects[m].x = apx[i] * PPM - rp;
+                    rects[m].y = apy[i] * PPM - rp;
+                    rects[m].w = 2 * rp; rects[m].h = 2 * rp;
+                    m++;
                 }
-                SDL_SetRenderDrawColor(ren, 210, 80, 50, 255);
-                SDL_RenderFillRects(ren, rects, n);
+                if (pass == 0) {
+                    n_dormant = m;
+                    SDL_SetRenderDrawColor(ren, 110, 125, 160, 255);
+                } else if (pass == 1 && speed_tint) {
+                    Uint8 r, g, b; speed_ramp(0.25f, &r, &g, &b);
+                    SDL_SetRenderDrawColor(ren, r, g, b, 255);
+                } else if (pass == 2) {
+                    Uint8 r, g, b; speed_ramp(1.0f, &r, &g, &b);
+                    SDL_SetRenderDrawColor(ren, r, g, b, 255);
+                } else {
+                    SDL_SetRenderDrawColor(ren, 210, 80, 50, 255);
+                }
+                SDL_RenderFillRects(ren, rects, m);
             }
         }
 
@@ -315,10 +362,10 @@ int main(void) {
         SimPParams *P = simp_params(s);
         char title[256];
         snprintf(title, sizeof title,
-                 "Horde particles | brush:%s sz:%d | n:%d drained:%ld | "
+                 "Horde particles | brush:%s sz:%d | n:%d sleep:%d drained:%ld | "
                  "pbd:%d noise:%.2f vmax:%.1f | boom r:%.0f s:%.0f | "
                  "%.2f ms %s%s",
-                 BRUSH_NAME[brush], size, simp_count(s), drained_total,
+                 BRUSH_NAME[brush], size, simp_count(s), n_dormant, drained_total,
                  P->pbd_iters, (double)P->noise_ang, (double)P->v_max,
                  (double)boom_radius, (double)boom_strength,
                  step_ms, paused ? "PAUSED" : "running",

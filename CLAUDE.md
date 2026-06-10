@@ -42,6 +42,14 @@ Il progetto ha DUE modelli di simulazione complementari:
      schiacciamenti) producono velocità balistiche (osservato: 160 m/s).
    - **Impulso radiale** (`simp_apply_impulse`): esplosioni come dv con falloff
      lineare; usa la griglia se aggiornata, altrimenti brute force.
+   - **Stato comportamentale**: per-agente `dormant` (sveglio segue il flow,
+     dormiente frena verso velocità zero ma collide e assorbe spinte; non viene
+     drenato dai goal). `simp_spawn_dormant` per i branchi piazzati sulla mappa,
+     `simp_wake_radius` / `simp_wake_all` per i risvegli (esplosioni, alba).
+   - **Spawn senza burst**: `simp_free_at(x,y,r)` dice se un disco ci sta senza
+     sovrapporsi ad agenti o muri (griglia se attuale, altrimenti brute force).
+     Emettere solo dove è libero elimina l'espulsione PBD allo spawn e fa
+     auto-strozzare gli emitter alla portata dell'uscita (flusso da tunnel).
 
 ## Stato verificato (core particellare)
 
@@ -53,6 +61,11 @@ Il progetto ha DUE modelli di simulazione complementari:
   visivamente sui frame PPM). ~3.5 ms/step single-thread.
 - `test_impulse`: esplosione in folla impaccata → picco 14 m/s, rientro sotto
   4 m/s in pochi secondi, zero NaN.
+- `test_dormant`: branco piazzato via `simp_free_at` (zero coppie sovrapposte),
+  fermo immobile per 300 step con goal attivo, `wake_radius` sveglia solo il
+  sottoinsieme (che marcia e drena), `wake_all` svuota la mappa. Nota: svegliare
+  il lato lontano del branco è lento — i marciatori devono spingersi attraverso
+  i dormienti (ostacolo mobile, comportamento voluto).
 
 ## File
 
@@ -61,9 +74,12 @@ Il progetto ha DUE modelli di simulazione complementari:
 - `test_particles.c` — verifica headless: scena chokepoint, metriche, frame PPM
   in `frames/`.
 - `test_impulse.c` — smoke test esplosione (picco + assestamento).
-- `sandbox_particles.c` — sandbox interattivo SDL3 (pennelli muro/spawner/goal,
-  RMB = esplosione, manopole live, pausa/step, overlay flow field). Gli spawner
-  sono stato del sandbox, non del core. Controlli nell'header del file.
+- `test_dormant.c` — verifica stato dormiente, `simp_free_at`, risvegli.
+- `sandbox_particles.c` — sandbox interattivo SDL3 (pennelli muro/spawner/goal/
+  pack, RMB = esplosione che sveglia anche i dormienti, W = sveglia tutti,
+  manopole live, pausa/step, overlay flow field). Gli spawner sono stato del
+  sandbox, non del core; il pennello PACK piazza dormienti one-shot (ridipingere
+  riempie i buchi, idempotente). Controlli nell'header del file.
 - `Makefile` — `make test` (entrambi, no deps) · `make sandbox` (SDL3) ·
   `make clean`. SDL3 compilato dai sorgenti sta in `~/.local`: il Makefile
   imposta `PKG_CONFIG_PATH` da solo, e `sdl3.pc` porta già l'rpath giusto.

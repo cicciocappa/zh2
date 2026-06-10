@@ -31,6 +31,13 @@
  *   - noise_ang  : per-step random steering perturbation (radians).
  *   - v_jitter   : per-agent speed spread (fraction of v_max).
  *
+ * BEHAVIOUR STATE — each agent is either awake (follows the flow field) or
+ * dormant (steers toward zero velocity: stands still, but still collides,
+ * absorbs pushes and reacts to impulses). Dormant agents are not drained by
+ * goal cells. Spawn them with simp_spawn_dormant (sleeping packs placed on
+ * the map) and wake them with simp_wake_radius (explosions, noise) or
+ * simp_wake_all (scripted events: sunrise, alarms).
+ *
  * Data layout is SoA; position/velocity arrays are public so the renderer
  * can upload them directly as instance buffers. Agents are removed with
  * swap-and-pop, so indices are NOT stable across simp_kill / drain.
@@ -84,9 +91,21 @@ void  simp_terrain_commit(SimP *s);
 
 /* Returns agent index, or -1 if at capacity or (x,y) inside a wall.        */
 int   simp_spawn(SimP *s, float x, float y);
+/* Same, but the agent starts dormant (stands still until woken).           */
+int   simp_spawn_dormant(SimP *s, float x, float y);
 /* Swap-and-pop removal: the last agent takes index i.                      */
 void  simp_kill(SimP *s, int i);
 int   simp_count(const SimP *s);
+
+/* True if a disc of radius r at (x,y) overlaps no agent and no wall (SDF).
+ * Spawning only where this holds gives burst-free emission: a congested
+ * exit throttles itself instead of stacking agents and ejecting them.
+ * Uses the collision grid when current, falls back to brute force.         */
+bool  simp_free_at(const SimP *s, float x, float y, float r);
+
+/* Wake every dormant agent within radius of (x,y) / in the whole world.    */
+void  simp_wake_radius(SimP *s, float x, float y, float radius);
+void  simp_wake_all(SimP *s);
 
 /* Radial impulse (explosion): dv = strength * (1 - r/radius) away from
  * (x,y), applied to every agent within radius. */
@@ -105,6 +124,7 @@ const float *simp_py(const SimP *s);
 const float *simp_vx(const SimP *s);
 const float *simp_vy(const SimP *s);
 const float *simp_radius_arr(const SimP *s);
+const uint8_t *simp_dormant_arr(const SimP *s); /* 1 = dormant, 0 = awake */
 
 /* Flow-field direction at world point (bilinear, normalized; 0,0 in walls). */
 void  simp_sample_flow(const SimP *s, float x, float y, float *dx, float *dy);

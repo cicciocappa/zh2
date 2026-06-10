@@ -54,6 +54,7 @@ struct SimP {
     float *vpref;          /* per-agent preferred speed */
     float *invm;           /* inverse mass (~ 1/r^2) */
     uint32_t *seed;        /* per-agent RNG state */
+    uint8_t *dormant;      /* 1 = stands still until woken */
 
     /* collision grid (uniform, rebuilt each step via counting sort) */
     int   cgw, cgh;
@@ -307,6 +308,7 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->vpref = (float *)malloc((size_t)max_agents * sizeof(float));
     s->invm  = (float *)malloc((size_t)max_agents * sizeof(float));
     s->seed  = (uint32_t *)malloc((size_t)max_agents * sizeof(uint32_t));
+    s->dormant = (uint8_t *)calloc((size_t)max_agents, 1);
 
     /* collision grid: cell side = 2 * max plausible radius */
     float rmax = s->params.radius * (1.0f + s->params.r_jitter);
@@ -314,8 +316,10 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->inv_ccell = 1.0f / s->ccell;
     s->cgw = (int)ceilf(s->world_w * s->inv_ccell) + 1;
     s->cgh = (int)ceilf(s->world_h * s->inv_ccell) + 1;
-    s->ccount = (int *)malloc(((size_t)s->cgw * s->cgh + 1) * sizeof(int));
-    s->cstart = (int *)malloc(((size_t)s->cgw * s->cgh + 1) * sizeof(int));
+    /* zeroed so grid-validity checks (cstart[nc] vs count) read defined data
+     * before the first rebuild: an empty grid is a valid grid for count 0 */
+    s->ccount = (int *)calloc((size_t)s->cgw * s->cgh + 1, sizeof(int));
+    s->cstart = (int *)calloc((size_t)s->cgw * s->cgh + 1, sizeof(int));
     s->corder = (int *)malloc((size_t)max_agents * sizeof(int));
 
     s->rng = 0x9E3779B9u;
@@ -330,6 +334,7 @@ void simp_destroy(SimP *s) {
     free(s->px); free(s->py); free(s->qx); free(s->qy);
     free(s->vx); free(s->vy);
     free(s->rad); free(s->vpref); free(s->invm); free(s->seed);
+    free(s->dormant);
     free(s->ccount); free(s->cstart); free(s->corder);
     free(s);
 }
@@ -372,6 +377,13 @@ int simp_spawn(SimP *s, float x, float y) {
     s->rad[i]   = s->params.radius * rj;
     s->vpref[i] = s->params.v_max * vj;
     s->invm[i]  = 1.0f / (s->rad[i] * s->rad[i]);   /* mass ~ r^2 */
+    s->dormant[i] = 0;
+    return i;
+}
+
+int simp_spawn_dormant(SimP *s, float x, float y) {
+    int i = simp_spawn(s, x, y);
+    if (i >= 0) s->dormant[i] = 1;
     return i;
 }
 
@@ -383,9 +395,59 @@ void simp_kill(SimP *s, int i) {
     s->vx[i] = s->vx[last]; s->vy[i] = s->vy[last];
     s->rad[i] = s->rad[last]; s->vpref[i] = s->vpref[last];
     s->invm[i] = s->invm[last]; s->seed[i] = s->seed[last];
+    s->dormant[i] = s->dormant[last];
 }
 
 int simp_count(const SimP *s) { return s->count; }
+
+bool simp_free_at(const SimP *s, float x, float y, float r) {
+    if (x < r || y < r || x > s->world_w - r || y > s->world_h - r) return false;
+    if (simp_sample_sdf(s, x, y) < r) return false;
+    /* The grid covers agents [0, grid_n) with positions as of the last
+     * rebuild; agents spawned since are checked linearly. After kills
+     * (count < grid_n) the grid references dead slots: full brute force. */
+    int grid_n = s->cstart[s->cgw * s->cgh];
+    bool grid_ok = (grid_n >= 0 && grid_n <= s->count);
+    int tail = grid_ok ? grid_n : 0;
+    if (grid_ok && grid_n > 0) {
+        float rmax = s->params.radius * (1.0f + s->params.r_jitter);
+        float reach = r + rmax;
+        /* one extra cell of margin: positions drift after the rebuild
+         * (bounded by v_clamp*dt + projections, well under one cell) */
+        int x0 = clampi((int)((x - reach) * s->inv_ccell) - 1, 0, s->cgw - 1);
+        int x1 = clampi((int)((x + reach) * s->inv_ccell) + 1, 0, s->cgw - 1);
+        int y0 = clampi((int)((y - reach) * s->inv_ccell) - 1, 0, s->cgh - 1);
+        int y1 = clampi((int)((y + reach) * s->inv_ccell) + 1, 0, s->cgh - 1);
+        for (int cy = y0; cy <= y1; cy++) for (int cx = x0; cx <= x1; cx++) {
+            int c = cy * s->cgw + cx;
+            for (int k = s->cstart[c]; k < s->cstart[c + 1]; k++) {
+                int i = s->corder[k];
+                float dx = s->px[i] - x, dy = s->py[i] - y;
+                float rs = r + s->rad[i];
+                if (dx * dx + dy * dy < rs * rs) return false;
+            }
+        }
+    }
+    for (int i = tail; i < s->count; i++) {
+        float dx = s->px[i] - x, dy = s->py[i] - y;
+        float rs = r + s->rad[i];
+        if (dx * dx + dy * dy < rs * rs) return false;
+    }
+    return true;
+}
+
+void simp_wake_radius(SimP *s, float x, float y, float radius) {
+    const float r2 = radius * radius;
+    for (int i = 0; i < s->count; i++) {
+        if (!s->dormant[i]) continue;
+        float dx = s->px[i] - x, dy = s->py[i] - y;
+        if (dx * dx + dy * dy <= r2) s->dormant[i] = 0;
+    }
+}
+
+void simp_wake_all(SimP *s) {
+    memset(s->dormant, 0, (size_t)s->count);
+}
 
 void simp_apply_impulse(SimP *s, float x, float y, float radius, float strength) {
     /* coarse cull through the collision grid */
@@ -533,15 +595,19 @@ int simp_step(SimP *s, float dt) {
     s->diag_overlap_sum = 0.0f;
     s->diag_overlap_n = 0;
 
-    /* 1) steering toward flow field + noise, bounded acceleration */
+    /* 1) steering toward flow field + noise, bounded acceleration.
+     * Dormant agents steer toward zero velocity: they stand still, but a
+     * push (PBD, impulse) still moves them and they brake back to rest. */
     for (int i = 0; i < s->count; i++) {
-        float fx, fy;
-        simp_sample_flow(s, s->px[i], s->py[i], &fx, &fy);
-        if (P->noise_ang > 0.0f && (fx != 0.0f || fy != 0.0f)) {
-            float a = P->noise_ang * rng_fsym(&s->seed[i]);
-            float ca = cosf(a), sa = sinf(a);
-            float rx = fx * ca - fy * sa, ry = fx * sa + fy * ca;
-            fx = rx; fy = ry;
+        float fx = 0.0f, fy = 0.0f;
+        if (!s->dormant[i]) {
+            simp_sample_flow(s, s->px[i], s->py[i], &fx, &fy);
+            if (P->noise_ang > 0.0f && (fx != 0.0f || fy != 0.0f)) {
+                float a = P->noise_ang * rng_fsym(&s->seed[i]);
+                float ca = cosf(a), sa = sinf(a);
+                float rx = fx * ca - fy * sa, ry = fx * sa + fy * ca;
+                fx = rx; fy = ry;
+            }
         }
         float dvx = fx * s->vpref[i] - s->vx[i];
         float dvy = fy * s->vpref[i] - s->vy[i];
@@ -580,9 +646,12 @@ int simp_step(SimP *s, float dt) {
         s->vy[i] = nvy;
     }
 
-    /* 5) drain agents standing on goal cells (iterate backward: swap-and-pop) */
+    /* 5) drain agents standing on goal cells (iterate backward: swap-and-pop).
+     * Dormant agents are exempt: a sleeper shoved across a goal cell is not
+     * "arriving" anywhere. */
     int drained = 0;
     for (int i = s->count - 1; i >= 0; i--) {
+        if (s->dormant[i]) continue;
         int cx = clampi((int)(s->px[i] * s->inv_cell), 0, s->gw - 1);
         int cy = clampi((int)(s->py[i] * s->inv_cell), 0, s->gh - 1);
         if (s->goal[cy * s->gw + cx]) { simp_kill(s, i); drained++; }
@@ -597,6 +666,7 @@ const float *simp_py(const SimP *s) { return s->py; }
 const float *simp_vx(const SimP *s) { return s->vx; }
 const float *simp_vy(const SimP *s) { return s->vy; }
 const float *simp_radius_arr(const SimP *s) { return s->rad; }
+const uint8_t *simp_dormant_arr(const SimP *s) { return s->dormant; }
 
 float simp_mean_overlap(const SimP *s) {
     return s->diag_overlap_n ? s->diag_overlap_sum / (float)s->diag_overlap_n : 0.0f;

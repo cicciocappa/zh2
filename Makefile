@@ -8,7 +8,7 @@ SDL_PC     := PKG_CONFIG_PATH=$(HOME)/.local/lib/pkgconfig:$(PKG_CONFIG_PATH) pk
 SDL_CFLAGS := $(shell $(SDL_PC) --cflags sdl3 2>/dev/null)
 SDL_LIBS   := $(shell $(SDL_PC) --libs   sdl3 2>/dev/null)
 
-all: test_particles test_impulse
+all: test_particles test_impulse test_dormant
 
 test_particles: test_particles.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_particles.c sim_particles.c $(LDLIBS)
@@ -16,14 +16,18 @@ test_particles: test_particles.c sim_particles.c sim_particles.h
 test_impulse: test_impulse.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_impulse.c sim_particles.c $(LDLIBS)
 
+test_dormant: test_dormant.c sim_particles.c sim_particles.h
+	$(CC) $(CFLAGS) -o $@ test_dormant.c sim_particles.c $(LDLIBS)
+
 sandbox: sandbox_particles.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) -o $@ sandbox_particles.c sim_particles.c $(SDL_LIBS) $(LDLIBS)
 
 test: all
 	./test_particles
 	./test_impulse
+	./test_dormant
 
 clean:
-	rm -rf test_particles test_impulse sandbox frames
+	rm -rf test_particles test_impulse test_dormant sandbox frames
 
 .PHONY: all test clean
