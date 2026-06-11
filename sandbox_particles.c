@@ -21,6 +21,16 @@
  *                    brush; drag/repaint to pack the area denser)
  *     6              brush = KILL (kills agents under the brush; ~30% leave
  *                    a corpse: a static obstacle the crowd shoves around)
+ *     G              brush = COST+ (paint user nav cost: repels the flow —
+ *                    fear zone / mud; repaint to stack it up)
+ *     H              brush = COST- (negative cost: attracts the flow —
+ *                    screamer lure; clamped at -0.8)
+ *     X              clear all painted user cost
+ *     M              cycle spawn type for SPAWNER and PACK brushes:
+ *                    WALKER -> RUNNER -> TANK -> MIX (5% tank, 15% runner)
+ *     K / L          k_density down / up (density->cost gain, 0 = off:
+ *                    the horde fans out around its own jams)
+ *     O              toggle crowd-density overlay (the rho the flow sees)
  *     W              wake all sleepers ("sunrise")
  *     7 / U          explosion up_ratio down / up (vertical kick: zombies
  *                    above ~1 m/s vz take off, fly over walls above 2 m,
@@ -58,8 +68,29 @@
 #define SPAWN_RATE      1.5f             /* agents/sec per spawner cell */
 #define DT              (1.0f / 60.0f)
 
-enum { B_WALL, B_SPAWN, B_GOAL, B_ERASE, B_PACK, B_KILL };
-static const char *BRUSH_NAME[] = { "WALL", "SPAWN", "GOAL", "ERASE", "PACK", "KILL" };
+enum { B_WALL, B_SPAWN, B_GOAL, B_ERASE, B_PACK, B_KILL, B_COSTP, B_COSTM };
+static const char *BRUSH_NAME[] = { "WALL", "SPAWN", "GOAL", "ERASE", "PACK", "KILL",
+                                    "COST+", "COST-" };
+
+/* spawn types (M3.5): plain per-agent parameters, the core has no type ids */
+enum { T_WALKER, T_RUNNER, T_TANK, T_MIX };
+static const char *TYPE_NAME[] = { "WALKER", "RUNNER", "TANK", "MIX" };
+static const SimPAgentDesc TYPE_DESC[3] = {
+    { 0.30f, 1.4f, 1.0f },     /* walker */
+    { 0.27f, 2.8f, 0.9f },     /* runner: thin and fast, threads the gaps */
+    { 0.55f, 1.0f, 10.0f },    /* tank: shoves the crowd open */
+};
+static int spawn_type = T_WALKER;
+
+/* roll the actual descriptor for the current spawn type (MIX is a blend) */
+static const SimPAgentDesc *roll_desc(void) {
+    int t = spawn_type;
+    if (t == T_MIX) {
+        int r = rand() % 100;
+        t = r < 5 ? T_TANK : (r < 20 ? T_RUNNER : T_WALKER);
+    }
+    return &TYPE_DESC[t];
+}
 
 /* Spawners live in the sandbox, not in the core: the core only knows walls
  * and goals. spawn_acc accumulates fractional spawns per cell. */
@@ -67,12 +98,6 @@ static uint8_t spawn_flag[GW * GH];
 static float   spawn_acc[GW * GH];
 
 static float frand(void) { return (float)rand() / (float)RAND_MAX; }
-
-/* conservative spawn-admission radius: the largest radius simp_spawn can roll */
-static float spawn_rmax(SimP *s) {
-    const SimPParams *P = simp_params(s);
-    return P->radius * (1.0f + P->r_jitter);
-}
 
 static void speed_ramp(float t, Uint8 *r, Uint8 *g, Uint8 *b) {
     if (t < 0) t = 0;
@@ -82,14 +107,36 @@ static void speed_ramp(float t, Uint8 *r, Uint8 *g, Uint8 *b) {
     *b = 50;
 }
 
-static void terrain_render(const SimP *s, Uint32 *px) {
+static void terrain_render(SimP *s, Uint32 *px, int show_density) {
+    const float *uc  = simp_user_cost(s);
+    const float *rho = simp_density_arr(s);
+    const SimPParams *P = simp_params(s);
+    /* same packing density the core uses to saturate the k_density term */
+    const float inv_rho_max =
+        (3.14159265f * P->radius * P->radius) / (CELL * CELL * 0.7f);
     for (int cy = 0; cy < GH; cy++)
     for (int cx = 0; cx < GW; cx++) {
         int i = cy * GW + cx;
-        Uint8 r = 20, g = 24, b = 22;                       /* dark floor   */
+        int r = 20, g = 24, b = 22;                         /* dark floor   */
         if (simp_is_wall(s, cx, cy))      { r = 80; g = 80; b = 95; }
         else if (spawn_flag[i])           { r = 90; g = 40; b = 40; }
-        px[i] = 0xFF000000u | (Uint32)(r << 16) | (Uint32)(g << 8) | b;
+        else {
+            if (uc[i] > 0.0f) {                             /* fear: orange */
+                float t = uc[i] / 5.0f; if (t > 1.0f) t = 1.0f;
+                r += (int)(90 * t); g += (int)(45 * t);
+            } else if (uc[i] < 0.0f) {                      /* lure: green  */
+                float t = -uc[i] / 0.8f; if (t > 1.0f) t = 1.0f;
+                g += (int)(90 * t);
+            }
+            if (show_density) {                             /* rho: violet  */
+                float t = rho[i] * inv_rho_max; if (t > 1.0f) t = 1.0f;
+                r += (int)(110 * t); b += (int)(140 * t);
+            }
+        }
+        if (r > 255) r = 255;
+        if (g > 255) g = 255;
+        if (b > 255) b = 255;
+        px[i] = 0xFF000000u | (Uint32)(r << 16) | (Uint32)(g << 8) | (Uint32)b;
     }
 }
 
@@ -146,17 +193,25 @@ static void paint(SimP *s, int cx, int cy, int brush, int size) {
             simp_set_wall(s, x, y, false);
             simp_set_goal(s, x, y, false);
             spawn_flag[i] = 0; goal_flag[i] = 0;
+            /* painted user cost goes too (additive API: subtract it out) */
+            if (simp_user_cost(s)[i] != 0.0f)
+                simp_add_cost(s, x, y, -simp_user_cost(s)[i]);
             break;
         case B_PACK: {
             /* one-shot placement, no emitter state: one jittered attempt per
              * cell per paint event; simp_free_at makes repainting idempotent
              * (it only fills the gaps, up to packing density) */
+            const SimPAgentDesc *d = roll_desc();
             float wx = ((float)x + frand()) * CELL;
             float wy = ((float)y + frand()) * CELL;
-            if (simp_free_at(s, wx, wy, spawn_rmax(s)))
-                simp_spawn_dormant(s, wx, wy);
+            if (simp_free_at(s, wx, wy, d->radius)) {
+                int a = simp_spawn_desc(s, wx, wy, d);
+                if (a >= 0) simp_sleep(s, a);
+            }
             break;
         }
+        case B_COSTP: simp_add_cost(s, x, y, +0.5f); break;
+        case B_COSTM: simp_add_cost(s, x, y, -0.2f); break;
         }
     }
 }
@@ -167,7 +222,6 @@ static void spawners_step(SimP *s, float dt) {
      * pressure, and a newborn admitted into an exactly-fitting pocket
      * becomes the pressure relief valve (it pops out at high speed). The
      * cushion makes the emitter throttle a bit earlier instead. */
-    float rchk = spawn_rmax(s) + 0.5f * simp_params(s)->radius;
     for (int cy = 1; cy < GH - 1; cy++)
     for (int cx = 1; cx < GW - 1; cx++) {
         int i = cy * GW + cx;
@@ -178,13 +232,15 @@ static void spawners_step(SimP *s, float dt) {
         if (spawn_acc[i] > 1.0f) spawn_acc[i] = 1.0f;
         if (spawn_acc[i] >= 1.0f) {
             spawn_acc[i] -= 1.0f;
+            const SimPAgentDesc *d = roll_desc();
+            float rchk = d->radius + 0.5f * simp_params(s)->radius;
             float x = ((float)cx + frand()) * CELL;
             float y = ((float)cy + frand()) * CELL;
             /* only emit into free space: no overlap -> no PBD ejection.
              * If the mouth is congested the credit is forfeited, so the
              * emitter self-throttles to the drain rate of the exit. */
             if (!simp_free_at(s, x, y, rchk)) continue;
-            if (simp_spawn(s, x, y) < 0) return;     /* at capacity */
+            if (simp_spawn_desc(s, x, y, d) < 0) return;   /* at capacity */
         }
     }
 }
@@ -222,7 +278,7 @@ int main(void) {
 
     int   brush = B_WALL, size = 3;
     int   paused = 0, running = 1, spawning = 1;
-    int   speed_tint = 1, show_flow = 0;
+    int   speed_tint = 1, show_flow = 0, show_density = 0;
     int   painting = 0, erasing = 0;
     float boom_radius = 6.0f, boom_strength = 10.0f, boom_up = 0.5f;
     long  drained_total = 0;
@@ -265,6 +321,19 @@ int main(void) {
                 case SDLK_4: brush = B_ERASE; break;
                 case SDLK_5: brush = B_PACK;  break;
                 case SDLK_6: brush = B_KILL;  break;
+                case SDLK_G: brush = B_COSTP; break;
+                case SDLK_H: brush = B_COSTM; break;
+                case SDLK_X: simp_clear_cost(s); break;
+                case SDLK_M: spawn_type = (spawn_type + 1) % 4; break;
+                case SDLK_K:
+                    P->k_density = fmaxf(0.0f, P->k_density - 0.5f);
+                    simp_terrain_commit(s);   /* apply now, even toward 0 */
+                    break;
+                case SDLK_L:
+                    P->k_density = fminf(6.0f, P->k_density + 0.5f);
+                    simp_terrain_commit(s);
+                    break;
+                case SDLK_O: show_density = !show_density; break;
                 case SDLK_W: simp_wake_all(s); break;
                 case SDLK_7: boom_up = fmaxf(0.0f, boom_up - 0.1f); break;
                 case SDLK_U: boom_up = fminf(2.0f, boom_up + 0.1f); break;
@@ -324,7 +393,7 @@ int main(void) {
         }
 
         /* terrain layer (low-res texture, nearest-scaled to window) */
-        terrain_render(s, terrain_px);
+        terrain_render(s, terrain_px, show_density);
         for (int i = 0; i < GW * GH; i++)
             if (goal_flag[i]) terrain_px[i] = 0xFF3C78FFu;   /* goal: blue */
         SDL_UpdateTexture(tex, NULL, terrain_px, GW * (int)sizeof(Uint32));
@@ -414,12 +483,14 @@ int main(void) {
         SimPParams *P = simp_params(s);
         char title[256];
         snprintf(title, sizeof title,
-                 "Horde particles | brush:%s sz:%d | n:%d sleep:%d corpses:%d "
-                 "drained:%ld | pbd:%d noise:%.2f vmax:%.1f | "
-                 "boom r:%.0f s:%.0f up:%.1f | %.2f ms %s%s",
-                 BRUSH_NAME[brush], size, simp_count(s), n_dormant,
+                 "Horde particles | brush:%s sz:%d type:%s | n:%d sleep:%d "
+                 "corpses:%d drained:%ld | pbd:%d noise:%.2f vmax:%.1f "
+                 "kd:%.1f | boom r:%.0f s:%.0f up:%.1f | %.2f ms %s%s",
+                 BRUSH_NAME[brush], size, TYPE_NAME[spawn_type],
+                 simp_count(s), n_dormant,
                  simp_corpse_count(s), drained_total,
                  P->pbd_iters, (double)P->noise_ang, (double)P->v_max,
+                 (double)P->k_density,
                  (double)boom_radius, (double)boom_strength, (double)boom_up,
                  step_ms, paused ? "PAUSED" : "running",
                  spawning ? "" : " SPAWN-OFF");

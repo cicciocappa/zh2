@@ -242,6 +242,19 @@ indice e che il count scenda del numero giusto.
 
 ## 3.5 Tipi di nemico
 
+> **IMPLEMENTATO.** Deviazioni: `mass` è in **unità walker** (1.0 = agente a
+> raggio default; gli spawn default restano `invm = 1/r²`, il desc usa
+> `invm = 1/(mass·R0²)` — stessa scala, il PBD usa solo rapporti); `v_pref`
+> riceve comunque il `v_jitter` globale (anti-lockstep), raggio e massa sono
+> presi esatti; aggiunto `simp_sleep` (branchi dormienti tipizzati); uno
+> spawn più grande del raggio default **ingrandisce la cella della griglia
+> di collisione** (la ricerca coppie a 5 celle vede solo dischi che ci
+> stanno; vale anche per `simp_corpse_add`); `cost_user` clampato a
+> [-0.8, 100] in scrittura. `test_types` PASS (corsa runner/walker, pressing
+> tank al varco — il goal a ridosso del bordo deve essere profondo ≥ 2 celle
+> o i tank non ci arrivano col centro — e repulsione/attrazione via
+> `simp_add_cost`).
+
 **Problema.** Tank, runner, screamer — senza sporcare il core con nozioni di
 gameplay.
 
@@ -292,6 +305,18 @@ sandbox, i test automatici controllano solo sanity (no NaN, drain > 0).
 ---
 
 ## 3.6 Densità → costo Dijkstra (Continuum Crowds light)
+
+> **IMPLEMENTATO.** Deviazioni: l'istogramma densità non vive in
+> `rebuild_grid` ma in una passata dedicata (`density_update`) eseguita solo
+> al tick di ricalcolo (blur 3×3 ed EMA fusi in un'unica passata); niente
+> `nav_commit_flow` come API separata — il throttle (`flow_period`) è
+> interno a `simp_step`, e le modifiche al terreno continuano a forzare il
+> commit completo immediato. Scratch del nav preallocati in `create` (heap
+> Dijkstra, blur del flow, moltiplicatori): niente malloc dentro `simp_step`.
+> Default: `k_density = 2.0`, `flow_period = 0.5 s`. `test_density_route`
+> PASS: uso del percorso lungo 22% → 57%, drain del 90% in 5382 → 4552 step;
+> in `test_particles` il drain sale 71% → 82% (l'orda si spalma sui due
+> varchi da sola).
 
 **Problema.** Con flow field puro tutta l'orda converge sullo stesso percorso
 ottimo e si accoda; le folle vere (e i giochi belli) si allargano sugli

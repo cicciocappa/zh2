@@ -6,4 +6,7 @@ test_dormant
 test_handles
 test_query
 test_corpses
+test_types
+test_density_route
 *.o
+frames/

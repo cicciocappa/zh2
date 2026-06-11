@@ -31,6 +31,10 @@ static inline float rng_fsym(uint32_t *st) {          /* [-1,1) */
 #define GRAV 9.81f            /* fake-z gravity (m/s^2) */
 #define CORPSE_CAP 4096       /* fixed corpse pool: a cost guarantee */
 #define TAKEOFF_VZ 1.0f       /* vertical speed that flips SIMP_FLYING */
+#define COST_MIN (-0.8f)      /* user cost clamp: edges stay positive */
+#define COST_MAX 100.0f       /* and never competitive with WALL_ENTER */
+#define RHO_EMA 0.3f          /* density EMA gain per flow recompute */
+#define CORPSE_RHO 2.0f       /* a corpse counts as this many agents */
 
 /* --------------------------------------------------------------- the state */
 
@@ -47,6 +51,19 @@ struct SimP {
     float   *flow_y;
     float   *sdf;          /* signed distance to walls (m), >0 = free */
     bool     nav_dirty;
+
+    /* navigation costs (M3.5 + M3.6) */
+    float   *cost_user;    /* gw*gh additive user cost, clamped on write */
+    float   *rho_raw;      /* gw*gh scratch histogram (agents per cell) */
+    float   *rho_s;        /* gw*gh smoothed density (blur + EMA) */
+    float   *cost_mult;    /* gw*gh edge multiplier, filled per recompute */
+    bool     cost_dirty;   /* cost_user changed since last flow recompute */
+    bool     rho_active;   /* rho_s still holds non-negligible mass */
+    float    flow_timer;   /* seconds since last throttled recompute */
+
+    /* preallocated nav scratch (recomputes run inside simp_step: no malloc) */
+    void    *heap_nodes;   /* HNode[gw*gh*8] for the Dijkstra */
+    float   *flow_tx, *flow_ty;
 
     /* agents (SoA) */
     int   count, cap;
@@ -82,6 +99,7 @@ struct SimP {
      * arrays). Flying agents are NOT binned. */
     int   cgw, cgh;
     float ccell, inv_ccell;
+    float grid_rmax;       /* largest agent radius the grid is sized for */
     int  *ccount;          /* cgw*cgh + 1 : counts then prefix sums */
     int  *cstart;          /* prefix sums (cgw*cgh + 1) */
     int  *corder;          /* cap + CORPSE_CAP : entries sorted by cell */
@@ -139,7 +157,24 @@ static void recompute_phi(SimP *s) {
     const int n = s->gw * s->gh;
     for (int i = 0; i < n; i++) s->phi[i] = PHI_INF;
 
-    Heap h; h.a = (HNode *)malloc(sizeof(HNode) * (size_t)n * 4); h.n = 0;
+    /* per-destination edge multiplier (M3.5 user cost + M3.6 density).
+     * rho_max = packing density of a nav cell (agents whose center fits) */
+    const float kd = s->params.k_density;
+    const float r0 = s->params.radius;
+    const float inv_rho_max =
+        (3.14159265f * r0 * r0) / (s->cell * s->cell * 0.7f);
+    for (int i = 0; i < n; i++) {
+        float m = 1.0f + s->cost_user[i];
+        if (kd > 0.0f) {
+            float t = s->rho_s[i] * inv_rho_max;
+            m += kd * (t > 1.0f ? 1.0f : t);
+        }
+        s->cost_mult[i] = m < 0.2f ? 0.2f : m;
+    }
+
+    /* heap scratch is preallocated: pushes are bounded by successful phi
+     * improvements, n*8 has ample slack over the n*4 seen in practice */
+    Heap h; h.a = (HNode *)s->heap_nodes; h.n = 0;
     for (int i = 0; i < n; i++)
         if (s->goal[i] && !s->solid[i]) { s->phi[i] = 0.0f; heap_push(&h, 0.0f, i); }
 
@@ -155,7 +190,7 @@ static void recompute_phi(SimP *s) {
             int nx = cx + DX[k], ny = cy + DY[k];
             if (nx < 0 || ny < 0 || nx >= s->gw || ny >= s->gh) continue;
             int j = ny * s->gw + nx;
-            float nc = nd.c + DC[k];
+            float nc = nd.c + DC[k] * s->cost_mult[j];
             if (s->solid[j]) nc += WALL_ENTER;
             /* diagonal corner-cutting through walls pays the wall toll too */
             else if (k >= 4 && (s->solid[cy * s->gw + nx] || s->solid[ny * s->gw + cx]))
@@ -163,7 +198,6 @@ static void recompute_phi(SimP *s) {
             if (nc < s->phi[j]) { s->phi[j] = nc; heap_push(&h, nc, j); }
         }
     }
-    free(h.a);
 }
 
 static void recompute_flow(SimP *s) {
@@ -195,8 +229,8 @@ static void recompute_flow(SimP *s) {
         }
     }
     /* one smoothing pass (skip walls), then renormalize */
-    float *tx = (float *)malloc(sizeof(float) * (size_t)gw * gh);
-    float *ty = (float *)malloc(sizeof(float) * (size_t)gw * gh);
+    float *tx = s->flow_tx;
+    float *ty = s->flow_ty;
     for (int cy = 0; cy < gh; cy++) {
         for (int cx = 0; cx < gw; cx++) {
             int i = cy * gw + cx;
@@ -217,7 +251,42 @@ static void recompute_flow(SimP *s) {
     }
     memcpy(s->flow_x, tx, sizeof(float) * (size_t)gw * gh);
     memcpy(s->flow_y, ty, sizeof(float) * (size_t)gw * gh);
-    free(tx); free(ty);
+}
+
+/* M3.6: refresh the smoothed density field from current agent positions.
+ * Fresh histogram (grounded agents + corpse weight), 3x3 blur folded into a
+ * temporal EMA: rho_s tracks the crowd with ~2 recompute periods of lag,
+ * which is exactly what stops the flow from flickering between routes. */
+static void density_update(SimP *s) {
+    const int gw = s->gw, gh = s->gh, n = gw * gh;
+    memset(s->rho_raw, 0, (size_t)n * sizeof(float));
+    for (int i = 0; i < s->count; i++) {
+        if (s->aflags[i] & SIMP_FLYING) continue;
+        int cx = clampi((int)(s->px[i] * s->inv_cell), 0, gw - 1);
+        int cy = clampi((int)(s->py[i] * s->inv_cell), 0, gh - 1);
+        s->rho_raw[cy * gw + cx] += 1.0f;
+    }
+    for (int j = 0; j < s->corpse_count; j++) {
+        int cx = clampi((int)(s->cpx[j] * s->inv_cell), 0, gw - 1);
+        int cy = clampi((int)(s->cpy[j] * s->inv_cell), 0, gh - 1);
+        s->rho_raw[cy * gw + cx] += CORPSE_RHO;
+    }
+    float peak = 0.0f;
+    for (int cy = 0; cy < gh; cy++) {
+        for (int cx = 0; cx < gw; cx++) {
+            float acc = 0.0f; int cnt = 0;
+            for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+                int nx = cx + dx, ny = cy + dy;
+                if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+                acc += s->rho_raw[ny * gw + nx]; cnt++;
+            }
+            int i = cy * gw + cx;
+            s->rho_s[i] = s->rho_s[i] * (1.0f - RHO_EMA) + (acc / (float)cnt) * RHO_EMA;
+            if (s->rho_s[i] > peak) peak = s->rho_s[i];
+        }
+    }
+    /* keeps the throttled recompute alive until an emptied map decays out */
+    s->rho_active = peak > 0.01f;
 }
 
 /* two-pass chamfer distance transform (3-4 metric scaled to meters) */
@@ -316,6 +385,8 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->params.pbd_iters = 3;
     s->params.landing_damp = 0.30f;
     s->params.wall_h    = 2.0f;
+    s->params.k_density = 2.0f;
+    s->params.flow_period = 0.5f;
 
     const size_t n = (size_t)gw * gh;
     s->solid  = (uint8_t *)calloc(n, 1);
@@ -324,6 +395,16 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->flow_x = (float *)calloc(n, sizeof(float));
     s->flow_y = (float *)calloc(n, sizeof(float));
     s->sdf    = (float *)malloc(n * sizeof(float));
+    s->cost_user = (float *)calloc(n, sizeof(float));
+    s->rho_raw   = (float *)calloc(n, sizeof(float));
+    s->rho_s     = (float *)calloc(n, sizeof(float));
+    s->cost_mult = (float *)malloc(n * sizeof(float));
+    s->heap_nodes = malloc(n * 8 * sizeof(HNode));
+    s->flow_tx = (float *)malloc(n * sizeof(float));
+    s->flow_ty = (float *)malloc(n * sizeof(float));
+    s->cost_dirty = false;
+    s->rho_active = false;
+    s->flow_timer = 0.0f;
 
     s->cap = max_agents;
     /* px/py/rad/invm/seed carry CORPSE_CAP extra slots: corpse ghosts are
@@ -364,8 +445,10 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     }
     s->slot_free_top = max_agents;
 
-    /* collision grid: cell side = 2 * max plausible radius */
+    /* collision grid: cell side = 2 * max plausible radius (grows if a
+     * larger typed agent is ever spawned — see simp_spawn_desc) */
     float rmax = s->params.radius * (1.0f + s->params.r_jitter);
+    s->grid_rmax = rmax;
     s->ccell = 2.0f * rmax * 1.05f;
     s->inv_ccell = 1.0f / s->ccell;
     s->cgw = (int)ceilf(s->world_w * s->inv_ccell) + 1;
@@ -388,6 +471,8 @@ void simp_destroy(SimP *s) {
     if (!s) return;
     free(s->solid); free(s->goal); free(s->phi);
     free(s->flow_x); free(s->flow_y); free(s->sdf);
+    free(s->cost_user); free(s->rho_raw); free(s->rho_s); free(s->cost_mult);
+    free(s->heap_nodes); free(s->flow_tx); free(s->flow_ty);
     free(s->px); free(s->py); free(s->qx); free(s->qy);
     free(s->vx); free(s->vy);
     free(s->rad); free(s->vpref); free(s->invm); free(s->seed);
@@ -419,9 +504,26 @@ bool simp_is_wall(const SimP *s, int cx, int cy) {
 }
 void simp_terrain_commit(SimP *s) { nav_commit(s); }
 
+void simp_add_cost(SimP *s, int cx, int cy, float w) {
+    if (cx < 0 || cy < 0 || cx >= s->gw || cy >= s->gh) return;
+    int i = cy * s->gw + cx;
+    s->cost_user[i] = clampf(s->cost_user[i] + w, COST_MIN, COST_MAX);
+    s->cost_dirty = true;
+}
+
+void simp_clear_cost(SimP *s) {
+    memset(s->cost_user, 0, (size_t)s->gw * s->gh * sizeof(float));
+    s->cost_dirty = true;
+}
+
+const float *simp_user_cost(const SimP *s)   { return s->cost_user; }
+const float *simp_density_arr(const SimP *s) { return s->rho_s; }
+
 /* ------------------------------------------------------------- agents */
 
-int simp_spawn(SimP *s, float x, float y) {
+/* shared bookkeeping: position, seed, flags, slot map. The caller fills
+ * rad/vpref/invm (drawing any jitter from seed[i] AFTER this returns). */
+static int spawn_common(SimP *s, float x, float y) {
     if (s->count >= s->cap) return -1;
     int cx = (int)(x * s->inv_cell), cy = (int)(y * s->inv_cell);
     if (simp_is_wall(s, cx, cy)) return -1;
@@ -432,11 +534,6 @@ int simp_spawn(SimP *s, float x, float y) {
     uint32_t st = s->rng; rng_next(&s->rng);
     s->seed[i] = st ^ 0xA511E9B3u ^ (uint32_t)i * 2654435761u;
     if (s->seed[i] == 0) s->seed[i] = 1;
-    float rj = 1.0f + s->params.r_jitter * rng_fsym(&s->seed[i]);
-    float vj = 1.0f + s->params.v_jitter * rng_fsym(&s->seed[i]);
-    s->rad[i]   = s->params.radius * rj;
-    s->vpref[i] = s->params.v_max * vj;
-    s->invm[i]  = 1.0f / (s->rad[i] * s->rad[i]);   /* mass ~ r^2 */
     s->aflags[i] = 0;
     s->z[i] = 0.0f; s->vz[i] = 0.0f;
     /* count < cap guarantees the free stack is non-empty */
@@ -446,10 +543,53 @@ int simp_spawn(SimP *s, float x, float y) {
     return i;
 }
 
+int simp_spawn(SimP *s, float x, float y) {
+    int i = spawn_common(s, x, y);
+    if (i < 0) return -1;
+    float rj = 1.0f + s->params.r_jitter * rng_fsym(&s->seed[i]);
+    float vj = 1.0f + s->params.v_jitter * rng_fsym(&s->seed[i]);
+    s->rad[i]   = s->params.radius * rj;
+    s->vpref[i] = s->params.v_max * vj;
+    s->invm[i]  = 1.0f / (s->rad[i] * s->rad[i]);   /* mass ~ r^2 */
+    return i;
+}
+
 int simp_spawn_dormant(SimP *s, float x, float y) {
     int i = simp_spawn(s, x, y);
     if (i >= 0) s->aflags[i] |= SIMP_DORMANT;
     return i;
+}
+
+int simp_spawn_desc(SimP *s, float x, float y, const SimPAgentDesc *d) {
+    int i = spawn_common(s, x, y);
+    if (i < 0) return -1;
+    float vj = 1.0f + s->params.v_jitter * rng_fsym(&s->seed[i]);
+    s->rad[i]   = d->radius;
+    s->vpref[i] = d->v_pref * vj;
+    /* mass in walker units: 1.0 = a default-radius agent. Default spawns
+     * store invm = 1/r^2, i.e. mass = r^2; dividing by R0^2 puts both on
+     * the same scale (PBD only ever uses invm ratios). */
+    float r0 = s->params.radius;
+    float m = d->mass > 1e-3f ? d->mass : 1e-3f;
+    s->invm[i] = 1.0f / (m * r0 * r0);
+    /* an agent larger than the grid was sized for would slip through the
+     * 5-cell PBD pair search: coarsen the grid (fewer cells than allocated,
+     * so no realloc; brute-force fallbacks cover until the next rebuild) */
+    if (d->radius > s->grid_rmax) {
+        s->grid_rmax = d->radius;
+        s->ccell = 2.0f * s->grid_rmax * 1.05f;
+        s->inv_ccell = 1.0f / s->ccell;
+        s->cgw = (int)ceilf(s->world_w * s->inv_ccell) + 1;
+        s->cgh = (int)ceilf(s->world_h * s->inv_ccell) + 1;
+        s->grid_stale = true;
+    }
+    return i;
+}
+
+void simp_sleep(SimP *s, int i) {
+    if (i < 0 || i >= s->count) return;
+    if (s->aflags[i] & SIMP_FLYING) return;
+    s->aflags[i] |= SIMP_DORMANT;
 }
 
 void simp_kill(SimP *s, int i) {
@@ -484,7 +624,7 @@ bool simp_free_at(const SimP *s, float x, float y, float r) {
      * kills the grid references dead slots: full brute force. Airborne
      * agents never block a spawn point. */
     if (!s->grid_stale && s->grid_total <= s->count) {
-        float rmax = s->params.radius * (1.0f + s->params.r_jitter);
+        float rmax = s->grid_rmax;
         if (s->corpse_rmax > rmax) rmax = s->corpse_rmax;
         float reach = r + rmax;
         int x0 = clampi((int)((x - reach) * s->inv_ccell), 0, s->cgw - 1);
@@ -704,6 +844,15 @@ int simp_corpse_add(SimP *s, float x, float y, float radius, float ttl) {
     s->cpx[i] = x; s->cpy[i] = y;
     s->crad[i] = radius; s->cttl[i] = ttl;
     if (radius > s->corpse_rmax) s->corpse_rmax = radius;
+    /* same constraint as simp_spawn_desc: the PBD 5-cell pair search only
+     * sees discs whose radius fits the grid cell */
+    if (radius > s->grid_rmax) {
+        s->grid_rmax = radius;
+        s->ccell = 2.0f * s->grid_rmax * 1.05f;
+        s->inv_ccell = 1.0f / s->ccell;
+        s->cgw = (int)ceilf(s->world_w * s->inv_ccell) + 1;
+        s->cgh = (int)ceilf(s->world_h * s->inv_ccell) + 1;
+    }
     s->grid_stale = true;        /* binned as a ghost at the next rebuild */
     return i;
 }
@@ -832,8 +981,28 @@ static void wall_projection(SimP *s) {
 }
 
 int simp_step(SimP *s, float dt) {
-    if (s->nav_dirty) nav_commit(s);
     const SimPParams *P = &s->params;
+    /* navigation: terrain edits force a full commit (phi+flow+SDF, reads the
+     * current rho_s/cost_user); otherwise phi+flow alone are refreshed on a
+     * throttle whenever density matters or user costs changed (M3.6) */
+    if (s->nav_dirty) {
+        nav_commit(s);
+        s->flow_timer = 0.0f;
+        s->cost_dirty = false;
+    } else if (P->flow_period > 0.0f) {
+        s->flow_timer += dt;
+        if (s->flow_timer >= P->flow_period) {
+            s->flow_timer = 0.0f;
+            bool density_on = P->k_density > 0.0f &&
+                (s->count > 0 || s->corpse_count > 0 || s->rho_active);
+            if (density_on || s->cost_dirty) {
+                density_update(s);
+                recompute_phi(s);
+                recompute_flow(s);
+                s->cost_dirty = false;
+            }
+        }
+    }
     const float amax_dt = P->a_max * dt;
     const float damp = clampf(1.0f - P->damping * dt, 0.0f, 1.0f);
 

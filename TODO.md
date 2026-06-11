@@ -37,8 +37,12 @@ poi scala, poi gioco.
       collisione: `simp_query_circle` (buffer di indici) + `simp_query_nearest`.
       FATTO per design M3.4 (+ rebuild della griglia a fine step per query
       esatte), `test_query` PASS contro brute force.
-- [ ] **Tipi di nemico** come soli parametri: tank (massa ×10, raggio ×1.5),
+- [x] **Tipi di nemico** come soli parametri: tank (massa ×10, raggio ×1.5),
       runner (v_max ×2), screamer (modifica locale temporanea del costo Dijkstra).
+      FATTO per design M3.5: `simp_spawn_desc` (massa in unità walker) +
+      `simp_add_cost`/`simp_clear_cost` per le perturbazioni locali del campo;
+      `test_types` PASS; nel sandbox tasto M (tipo spawner/pack) e pennelli
+      G/H (costo ±), X per azzerare.
 - [x] **Stato dormiente + spawn senza burst** (`dormant`, `simp_free_at`,
       `simp_spawn_dormant`, `simp_wake_radius/all`): emitter auto-strozzati,
       branchi one-shot che dormono finché non svegliati (esplosione, alba).
@@ -48,9 +52,13 @@ poi scala, poi gioco.
       wake per prossimità del giocatore/rumore; più avanti stato "attacking"
       (vedi questione aperta sul drain). Valutare anche recinzioni distruttibili
       come contenimento alternativo dei branchi (muri con HP).
-- [ ] Densità → costo Dijkstra (Continuum Crowds): accumulare densità per cella
+- [x] Densità → costo Dijkstra (Continuum Crowds): accumulare densità per cella
       nav durante il rebuild della griglia, ricalcolo flow a bassa frequenza
       (~0.5 s). L'orda aggira gli ingorghi da sola.
+      FATTO per design M3.6: `density_update` (istogramma + blur + EMA) e
+      ricalcolo phi/flow throttled (`flow_period`); `k_density` manopola
+      (K/L nel sandbox, O = overlay densità); `test_density_route` PASS
+      (split 22%→57%, drain più veloce). M3 COMPLETO.
 
 ## M4 — Scala (target 50–100k a 60 Hz su CPU)
 

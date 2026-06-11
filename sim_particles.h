@@ -47,6 +47,31 @@
  *     world bounds temporarily; they are clamped back on landing. Goal
  *     cells DO drain overflying agents (simplification, revisit if needed).
  *
+ * AGENT TYPES (M3.5) — the core has no notion of "tank" or "runner": types
+ * are just per-agent parameters. simp_spawn_desc receives radius, preferred
+ * speed and mass explicitly instead of deriving them from defaults + jitter.
+ * Mass is in walker units (1.0 = a default-radius agent); PBD only ever uses
+ * mass RATIOS, so a mass-10 tank shoves mass-1 walkers aside and is barely
+ * deflected in return. Game-side data (HP, type id, ...) goes in arrays
+ * indexed by SLOT, as with handles. Spawning an agent larger than the
+ * default radius coarsens the collision grid globally (cell = 2*r_max):
+ * correct but slower for everyone — keep boss radii within ~2x the default.
+ *
+ * NAVIGATION COSTS (M3.5 + M3.6) — Dijkstra edges are scaled per destination
+ * cell: edge = dist * clamp(1 + k_density * min(rho/rho_max, 1) + user, 0.2).
+ *   - USER COST (simp_add_cost): screamer lures (w < 0 attracts), fear or
+ *     mud (w > 0 repels). Additive per cell, clamped to [-0.8, 100]: never
+ *     negative edges, and never competitive with the WALL_ENTER toll.
+ *   - DENSITY (Continuum Crowds light): rho is a per-nav-cell histogram of
+ *     grounded agents (+ a fixed weight per corpse), blurred 3x3 and smoothed
+ *     over time (EMA). With k_density > 0 crowded routes get pricier, so the
+ *     horde fans out around jams on its own. rho_max is the packing density
+ *     of a cell. k_density = 0 disables the term entirely.
+ *   - THROTTLE: phi/flow are recomputed at most every flow_period seconds
+ *     (terrain edits still force an immediate full recompute through the
+ *     usual dirty flag). Agents read a slightly stale field in between:
+ *     invisible in practice, and it keeps the Dijkstra off the hot path.
+ *
  * CORPSES — passive infinite-mass discs in the same collision grid (the
  * living shove around them: emergent barricades at chokepoints). Fixed-size
  * pool, TTL-based; when full, the closest-to-expiry corpse is replaced, so
@@ -87,6 +112,8 @@ typedef struct {
     int   pbd_iters;  /* PBD relaxation iterations per step       default 3    */
     float landing_damp; /* horizontal speed kept on landing [0..1] default 0.30 */
     float wall_h;     /* flight altitude that clears walls (m)    default 2.0  */
+    float k_density;  /* density->cost gain (0 = off)             default 2.0  */
+    float flow_period;/* min seconds between flow recomputes      default 0.5  */
 } SimPParams;
 
 typedef struct SimP SimP;
@@ -108,12 +135,38 @@ bool  simp_is_wall(const SimP *s, int cx, int cy);
 /* Force recompute of phi/flow/SDF now (otherwise done lazily on next step). */
 void  simp_terrain_commit(SimP *s);
 
+/* Additive user cost on a nav cell: w > 0 repels (fear, mud), w < 0 attracts
+ * (screamer lure). Accumulates; clamped to [-0.8, 100]. Takes effect at the
+ * next throttled flow recompute (<= flow_period away), or immediately on
+ * simp_terrain_commit. */
+void  simp_add_cost(SimP *s, int cx, int cy, float w);
+void  simp_clear_cost(SimP *s);
+const float *simp_user_cost(const SimP *s);     /* gw*gh, for overlays */
+/* Smoothed per-nav-cell crowd density used by the k_density term (agents
+ * per cell, EMA + blur; updated every flow_period). For overlays/AI. */
+const float *simp_density_arr(const SimP *s);
+
 /* ---- agents -------------------------------------------------------------- */
 
 /* Returns agent index, or -1 if at capacity or (x,y) inside a wall.        */
 int   simp_spawn(SimP *s, float x, float y);
 /* Same, but the agent starts dormant (stands still until woken).           */
 int   simp_spawn_dormant(SimP *s, float x, float y);
+
+/* Typed spawn (M3.5): explicit per-agent parameters instead of defaults +
+ * jitter. radius/v_pref in meters, m/s; mass in walker units (1.0 = default
+ * agent). v_pref still gets the sim-level v_jitter spread (anti-lockstep);
+ * radius and mass are taken exactly. */
+typedef struct {
+    float radius;        /* m   */
+    float v_pref;        /* m/s */
+    float mass;          /* walker units; the core stores 1/mass as invm */
+} SimPAgentDesc;
+int   simp_spawn_desc(SimP *s, float x, float y, const SimPAgentDesc *d);
+
+/* Put agent i to sleep (counterpart of the wake functions; no-op while
+ * flying). Lets game code place dormant packs of typed agents. */
+void  simp_sleep(SimP *s, int i);
 /* Swap-and-pop removal: the last agent takes index i.                      */
 void  simp_kill(SimP *s, int i);
 int   simp_count(const SimP *s);

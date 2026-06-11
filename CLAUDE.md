@@ -27,6 +27,15 @@ Il progetto ha DUE modelli di simulazione complementari:
      I muri sono attraversabili a costo enorme (`WALL_ENTER`, come nel core continuo):
      le rotte aperte vincono sempre, ma un goal completamente murato continua ad
      attrarre l'orda, che va a premere contro le mura (assedio).
+     Gli archi sono pesati per cella destinazione (M3.5+3.6):
+     `dist · clamp(1 + k_density·min(rho/rho_max,1) + cost_user, ≥0.2)`.
+     `cost_user` (`simp_add_cost`, clamp [-0.8,100]) = paura/fango (w>0) o
+     richiamo screamer (w<0); `rho` = densità per cella nav (istogramma +
+     blur 3×3 + EMA, cadaveri pesati ×2) → l'orda aggira gli ingorghi da sola
+     (Continuum Crowds light). phi/flow si ricalcolano su throttle
+     (`flow_period`, default 0.5 s) quando densità o costi cambiano; le
+     modifiche al terreno forzano il commit completo subito. Scratch nav
+     preallocati: niente malloc in `simp_step`.
    - **Steering**: verso il flow a velocità preferita per-agente, accelerazione
      limitata (`a_max`), rumore angolare per-step (`noise_ang`) + jitter di velocità
      e raggio per-agente (anti-lockstep).
@@ -67,6 +76,15 @@ Il progetto ha DUE modelli di simulazione complementari:
      swap-and-pop. `simp_handle_of` / `simp_index_of` / `simp_slot_of`; i dati
      di gioco per-agente (HP, tipo…) vanno indicizzati per SLOT, stabile per
      tutta la vita dell'agente. 20 bit slot + 12 bit gen, 0 = invalid.
+   - **Tipi di nemico** (M3.5): `simp_spawn_desc(x, y, desc)` con raggio,
+     v_pref e massa espliciti (massa in unità walker: 1.0 = agente default;
+     il PBD usa solo rapporti di massa → il tank massa 10 sposta i walker e
+     non viene deviato). `v_pref` riceve comunque il `v_jitter` globale.
+     La tabella tipi (HP, bounty…) vive nel gioco, indicizzata per slot.
+     Uno spawn (o cadavere) più grande del default ingrandisce la cella della
+     griglia di collisione: corretto ma più lento per tutti — boss entro ~2×
+     il raggio default. `simp_sleep` = controparte dei wake per branchi
+     dormienti tipizzati.
    - **Query spaziali** (M3.4): `simp_query_circle` (indici nel raggio, satura
      a max_out) e `simp_query_nearest` (scansione ad anelli con lower bound).
      Esatte tra uno step e l'altro: la griglia viene RICOSTRUITA a fine step
@@ -79,9 +97,10 @@ Il progetto ha DUE modelli di simulazione complementari:
 - Compila pulito (`-O2 -Wall -Wextra -std=c11`), zero dipendenze oltre libm.
 - `test_particles`: griglia 320×240 (cella 0.5 m), ~13k agenti, muro con due varchi
   da 4 m, 9000 step a 60 Hz. Zero NaN/out-of-bounds, overlap residuo medio ~1–2 cm,
-  71% drenato al goal (throughput limitato dai varchi: congestione realistica —
-  cunei granulari contro il muro, getti a ventaglio oltre i varchi, verificato
-  visivamente sui frame PPM). ~3.5 ms/step single-thread.
+  82% drenato al goal (71% prima di M3.6: con densità→costo l'orda si spalma
+  sui due varchi da sola; congestione comunque realistica — cunei granulari
+  contro il muro, getti a ventaglio oltre i varchi, verificato visivamente
+  sui frame PPM). ~4.0 ms/step single-thread (densità attiva).
 - `test_impulse`: esplosione in folla impaccata → picco 14 m/s, rientro sotto
   4 m/s in pochi secondi, zero NaN. Fase volo (M3.2): 356 lanciati con
   `up_ratio` 0.5 → tutti atterrati entro il tempo balistico (step 87 ≈
@@ -106,6 +125,15 @@ Il progetto ha DUE modelli di simulazione complementari:
   sottoinsieme (che marcia e drena), `wake_all` svuota la mappa. Nota: svegliare
   il lato lontano del branco è lento — i marciatori devono spingersi attraverso
   i dormienti (ostacolo mobile, comportamento voluto).
+- `test_types` (M3.5): corsa in campo aperto (runner doppiano i walker: mean x
+  30.4 vs 18.5 m a 10 s), pressing con 5% tank al varco (720/720 drenati, tank
+  inclusi — ATTENZIONE: goal a ridosso del bordo profondi ≥ 2 celle, o il
+  centro del tank non li raggiunge e i tank parcheggiati barricano il drain),
+  costo utente su due corridoi simmetrici (repulsione +5 → 100% sull'altro,
+  attrazione −0.5 → 98%).
+- `test_density_route` (M3.6): varco stretto diretto vs varco largo in deviazione;
+  con `k_density` 0→2.5 l'uso del percorso lungo sale 22%→57% e il drain del
+  90% scende da 5382 a 4552 step. Zero NaN.
 
 ## File
 
@@ -118,15 +146,19 @@ Il progetto ha DUE modelli di simulazione complementari:
 - `test_handles.c` / `test_query.c` — verifica handle (M3.1) e query (M3.4).
 - `test_corpses.c` — verifica cadaveri-ostacolo (M3.3); il volo (M3.2) è
   dentro `test_impulse.c`.
+- `test_types.c` / `test_density_route.c` — verifica tipi + costo utente
+  (M3.5) e densità→costo (M3.6).
 - `M3_DESIGN.md` — design tecnico di M3 (handle, volo, cadaveri, query, tipi,
   densità→costo): API, dettagli, piani di verifica.
 - `sandbox_particles.c` — sandbox interattivo SDL3 (pennelli muro/spawner/goal/
-  pack/kill, RMB = esplosione che sveglia anche i dormienti e lancia in aria
-  (manopola `up_ratio` su 7/U), W = sveglia tutti, manopole live, pausa/step,
-  overlay flow field). Gli spawner sono stato del sandbox, non del core; il
-  pennello PACK piazza dormienti one-shot (ridipingere riempie i buchi,
-  idempotente); il pennello KILL uccide sotto il pennello e il ~30% lascia un
-  cadavere (barricate emergenti). Controlli nell'header del file.
+  pack/kill e costo± su G/H con X per azzerare, RMB = esplosione che sveglia
+  anche i dormienti e lancia in aria (manopola `up_ratio` su 7/U), W = sveglia
+  tutti, M = tipo di spawn (walker/runner/tank/mix per spawner e pack), K/L =
+  `k_density`, O = overlay densità, manopole live, pausa/step, overlay flow
+  field). Gli spawner sono stato del sandbox, non del core; il pennello PACK
+  piazza dormienti one-shot (ridipingere riempie i buchi, idempotente); il
+  pennello KILL uccide sotto il pennello e il ~30% lascia un cadavere
+  (barricate emergenti). Controlli nell'header del file.
 - `Makefile` — `make test` (entrambi, no deps) · `make sandbox` (SDL3) ·
   `make clean`. SDL3 compilato dai sorgenti sta in `~/.local`: il Makefile
   imposta `PKG_CONFIG_PATH` da solo, e `sdl3.pc` porta già l'rpath giusto.
