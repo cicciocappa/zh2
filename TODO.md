@@ -96,6 +96,11 @@ poi scala, poi gioco.
       Scelta dello sprite/animazione in base alla velocità della particella:
       sopra una soglia → zombie che rotola/cade (così ogni residuo schizzo di
       fisica diventa leggibile come azione invece che come glitch).
+      DIREZIONE ARTISTICA DECISA: vedi `GFX_DESIGN.md` (ortografico 3/4,
+      prerender 16 dir da Blender, tier di zoom, gore come sistema, heading
+      = EMA per slot nel renderer). Prossimo passo: scelta dello stack
+      (SDL_GPU vs GL 4.3, decide il lato compute di M5) e upgrade del
+      sandbox a rendering instanced — che è anche il banco di prova di M4.
 - [ ] Torrette: piazzamento (= muri + sorgente di danno), targeting via query
       spaziali, proiettili/raycast sulla griglia.
 - [ ] Wave/spawner, economia, HP/danno, condizioni di vittoria/sconfitta.

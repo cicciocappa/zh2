@@ -177,6 +177,14 @@ Il progetto ha DUE modelli di simulazione complementari:
   d'assedio con torrette-goal cintate).
 - `M3_DESIGN.md` — design tecnico di M3 (handle, volo, cadaveri, query, tipi,
   densità→costo): API, dettagli, piani di verifica.
+- `GFX_DESIGN.md` — direzione artistica e design grafico (DECISO, giugno 2026):
+  ortografico 3/4 alla WC2 (niente prospettiva), prerender realistico-caricato
+  da Blender a 16 direzioni, zoom a tier discreti ×2 (32→16→8 px/m → campo di
+  densità = minimappa), viewport scorrevole, livelli S/M/L fino a 512×384 m,
+  gore come sistema (gib balistici + decal persistenti + cadaveri), costruzioni
+  del giocatore a griglia + decoro obliquo a forma libera rasterizzato nella
+  nav (la collisione è già SDF: fisicamente funziona oggi). Input per la
+  scelta dello stack di rendering (SDL_GPU vs GL, ancora aperta).
 - `sandbox_particles.c` — sandbox interattivo SDL3 (pennelli muro/spawner/goal/
   pack/kill e costo± su G/H con X per azzerare, RMB = esplosione che sveglia
   anche i dormienti e lancia in aria (manopola `up_ratio` su 7/U), W = sveglia
