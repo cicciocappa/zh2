@@ -148,6 +148,14 @@ Il progetto ha DUE modelli di simulazione complementari:
   dentro `test_impulse.c`.
 - `test_types.c` / `test_density_route.c` — verifica tipi + costo utente
   (M3.5) e densità→costo (M3.6).
+- `scene.h` / `scene.c` — file di scena ASCII (griglia di char: `#` muro,
+  `G` goal, `S` spawner, `P` branco dormiente + direttive `cell`/`set
+  <param>`/`cost <rect>`): configurazioni di partenza per sandbox e test
+  senza disegnare a mano. `scene_instantiate` è deterministico (stessa
+  scena ⇒ stessi agenti). Modulo separato, il core non lo conosce; gli
+  spawner restano del chiamante. `test_scene.c` = roundtrip + parsing +
+  determinismo. Esempi in `scenes/` (chokepoint classico, fortezza
+  d'assedio con torrette-goal cintate).
 - `M3_DESIGN.md` — design tecnico di M3 (handle, volo, cadaveri, query, tipi,
   densità→costo): API, dettagli, piani di verifica.
 - `sandbox_particles.c` — sandbox interattivo SDL3 (pennelli muro/spawner/goal/
@@ -158,7 +166,10 @@ Il progetto ha DUE modelli di simulazione complementari:
   field). Gli spawner sono stato del sandbox, non del core; il pennello PACK
   piazza dormienti one-shot (ridipingere riempie i buchi, idempotente); il
   pennello KILL uccide sotto il pennello e il ~30% lascia un cadavere
-  (barricate emergenti). Controlli nell'header del file.
+  (barricate emergenti). Scene: `./sandbox scenes/file.txt` carica una
+  configurazione di partenza (deve essere 160×120), F2 salva lo stato
+  dipinto sul file caricato (o `scene_saved.txt`), R = reset alla scena.
+  Controlli nell'header del file.
 - `Makefile` — `make test` (entrambi, no deps) · `make sandbox` (SDL3) ·
   `make clean`. SDL3 compilato dai sorgenti sta in `~/.local`: il Makefile
   imposta `PKG_CONFIG_PATH` da solo, e `sdl3.pc` porta già l'rpath giusto.

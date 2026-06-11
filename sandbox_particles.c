@@ -8,6 +8,15 @@
  * Build:
  *     make sandbox        (needs SDL3; see Makefile for PKG_CONFIG_PATH)
  *
+ * Scenes:
+ *     ./sandbox [scenes/file.txt]   start from an ASCII scene file (see
+ *                                   scene.h for the format; must be 160x120)
+ *     F2                            save current walls/goals/spawners/packs
+ *                                   (+ the main knobs) to the loaded path,
+ *                                   or to scene_saved.txt if none
+ *     R                             reset = reinstantiate the loaded scene
+ *                                   (empty world when started without one)
+ *
  * Controls:
  *     LMB            paint the current brush
  *     RMB            erase (clears wall+goal+spawner under the brush)
@@ -51,6 +60,7 @@
  *     ESC            quit
  */
 #include "sim_particles.h"
+#include "scene.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -252,18 +262,81 @@ static void boom(SimP *s, float x, float y, float radius, float strength,
     simp_wake_radius(s, x, y, radius * 2.0f);
 }
 
-/* Start from an empty world: no walls, no goals, no spawners, no agents.
- * Paint everything with the brushes (like the first sandbox). */
+/* Optional starting configuration from an ASCII scene file (CLI arg). */
+static Scene      start_scene;
+static int        start_scene_loaded = 0;
+static const char *scene_path = NULL;
+
+/* Start from the loaded scene if any, else from an empty world (paint
+ * everything with the brushes, like the first sandbox). */
 static SimP *scene_create(void) {
-    SimP *s = simp_create(GW, GH, CELL, MAX_AGENTS);
     SDL_memset(spawn_flag, 0, sizeof spawn_flag);
     SDL_memset(spawn_acc, 0, sizeof spawn_acc);
     SDL_memset(goal_flag, 0, sizeof goal_flag);
+    if (start_scene_loaded) {
+        SimP *s = scene_instantiate(&start_scene, MAX_AGENTS);
+        SDL_memcpy(spawn_flag, start_scene.spawn, sizeof spawn_flag);
+        SDL_memcpy(goal_flag, start_scene.goal, sizeof goal_flag);
+        return s;
+    }
+    SimP *s = simp_create(GW, GH, CELL, MAX_AGENTS);
     simp_terrain_commit(s);
     return s;
 }
 
-int main(void) {
+/* F2: snapshot the painted world back into a scene file. Dormant agents
+ * become pack cells; the main live knobs are saved as set directives.
+ * Painted user cost is not saved (see scene.h). */
+static void scene_snapshot(SimP *s) {
+    Scene out;
+    if (scene_alloc(&out, GW, GH, CELL) != 0) return;
+    for (int cy = 0; cy < GH; cy++)
+        for (int cx = 0; cx < GW; cx++) {
+            int i = cy * GW + cx;
+            out.wall[i]  = simp_is_wall(s, cx, cy) ? 1 : 0;
+            out.goal[i]  = goal_flag[i];
+            out.spawn[i] = spawn_flag[i];
+        }
+    const float *apx = simp_px(s), *apy = simp_py(s);
+    const uint8_t *afl = simp_flags_arr(s);
+    for (int i = 0; i < simp_count(s); i++) {
+        if (!(afl[i] & SIMP_DORMANT)) continue;
+        int cx = (int)(apx[i] / CELL), cy = (int)(apy[i] / CELL);
+        if (cx >= 0 && cy >= 0 && cx < GW && cy < GH)
+            out.pack[cy * GW + cx] = 1;
+    }
+    const SimPParams *P = simp_params(s);
+    out.n_set = 4;
+    SDL_strlcpy(out.set[0].name, "pbd_iters", sizeof out.set[0].name);
+    out.set[0].value = (float)P->pbd_iters;
+    SDL_strlcpy(out.set[1].name, "noise_ang", sizeof out.set[1].name);
+    out.set[1].value = P->noise_ang;
+    SDL_strlcpy(out.set[2].name, "v_max", sizeof out.set[2].name);
+    out.set[2].value = P->v_max;
+    SDL_strlcpy(out.set[3].name, "k_density", sizeof out.set[3].name);
+    out.set[3].value = P->k_density;
+    const char *path = scene_path ? scene_path : "scene_saved.txt";
+    if (scene_save(path, &out) == 0) SDL_Log("scene saved to %s", path);
+    else                             SDL_Log("scene save FAILED (%s)", path);
+    scene_free(&out);
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1) {
+        if (scene_load(argv[1], &start_scene) != 0) {
+            fprintf(stderr, "cannot load scene '%s'\n", argv[1]);
+            return 1;
+        }
+        if (start_scene.gw != GW || start_scene.gh != GH ||
+            fabsf(start_scene.cell - CELL) > 1e-6f) {
+            fprintf(stderr, "scene is %dx%d cell %.2f, sandbox wants %dx%d cell %.2f\n",
+                    start_scene.gw, start_scene.gh, (double)start_scene.cell,
+                    GW, GH, (double)CELL);
+            return 1;
+        }
+        start_scene_loaded = 1;
+        scene_path = argv[1];
+    }
     if (!SDL_Init(SDL_INIT_VIDEO)) { SDL_Log("init: %s", SDL_GetError()); return 1; }
     SDL_Window   *win = SDL_CreateWindow("Horde particle sandbox", WINW, WINH, 0);
     SDL_Renderer *ren = SDL_CreateRenderer(win, NULL);
@@ -376,6 +449,7 @@ int main(void) {
                     simp_destroy(s); s = scene_create();
                     drained_total = 0;
                     break;
+                case SDLK_F2: scene_snapshot(s); break;
                 default: break;
                 }
                 break;

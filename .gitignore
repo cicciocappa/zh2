@@ -8,5 +8,7 @@ test_query
 test_corpses
 test_types
 test_density_route
+test_scene
 *.o
 frames/
+scene_saved.txt
