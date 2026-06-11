@@ -39,7 +39,11 @@
  *                    WALKER -> RUNNER -> TANK -> MIX (5% tank, 15% runner)
  *     K / L          k_density down / up (density->cost gain, 0 = off:
  *                    the horde fans out around its own jams)
- *     O              toggle crowd-density overlay (the rho the flow sees)
+ *     A / S          k_jam down / up (stalled-crowd->cost gain, 0 = off:
+ *                    a queue with zero throughput prices itself out and
+ *                    the horde reroutes; try a gap sealed by corpses)
+ *     O              cycle overlay: off -> crowd density (violet, the rho
+ *                    the flow sees) -> stalled crowd (red, the jam term)
  *     W              wake all sleepers ("sunrise")
  *     7 / U          explosion up_ratio down / up (vertical kick: zombies
  *                    above ~1 m/s vz take off, fly over walls above 2 m,
@@ -117,9 +121,10 @@ static void speed_ramp(float t, Uint8 *r, Uint8 *g, Uint8 *b) {
     *b = 50;
 }
 
-static void terrain_render(SimP *s, Uint32 *px, int show_density) {
+/* overlay_mode: 0 = off, 1 = crowd density (violet), 2 = stalled crowd (red) */
+static void terrain_render(SimP *s, Uint32 *px, int overlay_mode) {
     const float *uc  = simp_user_cost(s);
-    const float *rho = simp_density_arr(s);
+    const float *rho = overlay_mode == 2 ? simp_jam_arr(s) : simp_density_arr(s);
     const SimPParams *P = simp_params(s);
     /* same packing density the core uses to saturate the k_density term */
     const float inv_rho_max =
@@ -138,9 +143,12 @@ static void terrain_render(SimP *s, Uint32 *px, int show_density) {
                 float t = -uc[i] / 0.8f; if (t > 1.0f) t = 1.0f;
                 g += (int)(90 * t);
             }
-            if (show_density) {                             /* rho: violet  */
+            if (overlay_mode == 1) {                        /* rho: violet  */
                 float t = rho[i] * inv_rho_max; if (t > 1.0f) t = 1.0f;
                 r += (int)(110 * t); b += (int)(140 * t);
+            } else if (overlay_mode == 2) {                 /* jam: red     */
+                float t = rho[i] * inv_rho_max; if (t > 1.0f) t = 1.0f;
+                r += (int)(160 * t); b += (int)(30 * t);
             }
         }
         if (r > 255) r = 255;
@@ -306,7 +314,7 @@ static void scene_snapshot(SimP *s) {
             out.pack[cy * GW + cx] = 1;
     }
     const SimPParams *P = simp_params(s);
-    out.n_set = 4;
+    out.n_set = 5;
     SDL_strlcpy(out.set[0].name, "pbd_iters", sizeof out.set[0].name);
     out.set[0].value = (float)P->pbd_iters;
     SDL_strlcpy(out.set[1].name, "noise_ang", sizeof out.set[1].name);
@@ -315,6 +323,8 @@ static void scene_snapshot(SimP *s) {
     out.set[2].value = P->v_max;
     SDL_strlcpy(out.set[3].name, "k_density", sizeof out.set[3].name);
     out.set[3].value = P->k_density;
+    SDL_strlcpy(out.set[4].name, "k_jam", sizeof out.set[4].name);
+    out.set[4].value = P->k_jam;
     const char *path = scene_path ? scene_path : "scene_saved.txt";
     if (scene_save(path, &out) == 0) SDL_Log("scene saved to %s", path);
     else                             SDL_Log("scene save FAILED (%s)", path);
@@ -406,7 +416,15 @@ int main(int argc, char **argv) {
                     P->k_density = fminf(6.0f, P->k_density + 0.5f);
                     simp_terrain_commit(s);
                     break;
-                case SDLK_O: show_density = !show_density; break;
+                case SDLK_A:
+                    P->k_jam = fmaxf(0.0f, P->k_jam - 1.0f);
+                    simp_terrain_commit(s);   /* apply now, even toward 0 */
+                    break;
+                case SDLK_S:
+                    P->k_jam = fminf(16.0f, P->k_jam + 1.0f);
+                    simp_terrain_commit(s);
+                    break;
+                case SDLK_O: show_density = (show_density + 1) % 3; break;
                 case SDLK_W: simp_wake_all(s); break;
                 case SDLK_7: boom_up = fmaxf(0.0f, boom_up - 0.1f); break;
                 case SDLK_U: boom_up = fminf(2.0f, boom_up + 0.1f); break;
@@ -559,12 +577,12 @@ int main(int argc, char **argv) {
         snprintf(title, sizeof title,
                  "Horde particles | brush:%s sz:%d type:%s | n:%d sleep:%d "
                  "corpses:%d drained:%ld | pbd:%d noise:%.2f vmax:%.1f "
-                 "kd:%.1f | boom r:%.0f s:%.0f up:%.1f | %.2f ms %s%s",
+                 "kd:%.1f kj:%.0f | boom r:%.0f s:%.0f up:%.1f | %.2f ms %s%s",
                  BRUSH_NAME[brush], size, TYPE_NAME[spawn_type],
                  simp_count(s), n_dormant,
                  simp_corpse_count(s), drained_total,
                  P->pbd_iters, (double)P->noise_ang, (double)P->v_max,
-                 (double)P->k_density,
+                 (double)P->k_density, (double)P->k_jam,
                  (double)boom_radius, (double)boom_strength, (double)boom_up,
                  step_ms, paused ? "PAUSED" : "running",
                  spawning ? "" : " SPAWN-OFF");

@@ -58,6 +58,14 @@ poi scala, poi gioco.
       FATTO per design M3.6: `density_update` (istogramma + blur + EMA) e
       ricalcolo phi/flow throttled (`flow_period`); `k_density` manopola
       (K/L nel sandbox, O = overlay densità); `test_density_route` PASS
+- [x] **Ingorgo → costo (M3.7)**: la densità misura quanta gente c'è, non se
+      si muove — un varco fisicamente bloccato (throughput zero) non diventa
+      mai abbastanza caro e l'orda ci fa la coda per sempre. Secondo campo
+      `jam` = istogramma pesato per fermezza `(1−|v|/v_pref)²` (stesso blur +
+      EMA, zero passate extra), termine `k_jam·min(jam/rho_max,1)` negli
+      archi: solo la folla FERMA diventa cara, il flusso devia su strade
+      alternative e torna quando il tappo si scioglie. `test_jam` PASS
+      (A/S + overlay O nel sandbox, `set k_jam` nei file di scena)
       (split 22%→57%, drain più veloce). M3 COMPLETO.
 
 ## M4 — Scala (target 50–100k a 60 Hz su CPU)

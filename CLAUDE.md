@@ -27,12 +27,20 @@ Il progetto ha DUE modelli di simulazione complementari:
      I muri sono attraversabili a costo enorme (`WALL_ENTER`, come nel core continuo):
      le rotte aperte vincono sempre, ma un goal completamente murato continua ad
      attrarre l'orda, che va a premere contro le mura (assedio).
-     Gli archi sono pesati per cella destinazione (M3.5+3.6):
-     `dist · clamp(1 + k_density·min(rho/rho_max,1) + cost_user, ≥0.2)`.
+     Gli archi sono pesati per cella destinazione (M3.5+3.6+3.7):
+     `dist · clamp(1 + k_density·min(rho/rho_max,1) + k_jam·min(jam/rho_max,1)
+     + cost_user, ≥0.2)`.
      `cost_user` (`simp_add_cost`, clamp [-0.8,100]) = paura/fango (w>0) o
      richiamo screamer (w<0); `rho` = densità per cella nav (istogramma +
      blur 3×3 + EMA, cadaveri pesati ×2) → l'orda aggira gli ingorghi da sola
-     (Continuum Crowds light). phi/flow si ricalcolano su throttle
+     (Continuum Crowds light); `jam` (M3.7) = stesso istogramma ma pesato per
+     FERMEZZA, `(1−min(|v|/v_pref,1))²` per agente (cadaveri e dormienti a
+     peso pieno) → la densità da sola satura a k_density e non può esprimere
+     un varco a throughput zero (costo reale in tempo: infinito), il jam
+     rende cara solo la folla FERMA e il Dijkstra devia su strade alternative
+     anche molto più lunghe; quando il tappo si scioglie l'EMA decade e la
+     rotta diretta torna a vincere. Resta sotto WALL_ENTER: gli assedi a goal
+     murati non cambiano. phi/flow si ricalcolano su throttle
      (`flow_period`, default 0.5 s) quando densità o costi cambiano; le
      modifiche al terreno forzano il commit completo subito. Scratch nav
      preallocati: niente malloc in `simp_step`.
@@ -133,7 +141,18 @@ Il progetto ha DUE modelli di simulazione complementari:
   attrazione −0.5 → 98%).
 - `test_density_route` (M3.6): varco stretto diretto vs varco largo in deviazione;
   con `k_density` 0→2.5 l'uso del percorso lungo sale 22%→57% e il drain del
-  90% scende da 5382 a 4552 step. Zero NaN.
+  90% scende da 5382 a 4552 step. Zero NaN. (Il test pinna `k_jam = 0` per
+  isolare il termine M3.6.)
+- `test_jam` (M3.7): varco diretto nav-aperto ma sigillato da un cadaverone
+  a massa infinita (l'ingorgo idealizzato), deviazione larga ~46 m più lunga
+  (oltre la portata della densità satura). Con solo densità il branco (440)
+  resta in coda al varco morto (29% drenato al cap, solo la frangia sud
+  devia); con `k_jam` 8 la coda si prezza fuori mercato e il 90% drena dalla
+  deviazione in 6884 step. Sweep: 4→14 monotono (più alto = ribaltamento
+  più rapido). Zero NaN. Attenzione misurata: con branchi GRANDI (800+) la
+  sola densità satura su un'area enorme e finisce per deviare anche lei
+  (lentamente) — il jam serve per code piccole rispetto alla deviazione e
+  per la reattività.
 
 ## File
 
@@ -146,8 +165,8 @@ Il progetto ha DUE modelli di simulazione complementari:
 - `test_handles.c` / `test_query.c` — verifica handle (M3.1) e query (M3.4).
 - `test_corpses.c` — verifica cadaveri-ostacolo (M3.3); il volo (M3.2) è
   dentro `test_impulse.c`.
-- `test_types.c` / `test_density_route.c` — verifica tipi + costo utente
-  (M3.5) e densità→costo (M3.6).
+- `test_types.c` / `test_density_route.c` / `test_jam.c` — verifica tipi +
+  costo utente (M3.5), densità→costo (M3.6) e ingorgo→costo (M3.7).
 - `scene.h` / `scene.c` — file di scena ASCII (griglia di char: `#` muro,
   `G` goal, `S` spawner, `P` branco dormiente + direttive `cell`/`set
   <param>`/`cost <rect>`): configurazioni di partenza per sandbox e test
@@ -162,8 +181,8 @@ Il progetto ha DUE modelli di simulazione complementari:
   pack/kill e costo± su G/H con X per azzerare, RMB = esplosione che sveglia
   anche i dormienti e lancia in aria (manopola `up_ratio` su 7/U), W = sveglia
   tutti, M = tipo di spawn (walker/runner/tank/mix per spawner e pack), K/L =
-  `k_density`, O = overlay densità, manopole live, pausa/step, overlay flow
-  field). Gli spawner sono stato del sandbox, non del core; il pennello PACK
+  `k_density`, A/S = `k_jam`, O = overlay ciclico (off → densità viola →
+  jam rosso), manopole live, pausa/step, overlay flow field). Gli spawner sono stato del sandbox, non del core; il pennello PACK
   piazza dormienti one-shot (ridipingere riempie i buchi, idempotente); il
   pennello KILL uccide sotto il pennello e il ~30% lascia un cadavere
   (barricate emergenti). Scene: `./sandbox scenes/file.txt` carica una

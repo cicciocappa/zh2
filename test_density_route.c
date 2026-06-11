@@ -37,6 +37,7 @@ static RunStats run(float k_density) {
     RunStats st = { 0, 0, 0, 0, 0, 0 };
     SimP *s = simp_create(GW, GH, CELL, MAX_AGENTS);
     simp_params(s)->k_density = k_density;
+    simp_params(s)->k_jam = 0.0f;   /* isolate the M3.6 term (M3.7 has its own test) */
 
     for (int x = 0; x < GW; x++) { simp_set_wall(s, x, 0, true); simp_set_wall(s, x, GH - 1, true); }
     for (int y = 0; y < GH; y++) { simp_set_wall(s, 0, y, true); simp_set_wall(s, GW - 1, y, true); }

@@ -8,6 +8,7 @@ test_query
 test_corpses
 test_types
 test_density_route
+test_jam
 test_scene
 *.o
 frames/

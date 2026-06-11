@@ -9,7 +9,7 @@ SDL_CFLAGS := $(shell $(SDL_PC) --cflags sdl3 2>/dev/null)
 SDL_LIBS   := $(shell $(SDL_PC) --libs   sdl3 2>/dev/null)
 
 all: test_particles test_impulse test_dormant test_handles test_query test_corpses \
-     test_types test_density_route test_scene
+     test_types test_density_route test_jam test_scene
 
 test_particles: test_particles.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_particles.c sim_particles.c $(LDLIBS)
@@ -35,6 +35,9 @@ test_types: test_types.c sim_particles.c sim_particles.h
 test_density_route: test_density_route.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_density_route.c sim_particles.c $(LDLIBS)
 
+test_jam: test_jam.c sim_particles.c sim_particles.h
+	$(CC) $(CFLAGS) -o $@ test_jam.c sim_particles.c $(LDLIBS)
+
 test_scene: test_scene.c scene.c scene.h sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_scene.c scene.c sim_particles.c $(LDLIBS)
 
@@ -50,10 +53,12 @@ test: all
 	./test_corpses
 	./test_types
 	./test_density_route
+	./test_jam
 	./test_scene
 
 clean:
 	rm -rf test_particles test_impulse test_dormant test_handles test_query \
-	       test_corpses test_types test_density_route test_scene sandbox frames
+	       test_corpses test_types test_density_route test_jam test_scene \
+	       sandbox frames
 
 .PHONY: all test clean

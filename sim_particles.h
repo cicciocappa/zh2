@@ -57,8 +57,10 @@
  * default radius coarsens the collision grid globally (cell = 2*r_max):
  * correct but slower for everyone — keep boss radii within ~2x the default.
  *
- * NAVIGATION COSTS (M3.5 + M3.6) — Dijkstra edges are scaled per destination
- * cell: edge = dist * clamp(1 + k_density * min(rho/rho_max, 1) + user, 0.2).
+ * NAVIGATION COSTS (M3.5 + M3.6 + M3.7) — Dijkstra edges are scaled per
+ * destination cell:
+ *   edge = dist * clamp(1 + k_density * min(rho/rho_max, 1)
+ *                         + k_jam     * min(jam/rho_max, 1) + user, 0.2).
  *   - USER COST (simp_add_cost): screamer lures (w < 0 attracts), fear or
  *     mud (w > 0 repels). Additive per cell, clamped to [-0.8, 100]: never
  *     negative edges, and never competitive with the WALL_ENTER toll.
@@ -67,6 +69,16 @@
  *     over time (EMA). With k_density > 0 crowded routes get pricier, so the
  *     horde fans out around jams on its own. rho_max is the packing density
  *     of a cell. k_density = 0 disables the term entirely.
+ *   - JAM (M3.7): same histogram, but each agent contributes its STILLNESS
+ *     instead of 1: (1 - min(|v|/v_pref, 1))^2 — full weight when stopped,
+ *     zero at preferred speed (corpses and dormant packs count in full).
+ *     Density alone saturates at k_density and cannot express a chokepoint
+ *     with ZERO throughput (its real cost in time is infinite), so the horde
+ *     keeps queueing at a physically blocked gap forever. The jam term makes
+ *     stalled crowd — and only stalled crowd — expensive enough that the
+ *     Dijkstra reroutes around it; when the plug clears, the EMA decays and
+ *     the direct route wins again. k_jam = 0 disables it. Stays far below
+ *     WALL_ENTER, so sieges against sealed goals are unaffected.
  *   - THROTTLE: phi/flow are recomputed at most every flow_period seconds
  *     (terrain edits still force an immediate full recompute through the
  *     usual dirty flag). Agents read a slightly stale field in between:
@@ -113,6 +125,7 @@ typedef struct {
     float landing_damp; /* horizontal speed kept on landing [0..1] default 0.30 */
     float wall_h;     /* flight altitude that clears walls (m)    default 2.0  */
     float k_density;  /* density->cost gain (0 = off)             default 2.0  */
+    float k_jam;      /* stalled-crowd->cost gain (0 = off)       default 8.0  */
     float flow_period;/* min seconds between flow recomputes      default 0.5  */
 } SimPParams;
 
@@ -145,6 +158,9 @@ const float *simp_user_cost(const SimP *s);     /* gw*gh, for overlays */
 /* Smoothed per-nav-cell crowd density used by the k_density term (agents
  * per cell, EMA + blur; updated every flow_period). For overlays/AI. */
 const float *simp_density_arr(const SimP *s);
+/* Smoothed per-nav-cell STALLED density used by the k_jam term (stillness-
+ * weighted agents per cell, same blur + EMA). For overlays/AI. */
+const float *simp_jam_arr(const SimP *s);
 
 /* ---- agents -------------------------------------------------------------- */
 

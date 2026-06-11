@@ -56,6 +56,8 @@ struct SimP {
     float   *cost_user;    /* gw*gh additive user cost, clamped on write */
     float   *rho_raw;      /* gw*gh scratch histogram (agents per cell) */
     float   *rho_s;        /* gw*gh smoothed density (blur + EMA) */
+    float   *jam_raw;      /* gw*gh scratch histogram (stillness-weighted) */
+    float   *jam_s;        /* gw*gh smoothed stalled density (M3.7) */
     float   *cost_mult;    /* gw*gh edge multiplier, filled per recompute */
     bool     cost_dirty;   /* cost_user changed since last flow recompute */
     bool     rho_active;   /* rho_s still holds non-negligible mass */
@@ -163,11 +165,16 @@ static void recompute_phi(SimP *s) {
     const float r0 = s->params.radius;
     const float inv_rho_max =
         (3.14159265f * r0 * r0) / (s->cell * s->cell * 0.7f);
+    const float kj = s->params.k_jam;
     for (int i = 0; i < n; i++) {
         float m = 1.0f + s->cost_user[i];
         if (kd > 0.0f) {
             float t = s->rho_s[i] * inv_rho_max;
             m += kd * (t > 1.0f ? 1.0f : t);
+        }
+        if (kj > 0.0f) {
+            float t = s->jam_s[i] * inv_rho_max;
+            m += kj * (t > 1.0f ? 1.0f : t);
         }
         s->cost_mult[i] = m < 0.2f ? 0.2f : m;
     }
@@ -260,32 +267,45 @@ static void recompute_flow(SimP *s) {
 static void density_update(SimP *s) {
     const int gw = s->gw, gh = s->gh, n = gw * gh;
     memset(s->rho_raw, 0, (size_t)n * sizeof(float));
+    memset(s->jam_raw, 0, (size_t)n * sizeof(float));
     for (int i = 0; i < s->count; i++) {
         if (s->aflags[i] & SIMP_FLYING) continue;
         int cx = clampi((int)(s->px[i] * s->inv_cell), 0, gw - 1);
         int cy = clampi((int)(s->py[i] * s->inv_cell), 0, gh - 1);
         s->rho_raw[cy * gw + cx] += 1.0f;
+        /* M3.7: stillness = how far below preferred speed the agent actually
+         * moves (recovered velocity, so crowd pressure counts). Squared, so
+         * slow-but-flowing crowd barely registers while a stopped queue gets
+         * full weight. Dormant packs read as fully stalled: intended, the
+         * flow routes around sleeping obstacles. */
+        float sp = sqrtf(s->vx[i] * s->vx[i] + s->vy[i] * s->vy[i]);
+        float still = 1.0f - sp / s->vpref[i];
+        if (still > 0.0f) s->jam_raw[cy * gw + cx] += still * still;
     }
     for (int j = 0; j < s->corpse_count; j++) {
         int cx = clampi((int)(s->cpx[j] * s->inv_cell), 0, gw - 1);
         int cy = clampi((int)(s->cpy[j] * s->inv_cell), 0, gh - 1);
         s->rho_raw[cy * gw + cx] += CORPSE_RHO;
+        s->jam_raw[cy * gw + cx] += CORPSE_RHO;
     }
     float peak = 0.0f;
     for (int cy = 0; cy < gh; cy++) {
         for (int cx = 0; cx < gw; cx++) {
-            float acc = 0.0f; int cnt = 0;
+            float acc = 0.0f, jacc = 0.0f; int cnt = 0;
             for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
                 int nx = cx + dx, ny = cy + dy;
                 if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
-                acc += s->rho_raw[ny * gw + nx]; cnt++;
+                acc  += s->rho_raw[ny * gw + nx];
+                jacc += s->jam_raw[ny * gw + nx]; cnt++;
             }
             int i = cy * gw + cx;
             s->rho_s[i] = s->rho_s[i] * (1.0f - RHO_EMA) + (acc / (float)cnt) * RHO_EMA;
+            s->jam_s[i] = s->jam_s[i] * (1.0f - RHO_EMA) + (jacc / (float)cnt) * RHO_EMA;
             if (s->rho_s[i] > peak) peak = s->rho_s[i];
         }
     }
-    /* keeps the throttled recompute alive until an emptied map decays out */
+    /* keeps the throttled recompute alive until an emptied map decays out
+     * (jam_raw <= rho_raw cell-wise, so the rho peak covers both fields) */
     s->rho_active = peak > 0.01f;
 }
 
@@ -386,6 +406,7 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->params.landing_damp = 0.30f;
     s->params.wall_h    = 2.0f;
     s->params.k_density = 2.0f;
+    s->params.k_jam     = 8.0f;
     s->params.flow_period = 0.5f;
 
     const size_t n = (size_t)gw * gh;
@@ -398,6 +419,8 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->cost_user = (float *)calloc(n, sizeof(float));
     s->rho_raw   = (float *)calloc(n, sizeof(float));
     s->rho_s     = (float *)calloc(n, sizeof(float));
+    s->jam_raw   = (float *)calloc(n, sizeof(float));
+    s->jam_s     = (float *)calloc(n, sizeof(float));
     s->cost_mult = (float *)malloc(n * sizeof(float));
     s->heap_nodes = malloc(n * 8 * sizeof(HNode));
     s->flow_tx = (float *)malloc(n * sizeof(float));
@@ -472,6 +495,7 @@ void simp_destroy(SimP *s) {
     free(s->solid); free(s->goal); free(s->phi);
     free(s->flow_x); free(s->flow_y); free(s->sdf);
     free(s->cost_user); free(s->rho_raw); free(s->rho_s); free(s->cost_mult);
+    free(s->jam_raw); free(s->jam_s);
     free(s->heap_nodes); free(s->flow_tx); free(s->flow_ty);
     free(s->px); free(s->py); free(s->qx); free(s->qy);
     free(s->vx); free(s->vy);
@@ -518,6 +542,7 @@ void simp_clear_cost(SimP *s) {
 
 const float *simp_user_cost(const SimP *s)   { return s->cost_user; }
 const float *simp_density_arr(const SimP *s) { return s->rho_s; }
+const float *simp_jam_arr(const SimP *s)     { return s->jam_s; }
 
 /* ------------------------------------------------------------- agents */
 
@@ -993,7 +1018,7 @@ int simp_step(SimP *s, float dt) {
         s->flow_timer += dt;
         if (s->flow_timer >= P->flow_period) {
             s->flow_timer = 0.0f;
-            bool density_on = P->k_density > 0.0f &&
+            bool density_on = (P->k_density > 0.0f || P->k_jam > 0.0f) &&
                 (s->count > 0 || s->corpse_count > 0 || s->rho_active);
             if (density_on || s->cost_dirty) {
                 density_update(s);

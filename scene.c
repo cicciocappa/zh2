@@ -23,6 +23,7 @@ static const ParamEntry PTAB[] = {
     { "landing_damp", offsetof(SimPParams, landing_damp), 0 },
     { "wall_h",       offsetof(SimPParams, wall_h),       0 },
     { "k_density",    offsetof(SimPParams, k_density),    0 },
+    { "k_jam",        offsetof(SimPParams, k_jam),        0 },
     { "flow_period",  offsetof(SimPParams, flow_period),  0 },
 };
 #define PTAB_N ((int)(sizeof PTAB / sizeof PTAB[0]))
