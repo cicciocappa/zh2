@@ -197,6 +197,21 @@ Il progetto ha DUE modelli di simulazione complementari:
   configurazione di partenza (deve essere 160×120), F2 salva lo stato
   dipinto sul file caricato (o `scene_saved.txt`), R = reset alla scena.
   Controlli nell'header del file.
+- `gfx/sprite_render.py` / `gfx/sheet_pack.py` — pipeline prerender sprite
+  (GFX_DESIGN.md §4): il primo gira DENTRO Blender headless (`blender
+  --background --python gfx/sprite_render.py -- [opzioni]`), costruisce il
+  rig unico (camera orto 45°, chiave NW, rim) e renderizza 16 direzioni ×
+  N frame × azioni in PNG supersampled (128 px/m) + `meta.json` (anchor a
+  terra, k_z); il secondo (python3+PIL) impacchetta le sheet per azione
+  (righe=direzioni, colonne=frame) e riscala al tier (64 px = tattico).
+  Senza `--fbx` usa un pawn placeholder animato (valida la catena); con
+  `--fbx` + `--anim nome=file.fbx[:frames]` importa personaggio e clip
+  Mixamo (height auto-normalizzata; il root motion delle clip NON in place
+  viene cancellato per frame misurando la XY world delle hips — verificato
+  con FBX sintetico a deriva 2 m: personaggio centrato in ogni frame). Convenzione: riga k = heading
+  k·22.5° ORARIO da "verso camera". Blender locale: portatile 5.1 in
+  `~/Scaricati/blender-5.1.0-linux-x64/` (non nel PATH). Output in
+  `gfx/out/` (gitignored).
 - `Makefile` — `make test` (entrambi, no deps) · `make sandbox` (SDL3) ·
   `make clean`. SDL3 compilato dai sorgenti sta in `~/.local`: il Makefile
   imposta `PKG_CONFIG_PATH` da solo, e `sdl3.pc` porta già l'rpath giusto.

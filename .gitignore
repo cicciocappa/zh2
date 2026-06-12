@@ -13,3 +13,4 @@ test_scene
 *.o
 frames/
 scene_saved.txt
+gfx/out/
