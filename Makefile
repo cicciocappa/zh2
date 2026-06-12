@@ -41,8 +41,9 @@ test_jam: test_jam.c sim_particles.c sim_particles.h
 test_scene: test_scene.c scene.c scene.h sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_scene.c scene.c sim_particles.c $(LDLIBS)
 
-sandbox: sandbox_particles.c sim_particles.c sim_particles.h scene.c scene.h
-	$(CC) $(CFLAGS) $(SDL_CFLAGS) -o $@ sandbox_particles.c sim_particles.c scene.c $(SDL_LIBS) $(LDLIBS)
+sandbox: sandbox_particles.c sim_particles.c sim_particles.h scene.c scene.h \
+         sprite_layer.c sprite_layer.h
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -o $@ sandbox_particles.c sim_particles.c scene.c sprite_layer.c $(SDL_LIBS) $(LDLIBS)
 
 test: all
 	./test_particles

@@ -196,7 +196,12 @@ Il progetto ha DUE modelli di simulazione complementari:
   (barricate emergenti). Scene: `./sandbox scenes/file.txt` carica una
   configurazione di partenza (deve essere 160×120), F2 salva lo stato
   dipinto sul file caricato (o `scene_saved.txt`), R = reset alla scena.
-  Controlli nell'header del file.
+  Controlli nell'header del file. Viewport scorrevole con tier di zoom
+  (Z = 12/16/32 px/m ancorato al cursore, frecce = pan): a 16/32 disegna
+  il layer sprite con la sheet dello zombie (B per tornare ai quad), a 12
+  i quad di sempre. F3 = screenshot `sandbox_shot.bmp`; env
+  `SANDBOX_SHOT="frame[,tier,camx,camy]"` = N frame, screenshot, esci —
+  per verifiche visive headless (così Claude può guardarsi i frame da solo).
 - `gfx/sprite_render.py` / `gfx/sheet_pack.py` — pipeline prerender sprite
   (GFX_DESIGN.md §4): il primo gira DENTRO Blender headless (`blender
   --background --python gfx/sprite_render.py -- [opzioni]`), costruisce il
@@ -211,7 +216,26 @@ Il progetto ha DUE modelli di simulazione complementari:
   con FBX sintetico a deriva 2 m: personaggio centrato in ogni frame). Convenzione: riga k = heading
   k·22.5° ORARIO da "verso camera". Blender locale: portatile 5.1 in
   `~/Scaricati/blender-5.1.0-linux-x64/` (non nel PATH). Output in
-  `gfx/out/` (gitignored).
+  `gfx/out/` (gitignored). Oltre al PNG, ogni sheet esce anche come
+  `.zspr` (header binario ZSP2 + RGBA raw, formato in testa a
+  sheet_pack.py): è quello che carica il sandbox, SDL3 non decodifica
+  PNG. L'header porta anche `stride_m`, la falcata misurata della clip
+  (deriva delle hips sul ciclo INTERO f0..f1, non solo sui frame
+  campionati): serve al renderer per avanzare il walk con la distanza.
+- `sprite_layer.h` / `.c` — layer sprite SDL3 sopra il core (validazione
+  del §4 di GFX_DESIGN prima dello stack GPU): heading per slot = EMA
+  della velocità (τ 0.25 s) quantizzato sulle direzioni della sheet;
+  fino a 8 VARIANTI di walk (sheet multiple, assegnate per hash
+  dell'handle: rompe l'uniformità del passo), ognuna con la sua falcata
+  dal `.zspr`; frame avanzato con la DISTANZA percorsa (fase in cicli,
+  `v_jitter` desincronizza gratis); fase/heading/variante/tinta seedati
+  dall'handle (slot riusato = stato pulito); y-sort su y di terra;
+  anchor della sheet inchiodato a (x,y) dell'agente, scala = raggio/0.30
+  (il tank è uno zombie grosso); tinta da palette curata di 8 tinte
+  zombie + jitter di luminosità (il random RGB libero faceva zombie
+  viola), dormienti dimezzati; volo = offset `z·k_z·ppm` + ombra
+  ellittica a terra. Stato per-slot tutto nel layer, il core non sa
+  nulla (§7).
 - `Makefile` — `make test` (entrambi, no deps) · `make sandbox` (SDL3) ·
   `make clean`. SDL3 compilato dai sorgenti sta in `~/.local`: il Makefile
   imposta `PKG_CONFIG_PATH` da solo, e `sdl3.pc` porta già l'rpath giusto.

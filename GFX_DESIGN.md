@@ -168,6 +168,27 @@ Decisione: **doppio regime**, che scioglie il dilemma griglia-vs-obliquo.
 - **Stack tecnico** (prossima sessione): SDL_GPU API vs OpenGL 4.3. Per il
   rendering qui descritto sono equivalenti; decide il lato compute (M5) e la
   portabilità. Questo documento è l'input di quella scelta.
+- **VAT (vertex animation textures) come alternativa al prerender**, da
+  rivalutare alla sessione stack. Conti fatti (giugno 2026): una sheet
+  16 dir × 16 frame @ 64 px = 4.2 MB → ~50 MB per modello completo di
+  stati; fino a 2–3 modelli base il prerender sta comodo nel budget anche
+  senza compressione (BC7 = ÷4). Il VAT vince su memoria (~100 KB/clip per
+  uno zombie da 1k vertici), direzioni continue (niente quantizzazione a
+  16), luci dinamiche e smembramenti per-bone; perde perché riapre la
+  decisione estetica di §4 (lowpoly illuminato realtime ≠ prerenderizzato
+  alla Diablo 2), presuppone lo stack GPU custom, e NON elimina gli
+  sprite: ai tier lontani (90k agenti da 5 px) servono comunque impostor
+  2D → due pipeline da mantenere. Trigger per riaprirla: servono direzioni
+  continue, illuminazione dinamica sui personaggi, o un numero di
+  modelli×animazioni che sfonda i ~500 MB di atlas. Prospettiva lunga:
+  l'eventuale salto 2D→3D "alla Warcraft 2→3" è un progetto di rendering
+  nuovo, non un'evoluzione di questo — il core di simulazione, che è
+  renderer-agnostico, sopravvive identico.
+- La varietà dell'orda si governa con gli assi ECONOMICI, già
+  moltiplicativi tra loro: N walk × 8 tinte × scala ±15% × fase
+  indipendente = migliaia di zombie distinti con UN modello. I modelli
+  base aggiuntivi sono per i TIPI (walker/runner/tank, già previsti
+  sopra), dove il costo vero è l'authoring, non la VRAM.
 - **Palette/mood del mondo**: notturno classico zombie vs terroso diurno
   alla WC2. Da decidere col primo tileset; non blocca nulla di tecnico.
 - Crossfade tra tier di zoom: durata e curva, da tarare a occhio.

@@ -60,6 +60,14 @@ def parse_args():
                    help="extra yaw (deg) to make the model face the camera "
                         "at direction 0")
     p.add_argument("--samples", type=int, default=32)
+    p.add_argument("--gpu", action="store_true",
+                   help="render with Cycles on the GPU (OptiX, CUDA "
+                        "fallback) — for the remote workstation")
+    p.add_argument("--max-tex", type=int, default=0,
+                   help="downscale imported textures larger than this "
+                        "(px) after import: 4K/8K source textures are "
+                        "wasted on a ~35 px sprite and cost RAM and a "
+                        "little speed; 1024 is already generous")
     return p.parse_args(argv)
 
 
@@ -69,10 +77,30 @@ def build_rig(args):
     """The ONE light+camera rig shared by every asset (GFX_DESIGN.md §4)."""
     scn = bpy.context.scene
 
-    # renderer: Cycles CPU — works headless everywhere, sprites are cheap
+    # renderer: Cycles — CPU works headless everywhere, sprites are cheap;
+    # --gpu asks for OptiX/CUDA (worth ~5-10x on the full asset matrix)
     scn.render.engine = "CYCLES"
     scn.cycles.samples = args.samples
     scn.cycles.use_denoising = True
+    if args.gpu:
+        prefs = bpy.context.preferences.addons["cycles"].preferences
+        for dev_type in ("OPTIX", "CUDA"):
+            try:
+                prefs.compute_device_type = dev_type
+                break
+            except TypeError:
+                continue
+        gpus = [d for d in prefs.get_devices_for_type(
+                    prefs.compute_device_type) if d.type != "CPU"]
+        for d in gpus:
+            d.use = True
+        if gpus:
+            scn.cycles.device = "GPU"
+            print(f"[sprite_render] GPU render: "
+                  f"{', '.join(d.name for d in gpus)}")
+        else:
+            print("[sprite_render] WARNING: --gpu but no GPU found, "
+                  "falling back to CPU")
     scn.render.resolution_x = args.px
     scn.render.resolution_y = args.px
     scn.render.film_transparent = True
@@ -243,16 +271,20 @@ def measure_drift(arma, f0, f1, nsmp):
                  if "hips" in pb.name.lower()), None)
     if hips is None:
         print("[sprite_render] WARNING: no hips bone, root motion not fixed")
-        return [(0.0, 0.0)] * nsmp
+        return [(0.0, 0.0)] * nsmp, 0.0
     offs = []
-    for j in range(nsmp):
+    # one extra sample at f1: the render samples [f0, f1), but a looping
+    # clip's full visual cycle spans f0..f1, so the stride (meters per
+    # cycle, what the renderer uses to advance the walk with distance)
+    # must be measured over the whole range
+    for j in range(nsmp + 1):
         scn.frame_set(int(round(f0 + (f1 - f0) * j / nsmp)))
         ev = arma.evaluated_get(dg)
         w = ev.matrix_world @ ev.pose.bones[hips].head
         offs.append((w.x, w.y))
-    drift = math.hypot(offs[-1][0] - offs[0][0], offs[-1][1] - offs[0][1])
-    print(f"[sprite_render] root drift over clip: {drift:.2f} m")
-    return offs
+    stride = math.hypot(offs[-1][0] - offs[0][0], offs[-1][1] - offs[0][1])
+    print(f"[sprite_render] root drift over full cycle (stride): {stride:.3f} m")
+    return offs[:nsmp], stride
 
 
 # ----------------------------------------------------------------- render
@@ -285,6 +317,7 @@ def render_all(args, root, actions):
             f0, f1 = spec
             nsmp = args.frames
             offs = None        # root itself is keyframed, and never drifts
+            stride = 0.0
         else:                                             # fbx action
             f0, f1 = spec["range"]
             nsmp = spec["samples"]
@@ -296,8 +329,8 @@ def render_all(args, root, actions):
             # from the previous action cleared
             table.rotation_euler.z = 0.0
             root.location.x = root.location.y = 0.0
-            offs = measure_drift(arma, f0, f1, nsmp)
-        meta["actions"][name] = {"frames": nsmp}
+            offs, stride = measure_drift(arma, f0, f1, nsmp)
+        meta["actions"][name] = {"frames": nsmp, "stride_m": stride}
 
         for k in range(args.dirs):
             # row k = heading k*22.5deg clockwise from facing-camera
@@ -320,6 +353,17 @@ def render_all(args, root, actions):
     print(f"[sprite_render] done: {args.out}")
 
 
+def shrink_textures(max_px):
+    for img in bpy.data.images:
+        w, h = img.size
+        if max(w, h) <= max_px or w == 0:
+            continue
+        f = max_px / max(w, h)
+        img.scale(max(1, int(w * f)), max(1, int(h * f)))
+        print(f"[sprite_render] texture {img.name}: {w}x{h} -> "
+              f"{img.size[0]}x{img.size[1]}")
+
+
 def main():
     args = parse_args()
     bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -328,6 +372,8 @@ def main():
         root, actions = import_character(args)
     else:
         root, actions = build_placeholder()
+    if args.max_tex > 0:
+        shrink_textures(args.max_tex)
     render_all(args, root, actions)
 
 

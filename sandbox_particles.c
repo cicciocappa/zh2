@@ -54,6 +54,17 @@
  *     ; / '          v_max down / up            (desired speed)
  *     9 / 0          impulse radius down / up
  *     8 / I          impulse strength down / up
+ *     Z              cycle zoom tier 12/16/32 px/m (anchored at the cursor):
+ *                    12 = whole map as quads, 16/32 = sprite tiers
+ *     ARROW KEYS     pan the viewport
+ *     B              toggle the sprite layer (needs gfx/out/zombie/
+ *                    walk_sheet.zspr from gfx/sheet_pack.py; quads otherwise)
+ *     D              cycle the floor color (nocturnal / dusk / earthy /
+ *                    stone / grass): sprite visibility on different grounds
+ *     F3             save a screenshot to sandbox_shot.bmp
+ *                    (env SANDBOX_SHOT="frame[,tier,camx,camy]" does it
+ *                    unattended: run N frames, shoot, quit — for headless
+ *                    visual checks)
  *     SPACE          pause / resume
  *     N              single step (while paused)
  *     T              toggle spawners on/off
@@ -65,6 +76,7 @@
  */
 #include "sim_particles.h"
 #include "scene.h"
+#include "sprite_layer.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,9 +86,25 @@
 #define GW   160
 #define GH   120
 #define CELL 0.5f
-#define PPM  12.0f                       /* pixels per meter */
-#define WINW ((int)(GW * CELL * PPM))    /* 960 */
-#define WINH ((int)(GH * CELL * PPM))    /* 720 */
+#define WINW ((int)(GW * CELL * 12.0f))  /* 960: whole world at 12 px/m */
+#define WINH ((int)(GH * CELL * 12.0f))  /* 720 */
+
+/* Scrolling viewport with discrete zoom tiers (GFX_DESIGN.md §2, adapted to
+ * the 80x60 m sandbox): 12 px/m = whole map (quad rendering), 16 and 32 are
+ * the sprite tiers. cam_x/cam_y = world meters at the window's top-left. */
+static const float TIER_PPM[] = { 12.0f, 16.0f, 32.0f };
+static int   cam_tier = 0;
+static float cam_x = 0.0f, cam_y = 0.0f;
+#define PPM (TIER_PPM[cam_tier])
+
+static void cam_clamp(void) {
+    float mx = GW * CELL - (float)WINW / PPM;
+    float my = GH * CELL - (float)WINH / PPM;
+    if (cam_x > mx) cam_x = mx;
+    if (cam_y > my) cam_y = my;
+    if (cam_x < 0.0f) cam_x = 0.0f;
+    if (cam_y < 0.0f) cam_y = 0.0f;
+}
 
 #define MAX_AGENTS      30000
 #define SPAWN_RATE      1.5f             /* agents/sec per spawner cell */
@@ -121,6 +149,18 @@ static void speed_ramp(float t, Uint8 *r, Uint8 *g, Uint8 *b) {
     *b = 50;
 }
 
+/* floor color palettes (D cycles them): sprite visibility check on
+ * different grounds, and a taste of the open palette/mood decision in
+ * GFX_DESIGN.md §8 (nocturnal vs earthy daylight) */
+static const uint8_t FLOOR_PAL[][3] = {
+    { 20, 24, 22 },     /* nocturnal (original) */
+    { 52, 58, 48 },     /* dusk grey-green      */
+    { 86, 70, 48 },     /* earthy daylight, WC2 */
+    { 110, 112, 100 },  /* light stone          */
+    { 30, 48, 26 },     /* dark grass           */
+};
+static int floor_idx = 0;
+
 /* overlay_mode: 0 = off, 1 = crowd density (violet), 2 = stalled crowd (red) */
 static void terrain_render(SimP *s, Uint32 *px, int overlay_mode) {
     const float *uc  = simp_user_cost(s);
@@ -132,7 +172,8 @@ static void terrain_render(SimP *s, Uint32 *px, int overlay_mode) {
     for (int cy = 0; cy < GH; cy++)
     for (int cx = 0; cx < GW; cx++) {
         int i = cy * GW + cx;
-        int r = 20, g = 24, b = 22;                         /* dark floor   */
+        int r = FLOOR_PAL[floor_idx][0], g = FLOOR_PAL[floor_idx][1],
+            b = FLOOR_PAL[floor_idx][2];
         if (simp_is_wall(s, cx, cy))      { r = 80; g = 80; b = 95; }
         else if (spawn_flag[i])           { r = 90; g = 40; b = 40; }
         else {
@@ -359,13 +400,38 @@ int main(int argc, char **argv) {
     static Uint32 terrain_px[GW * GH];
     static SDL_FRect rects[MAX_AGENTS];
 
+    /* sprite layer: optional, the sandbox falls back to quads without it.
+     * Every walkN sheet found becomes a per-agent variant (hash-assigned):
+     * render more Mixamo walks as --anim walk2=... to de-uniform the horde. */
+    static const char *const WALK_SHEETS[] = {
+        "gfx/out/zombie/walk_sheet.zspr",
+        "gfx/out/zombie/walk2_sheet.zspr",
+        "gfx/out/zombie/walk3_sheet.zspr",
+        "gfx/out/zombie/walk4_sheet.zspr",
+        "gfx/out/zombie/walk5_sheet.zspr",
+        "gfx/out/zombie/walk6_sheet.zspr",
+        "gfx/out/zombie/walk7_sheet.zspr",
+        "gfx/out/zombie/walk8_sheet.zspr",
+    };
+    SpriteLayer *sprites = sprite_layer_create(ren, WALK_SHEETS, 8, MAX_AGENTS);
+    int sprites_on = sprites != NULL;
+
     int   brush = B_WALL, size = 3;
     int   paused = 0, running = 1, spawning = 1;
     int   speed_tint = 1, show_flow = 0, show_density = 0;
     int   painting = 0, erasing = 0;
+    int   want_shot = 0;
     float boom_radius = 6.0f, boom_strength = 10.0f, boom_up = 0.5f;
     long  drained_total = 0;
     double step_ms = 0.0;
+
+    /* SANDBOX_SHOT="frame[,tier,camx,camy]": unattended visual check —
+     * run N frames, optionally move the camera, save sandbox_shot.bmp, quit */
+    long shot_at = -1, frame_no = 0;
+    int shot_tier = -1; float shot_cx = 0.0f, shot_cy = 0.0f;
+    if (getenv("SANDBOX_SHOT"))
+        sscanf(getenv("SANDBOX_SHOT"), "%ld,%d,%f,%f",
+               &shot_at, &shot_tier, &shot_cx, &shot_cy);
 
     while (running) {
         SDL_Event e;
@@ -374,14 +440,14 @@ int main(int argc, char **argv) {
             case SDL_EVENT_QUIT: running = 0; break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 if (e.button.button == SDL_BUTTON_MIDDLE) {
-                    boom(s, e.button.x / PPM, e.button.y / PPM,
+                    boom(s, e.button.x / PPM + cam_x, e.button.y / PPM + cam_y,
                          boom_radius, boom_strength, boom_up);
                     break;
                 }
                 if (e.button.button == SDL_BUTTON_LEFT)  painting = 1;
                 if (e.button.button == SDL_BUTTON_RIGHT) erasing = 1;
-                paint(s, (int)(e.button.x / (CELL * PPM)),
-                         (int)(e.button.y / (CELL * PPM)),
+                paint(s, (int)((e.button.x / PPM + cam_x) / CELL),
+                         (int)((e.button.y / PPM + cam_y) / CELL),
                       e.button.button == SDL_BUTTON_RIGHT ? B_ERASE : brush, size);
                 break;
             case SDL_EVENT_MOUSE_BUTTON_UP:
@@ -390,8 +456,8 @@ int main(int argc, char **argv) {
                 break;
             case SDL_EVENT_MOUSE_MOTION:
                 if (painting || erasing)
-                    paint(s, (int)(e.motion.x / (CELL * PPM)),
-                             (int)(e.motion.y / (CELL * PPM)),
+                    paint(s, (int)((e.motion.x / PPM + cam_x) / CELL),
+                             (int)((e.motion.y / PPM + cam_y) / CELL),
                           erasing ? B_ERASE : brush, size);
                 break;
             case SDL_EVENT_KEY_DOWN: {
@@ -446,15 +512,33 @@ int main(int argc, char **argv) {
                 case SDLK_I: boom_strength = fminf(40.0f, boom_strength + 2.0f); break;
                 case SDLK_E: {
                     float mx, my; SDL_GetMouseState(&mx, &my);
-                    boom(s, mx / PPM, my / PPM, boom_radius, boom_strength,
-                         boom_up);
+                    boom(s, mx / PPM + cam_x, my / PPM + cam_y,
+                         boom_radius, boom_strength, boom_up);
                     break;
                 }
+                case SDLK_Z: {
+                    /* next tier, keeping the world point under the cursor
+                     * fixed on screen */
+                    float mx, my; SDL_GetMouseState(&mx, &my);
+                    float wx = mx / PPM + cam_x, wy = my / PPM + cam_y;
+                    cam_tier = (cam_tier + 1) % 3;
+                    cam_x = wx - mx / PPM;
+                    cam_y = wy - my / PPM;
+                    cam_clamp();
+                    break;
+                }
+                case SDLK_B: sprites_on = !sprites_on; break;
+                case SDLK_D:
+                    floor_idx = (floor_idx + 1) %
+                                (int)(sizeof FLOOR_PAL / sizeof FLOOR_PAL[0]);
+                    break;
+                case SDLK_F3: want_shot = 1; break;
                 case SDLK_SPACE: paused = !paused; break;
                 case SDLK_N:
                     if (paused) {
                         if (spawning) spawners_step(s, DT);
                         drained_total += simp_step(s, DT);
+                        if (sprites) sprite_layer_update(sprites, s, DT);
                     }
                     break;
                 case SDLK_T: spawning = !spawning; break;
@@ -482,15 +566,39 @@ int main(int argc, char **argv) {
             drained_total += simp_step(s, DT);
             Uint64 t1 = SDL_GetPerformanceCounter();
             step_ms = 1000.0 * (double)(t1 - t0) / (double)SDL_GetPerformanceFrequency();
+            if (sprites) sprite_layer_update(sprites, s, DT);
         }
 
-        /* terrain layer (low-res texture, nearest-scaled to window) */
+        /* viewport pan (held keys, ~10 px per frame regardless of tier) */
+        {
+            const bool *ks = SDL_GetKeyboardState(NULL);
+            float pan = 600.0f * DT / PPM;
+            if (ks[SDL_SCANCODE_LEFT])  cam_x -= pan;
+            if (ks[SDL_SCANCODE_RIGHT]) cam_x += pan;
+            if (ks[SDL_SCANCODE_UP])    cam_y -= pan;
+            if (ks[SDL_SCANCODE_DOWN])  cam_y += pan;
+            cam_clamp();
+        }
+
+        /* unattended screenshot hook (see SANDBOX_SHOT above) */
+        if (shot_at >= 0 && frame_no++ == shot_at) {
+            if (shot_tier >= 0 && shot_tier < 3) {
+                cam_tier = shot_tier;
+                cam_x = shot_cx; cam_y = shot_cy;
+                cam_clamp();
+            }
+            want_shot = 2;                      /* 2 = quit after saving */
+        }
+
+        /* terrain layer (low-res texture, scaled by the camera transform) */
         terrain_render(s, terrain_px, show_density);
         for (int i = 0; i < GW * GH; i++)
             if (goal_flag[i]) terrain_px[i] = 0xFF3C78FFu;   /* goal: blue */
         SDL_UpdateTexture(tex, NULL, terrain_px, GW * (int)sizeof(Uint32));
         SDL_RenderClear(ren);
-        SDL_RenderTexture(ren, tex, NULL, NULL);
+        SDL_FRect tdst = { -cam_x * PPM, -cam_y * PPM,
+                           GW * CELL * PPM, GH * CELL * PPM };
+        SDL_RenderTexture(ren, tex, NULL, &tdst);
 
         /* flow-field overlay: one segment every 4 nav cells */
         if (show_flow) {
@@ -502,7 +610,7 @@ int main(int argc, char **argv) {
                 float dx, dy;
                 simp_sample_flow(s, wx, wy, &dx, &dy);
                 if (dx == 0.0f && dy == 0.0f) continue;
-                float x0 = wx * PPM, y0 = wy * PPM;
+                float x0 = (wx - cam_x) * PPM, y0 = (wy - cam_y) * PPM;
                 SDL_RenderLine(ren, x0, y0, x0 + dx * 1.4f * PPM, y0 + dy * 1.4f * PPM);
             }
         }
@@ -514,20 +622,29 @@ int main(int argc, char **argv) {
             const float *crad = simp_corpse_rad(s);
             for (int j = 0; j < nc; j++) {
                 float rp = crad[j] * PPM;
-                rects[j].x = cpx[j] * PPM - rp;
-                rects[j].y = cpy[j] * PPM - rp;
+                rects[j].x = (cpx[j] - cam_x) * PPM - rp;
+                rects[j].y = (cpy[j] - cam_y) * PPM - rp;
                 rects[j].w = 2 * rp; rects[j].h = 2 * rp;
             }
             SDL_SetRenderDrawColor(ren, 70, 60, 58, 255);
             SDL_RenderFillRects(ren, rects, nc);
         }
 
-        /* agents: batched rects sized by radius (flying ones scale up with
-         * altitude). Pass 0 = dormant (always its own color), pass 1 =
-         * awake slow (or all awake when tint is off), pass 2 = awake fast
-         * (speed tint only). */
+        /* agents. Sprite tiers (16/32 px/m) draw the sprite layer; the
+         * full-map tier and the no-sheet fallback draw batched rects sized
+         * by radius (flying ones scale up with altitude). Rect passes:
+         * 0 = dormant (always its own color), 1 = awake slow (or all awake
+         * when tint is off), 2 = awake fast (speed tint only). */
         int n_dormant = 0;
         {
+            const uint8_t *afl = simp_flags_arr(s);
+            int n = simp_count(s);
+            for (int i = 0; i < n; i++)
+                if (afl[i] & SIMP_DORMANT) n_dormant++;
+        }
+        if (sprites && sprites_on && cam_tier > 0) {
+            sprite_layer_draw(sprites, ren, s, cam_x, cam_y, PPM);
+        } else {
             const float *apx = simp_px(s), *apy = simp_py(s);
             const float *avx = simp_vx(s), *avy = simp_vy(s);
             const float *ar  = simp_radius_arr(s);
@@ -549,13 +666,12 @@ int main(int argc, char **argv) {
                     if (p != pass) continue;
                     float rp = ar[i] * PPM;
                     if (afl[i] & SIMP_FLYING) rp *= 1.0f + 0.12f * az[i];
-                    rects[m].x = apx[i] * PPM - rp;
-                    rects[m].y = apy[i] * PPM - rp;
+                    rects[m].x = (apx[i] - cam_x) * PPM - rp;
+                    rects[m].y = (apy[i] - cam_y) * PPM - rp;
                     rects[m].w = 2 * rp; rects[m].h = 2 * rp;
                     m++;
                 }
                 if (pass == 0) {
-                    n_dormant = m;
                     SDL_SetRenderDrawColor(ren, 110, 125, 160, 255);
                 } else if (pass == 1 && speed_tint) {
                     Uint8 r, g, b; speed_ramp(0.25f, &r, &g, &b);
@@ -570,26 +686,39 @@ int main(int argc, char **argv) {
             }
         }
 
+        /* read back BEFORE present: after it the backbuffer is undefined */
+        if (want_shot) {
+            SDL_Surface *shot = SDL_RenderReadPixels(ren, NULL);
+            if (shot) {
+                SDL_SaveBMP(shot, "sandbox_shot.bmp");
+                SDL_DestroySurface(shot);
+                SDL_Log("screenshot: sandbox_shot.bmp");
+            } else SDL_Log("screenshot failed: %s", SDL_GetError());
+            if (want_shot == 2) running = 0;
+            want_shot = 0;
+        }
         SDL_RenderPresent(ren);
 
         SimPParams *P = simp_params(s);
         char title[256];
         snprintf(title, sizeof title,
-                 "Horde particles | brush:%s sz:%d type:%s | n:%d sleep:%d "
+                 "Horde particles | %.0fppm | brush:%s sz:%d type:%s | n:%d sleep:%d "
                  "corpses:%d drained:%ld | pbd:%d noise:%.2f vmax:%.1f "
-                 "kd:%.1f kj:%.0f | boom r:%.0f s:%.0f up:%.1f | %.2f ms %s%s",
-                 BRUSH_NAME[brush], size, TYPE_NAME[spawn_type],
+                 "kd:%.1f kj:%.0f | boom r:%.0f s:%.0f up:%.1f | %.2f ms %s%s%s",
+                 (double)PPM, BRUSH_NAME[brush], size, TYPE_NAME[spawn_type],
                  simp_count(s), n_dormant,
                  simp_corpse_count(s), drained_total,
                  P->pbd_iters, (double)P->noise_ang, (double)P->v_max,
                  (double)P->k_density, (double)P->k_jam,
                  (double)boom_radius, (double)boom_strength, (double)boom_up,
                  step_ms, paused ? "PAUSED" : "running",
-                 spawning ? "" : " SPAWN-OFF");
+                 spawning ? "" : " SPAWN-OFF",
+                 sprites && sprites_on ? "" : " QUADS");
         SDL_SetWindowTitle(win, title);
         SDL_Delay(8);
     }
 
+    sprite_layer_destroy(sprites);
     simp_destroy(s);
     SDL_DestroyTexture(tex);
     SDL_DestroyRenderer(ren);
