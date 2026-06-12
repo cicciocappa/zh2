@@ -24,6 +24,10 @@
  *     so sleeping packs read at a glance).
  *   - FLIGHT: SIMP_FLYING draws at y - z*k_z*ppm with an elliptic shadow
  *     left at the ground position (the M3.2 parabola becomes readable).
+ *   - STUCK: agents that want to walk but can't (speed EMA under a
+ *     threshold, with hysteresis so the boundary doesn't flicker) and
+ *     dormant agents play the optional time-based "stuck" sheet (idle /
+ *     struggle) at its native clip speed instead of freezing mid-stride.
  *
  * Per-slot state lives here, NOT in the core (see GFX_DESIGN.md §7).
  * Loads the .zspr sheets written by gfx/sheet_pack.py (format ZSP2).
@@ -43,6 +47,12 @@ SpriteLayer *sprite_layer_create(SDL_Renderer *ren,
                                  const char *const *zspr_paths, int n_paths,
                                  int max_agents);
 void sprite_layer_destroy(SpriteLayer *sl);
+
+/* Load the optional stuck/idle sheet (time-based playback). Returns 0 on
+ * success, -1 if missing/bad (the layer then freezes stuck agents as
+ * before — fully optional). */
+int sprite_layer_set_stuck(SpriteLayer *sl, SDL_Renderer *ren,
+                           const char *zspr_path);
 
 /* Advance facing EMA + animation phase. Call once per simp_step with the
  * same dt (skip while paused: sprites freeze with the sim). */

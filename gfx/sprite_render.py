@@ -330,7 +330,11 @@ def render_all(args, root, actions):
             table.rotation_euler.z = 0.0
             root.location.x = root.location.y = 0.0
             offs, stride = measure_drift(arma, f0, f1, nsmp)
-        meta["actions"][name] = {"frames": nsmp, "stride_m": stride}
+        # native clip duration: time-based animations (idle, struggle)
+        # play at this speed; locomotion uses stride_m instead
+        duration = (f1 - f0) / scn.render.fps
+        meta["actions"][name] = {"frames": nsmp, "stride_m": stride,
+                                 "duration_s": duration}
 
         for k in range(args.dirs):
             # row k = heading k*22.5deg clockwise from facing-camera
@@ -348,7 +352,15 @@ def render_all(args, root, actions):
                     args.out, name, f"d{k:02d}_f{j:02d}.png")
                 bpy.ops.render.render(write_still=True)
 
-    with open(os.path.join(args.out, "meta.json"), "w") as fp:
+    # merge with an existing meta.json: incremental renders (one new clip
+    # into an already-populated out dir) must not orphan the other actions
+    meta_path = os.path.join(args.out, "meta.json")
+    if os.path.exists(meta_path):
+        with open(meta_path) as fp:
+            old_actions = json.load(fp).get("actions", {})
+        old_actions.update(meta["actions"])
+        meta["actions"] = old_actions
+    with open(meta_path, "w") as fp:
         json.dump(meta, fp, indent=2)
     print(f"[sprite_render] done: {args.out}")
 

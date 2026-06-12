@@ -11,6 +11,12 @@
  * (dormant/standing agents never switch: a pose pop on a still zombie
  * reads as a glitch, in the moving crowd it disappears). Feel knob. */
 #define VARIANT_SWITCH_T 15.0f
+/* Stuck detection on the speed EMA, with hysteresis: under ENTER the agent
+ * plays the stuck/idle sheet, back over EXIT it walks again. The gap and
+ * the EMA keep the boundary from flickering under PBD jitter. */
+#define SPEED_TAU        0.5f
+#define STUCK_ENTER_MS   0.15f
+#define STUCK_EXIT_MS    0.35f
 /* Radius the sheets are authored for: scale = agent radius / this. */
 #define SHEET_RADIUS_M  0.30f
 #define MAX_VARIANTS    8
@@ -23,17 +29,22 @@ typedef struct {
     float anchor_x, anchor_y;     /* px from frame cell top-left */
     float px_per_m, k_z;
     float stride_m;               /* meters per animation cycle  */
+    float duration_s;             /* native clip length          */
 } SprSheet;
 
 struct SpriteLayer {
     SprSheet v[MAX_VARIANTS];
     int n_var;
+    SprSheet stuck;               /* optional idle/struggle sheet  */
+    int has_stuck;
     SDL_Texture *shadow;
     int max_slots;
     /* per-slot renderer state, reset when the slot's handle changes */
     SimPHandle *seen;
     float  *hx, *hy;              /* heading EMA (velocity units)  */
+    float  *spd;                  /* speed EMA (stuck detection)   */
     float  *phase;                /* anim cycles, fractional       */
+    uint8_t *stuckf;              /* in stuck state (hysteresis)   */
     uint8_t *var;                 /* walk variant index            */
     uint8_t *tr, *tg, *tb;        /* per-agent tint                */
     SprOrd *order;                /* y-sort scratch                */
@@ -71,10 +82,10 @@ static int load_sheet(SDL_Renderer *ren, const char *path, SprSheet *sh) {
     if (!f) { SDL_Log("sprite layer: no %s (skipped)", path); return -1; }
     char magic[4];
     uint32_t u[5];
-    float fl[5];
-    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "ZSP2", 4) != 0 ||
-        fread(u, 4, 5, f) != 5 || fread(fl, 4, 5, f) != 5) {
-        SDL_Log("sprite layer: %s is not a ZSP2 sheet (re-run sheet_pack.py)",
+    float fl[6];
+    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "ZSP3", 4) != 0 ||
+        fread(u, 4, 5, f) != 5 || fread(fl, 4, 6, f) != 6) {
+        SDL_Log("sprite layer: %s is not a ZSP3 sheet (re-run sheet_pack.py)",
                 path);
         fclose(f);
         return -1;
@@ -83,6 +94,7 @@ static int load_sheet(SDL_Renderer *ren, const char *path, SprSheet *sh) {
     sh->frame_px = (int)u[2]; sh->dirs = (int)u[3]; sh->frames = (int)u[4];
     sh->anchor_x = fl[0]; sh->anchor_y = fl[1];
     sh->px_per_m = fl[2]; sh->k_z = fl[3]; sh->stride_m = fl[4];
+    sh->duration_s = fl[5];
 
     size_t npx = (size_t)sh->sheet_w * sh->sheet_h;
     void *pixels = malloc(npx * 4);
@@ -126,7 +138,9 @@ SpriteLayer *sprite_layer_create(SDL_Renderer *ren,
     sl->seen  = calloc((size_t)max_agents, sizeof *sl->seen);
     sl->hx    = calloc((size_t)max_agents, sizeof *sl->hx);
     sl->hy    = calloc((size_t)max_agents, sizeof *sl->hy);
+    sl->spd   = calloc((size_t)max_agents, sizeof *sl->spd);
     sl->phase = calloc((size_t)max_agents, sizeof *sl->phase);
+    sl->stuckf = calloc((size_t)max_agents, 1);
     sl->var   = calloc((size_t)max_agents, 1);
     sl->tr    = calloc((size_t)max_agents, 1);
     sl->tg    = calloc((size_t)max_agents, 1);
@@ -135,12 +149,21 @@ SpriteLayer *sprite_layer_create(SDL_Renderer *ren,
     return sl;
 }
 
+int sprite_layer_set_stuck(SpriteLayer *sl, SDL_Renderer *ren,
+                           const char *path) {
+    if (load_sheet(ren, path, &sl->stuck) != 0) return -1;
+    sl->has_stuck = 1;
+    return 0;
+}
+
 void sprite_layer_destroy(SpriteLayer *sl) {
     if (!sl) return;
     for (int i = 0; i < sl->n_var; i++)
         if (sl->v[i].tex) SDL_DestroyTexture(sl->v[i].tex);
+    if (sl->has_stuck && sl->stuck.tex) SDL_DestroyTexture(sl->stuck.tex);
     if (sl->shadow) SDL_DestroyTexture(sl->shadow);
-    free(sl->seen); free(sl->hx); free(sl->hy); free(sl->phase);
+    free(sl->seen); free(sl->hx); free(sl->hy); free(sl->spd);
+    free(sl->phase); free(sl->stuckf);
     free(sl->var); free(sl->tr); free(sl->tg); free(sl->tb); free(sl->order);
     free(sl);
 }
@@ -150,6 +173,7 @@ void sprite_layer_update(SpriteLayer *sl, const SimP *s, float dt) {
     const uint8_t *fl = simp_flags_arr(s);
     int n = simp_count(s);
     float alpha = 1.0f - expf(-dt / HEADING_TAU);
+    float beta  = 1.0f - expf(-dt / SPEED_TAU);
     for (int i = 0; i < n; i++) {
         int slot = simp_slot_of(s, i);
         SimPHandle h = simp_handle_of(s, i);
@@ -161,6 +185,8 @@ void sprite_layer_update(SpriteLayer *sl, const SimP *s, float dt) {
             sl->seen[slot] = h;
             sl->hx[slot] = sinf(ang) * 0.01f;   /* weak: first real velocity */
             sl->hy[slot] = cosf(ang) * 0.01f;   /* sample takes over fast    */
+            sl->spd[slot] = 1.0f;               /* fresh spawn: not stuck    */
+            sl->stuckf[slot] = 0;
             sl->phase[slot] = (float)((r >> 16) & 0xff) / 256.0f;
             sl->var[slot] = (uint8_t)((r >> 24) % (uint32_t)sl->n_var);
             /* variety from a curated zombie palette + brightness jitter:
@@ -190,11 +216,27 @@ void sprite_layer_update(SpriteLayer *sl, const SimP *s, float dt) {
             sl->hx[slot] += alpha * (vx[i] - sl->hx[slot]);
             sl->hy[slot] += alpha * (vy[i] - sl->hy[slot]);
         }
-        float stride = sl->v[sl->var[slot]].stride_m;
-        if (stride > 0.1f)
-            sl->phase[slot] += sp * dt / stride;
-        else
-            sl->phase[slot] += dt;              /* non-locomotion: 1 cycle/s */
+
+        /* stuck detection: speed EMA + hysteresis (dormant agents are
+         * "stuck" by flag, not by speed: they are still on purpose) */
+        sl->spd[slot] += beta * (sp - sl->spd[slot]);
+        if (!sl->stuckf[slot] && sl->spd[slot] < STUCK_ENTER_MS)
+            sl->stuckf[slot] = 1;
+        else if (sl->stuckf[slot] && sl->spd[slot] > STUCK_EXIT_MS)
+            sl->stuckf[slot] = 0;
+
+        if (sl->has_stuck && (sl->stuckf[slot] || (fl[i] & SIMP_DORMANT))) {
+            /* time-based playback at the clip's native speed */
+            float d = sl->stuck.duration_s > 0.2f ? sl->stuck.duration_s
+                                                  : 2.0f;
+            sl->phase[slot] += dt / d;
+        } else {
+            float stride = sl->v[sl->var[slot]].stride_m;
+            if (stride > 0.1f)
+                sl->phase[slot] += sp * dt / stride;
+            else
+                sl->phase[slot] += dt;          /* non-locomotion: 1 cycle/s */
+        }
 
         /* occasional random gait change, walking agents only */
         if (sl->n_var > 1 && sp > 0.3f) {
@@ -243,7 +285,9 @@ void sprite_layer_draw(SpriteLayer *sl, SDL_Renderer *ren, const SimP *s,
     for (int k = 0; k < m; k++) {
         int i = sl->order[k].idx;
         int slot = simp_slot_of(s, i);
-        const SprSheet *sh = &sl->v[sl->var[slot]];
+        const SprSheet *sh =
+            sl->has_stuck && (sl->stuckf[slot] || (fl[i] & SIMP_DORMANT))
+                ? &sl->stuck : &sl->v[sl->var[slot]];
 
         /* heading -> sheet row: row r faces r*(360/dirs)deg clockwise from
          * screen-down; world y points down on screen, so r = atan2(-hx, hy) */
@@ -282,4 +326,6 @@ void sprite_layer_draw(SpriteLayer *sl, SDL_Renderer *ren, const SimP *s,
     }
     for (int i = 0; i < sl->n_var; i++)
         SDL_SetTextureColorMod(sl->v[i].tex, 255, 255, 255);
+    if (sl->has_stuck)
+        SDL_SetTextureColorMod(sl->stuck.tex, 255, 255, 255);
 }

@@ -23,7 +23,7 @@ OUT=${1:-gfx/out/zombie}
 [ $# -gt 0 ] && shift
 ANIMS=${*:-"walk=walk.fbx:16 walk2=walk2.fbx:16 walk3=walk3.fbx:16 \
 walk4=walk4.fbx:16 walk5=walk5.fbx:16 walk6=walk6.fbx:16 \
-walk7=walk7.fbx:16 attack=attack.fbx:4"}
+walk7=walk7.fbx:16 attack=attack.fbx:4 idle=idle.fbx:16"}
 
 args=""
 for a in $ANIMS; do

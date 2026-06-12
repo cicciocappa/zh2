@@ -217,11 +217,18 @@ Il progetto ha DUE modelli di simulazione complementari:
   k·22.5° ORARIO da "verso camera". Blender locale: portatile 5.1 in
   `~/Scaricati/blender-5.1.0-linux-x64/` (non nel PATH). Output in
   `gfx/out/` (gitignored). Oltre al PNG, ogni sheet esce anche come
-  `.zspr` (header binario ZSP2 + RGBA raw, formato in testa a
+  `.zspr` (header binario ZSP3 + RGBA raw, formato in testa a
   sheet_pack.py): è quello che carica il sandbox, SDL3 non decodifica
-  PNG. L'header porta anche `stride_m`, la falcata misurata della clip
-  (deriva delle hips sul ciclo INTERO f0..f1, non solo sui frame
-  campionati): serve al renderer per avanzare il walk con la distanza.
+  PNG. L'header porta anche `stride_m` (falcata misurata sul ciclo
+  INTERO f0..f1 — il walk avanza con la distanza) e `duration_s` (durata
+  nativa — le clip a tempo tipo idle girano a velocità propria).
+  RENDER INCREMENTALI: `meta.json` viene FUSO, non sovrascritto —
+  aggiungere una clip = renderizzare solo quella nello stesso `--out` e
+  rilanciare sheet_pack (rigenera tutte le sheet dai PNG su disco).
+  `--gpu` (OptiX/CUDA, fallback CPU) e `--max-tex N` (downscale texture
+  sorgente: la 4K del pack è sprecata su sprite da 35 px e costa RAM).
+  `gfx/render_remote.sh` = batch sulla workstation via ssh (rsync,
+  render --gpu, pull, pack locale).
 - `sprite_layer.h` / `.c` — layer sprite SDL3 sopra il core (validazione
   del §4 di GFX_DESIGN prima dello stack GPU): heading per slot = EMA
   della velocità (τ 0.25 s) quantizzato sulle direzioni della sheet;
@@ -234,8 +241,13 @@ Il progetto ha DUE modelli di simulazione complementari:
   (il tank è uno zombie grosso); tinta da palette curata di 8 tinte
   zombie + jitter di luminosità (il random RGB libero faceva zombie
   viola), dormienti dimezzati; volo = offset `z·k_z·ppm` + ombra
-  ellittica a terra. Stato per-slot tutto nel layer, il core non sa
-  nulla (§7).
+  ellittica a terra; stato STUCK (EMA velocità con isteresi 0.15/0.35
+  m/s) e dormienti → sheet idle opzionale a playback nativo
+  (`sprite_layer_set_stuck`) invece del freeze a metà passo. Stato
+  per-slot tutto nel layer, il core non sa nulla (§7). Problemi noti
+  annotati in TODO M6: idle Mixamo quasi statica (effetto copia-incolla
+  nei gruppi fermi), heading che piroetta dentro gli ingorghi (serve
+  freeze in stuck + rate limit), stuck contro muro dovrebbe attaccare.
 - `Makefile` — `make test` (entrambi, no deps) · `make sandbox` (SDL3) ·
   `make clean`. SDL3 compilato dai sorgenti sta in `~/.local`: il Makefile
   imposta `PKG_CONFIG_PATH` da solo, e `sdl3.pc` porta già l'rpath giusto.

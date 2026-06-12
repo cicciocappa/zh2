@@ -12,10 +12,12 @@
 #
 # Each sheet is also written as <action>_sheet.zspr, a trivial binary the
 # C sandbox can load without a PNG decoder (SDL3 has none):
-#   "ZSP2" | u32: w h frame_px dirs frames | f32: anchor_x anchor_y
-#   px_per_m k_z stride_m | w*h*4 raw RGBA bytes, rows top to bottom.
-#   Little-endian. stride_m = meters one animation cycle covers on the
-#   ground (0 for non-locomotion clips), measured by sprite_render.py.
+#   "ZSP3" | u32: w h frame_px dirs frames | f32: anchor_x anchor_y
+#   px_per_m k_z stride_m duration_s | w*h*4 raw RGBA bytes, rows top to
+#   bottom. Little-endian. stride_m = meters one animation cycle covers
+#   on the ground (0 for non-locomotion clips), duration_s = native clip
+#   length; both measured by sprite_render.py. Locomotion plays by
+#   distance/stride_m, time-based clips (idle) by time/duration_s.
 
 import argparse
 import json
@@ -56,13 +58,14 @@ def main():
         act["frame_px"] = args.out_px
         zspr = os.path.join(args.dir, f"{name}_sheet.zspr")
         with open(zspr, "wb") as fp:
-            fp.write(b"ZSP2")
+            fp.write(b"ZSP3")
             fp.write(struct.pack("<5I", sheet.width, sheet.height,
                                  args.out_px, dirs, n))
-            fp.write(struct.pack("<5f", meta["anchor"][0] * scale,
+            fp.write(struct.pack("<6f", meta["anchor"][0] * scale,
                                  meta["anchor"][1] * scale,
                                  meta["px_per_m"] * scale, meta["k_z"],
-                                 act.get("stride_m", 0.0)))
+                                 act.get("stride_m", 0.0),
+                                 act.get("duration_s", 0.0)))
             fp.write(sheet.tobytes())
         print(f"[sheet_pack] {out} + .zspr  ({n}x{dirs} frames @ {args.out_px}px)")
 

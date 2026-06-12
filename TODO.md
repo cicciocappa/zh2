@@ -101,6 +101,37 @@ poi scala, poi gioco.
       = EMA per slot nel renderer). Prossimo passo: scelta dello stack
       (SDL_GPU vs GL 4.3, decide il lato compute di M5) e upgrade del
       sandbox a rendering instanced — che è anche il banco di prova di M4.
+- [ ] **Zombie bloccati contro un ostacolo → animazione attack, non idle**
+      (renderer-side, prossima sessione). I pezzi esistono già tutti:
+      lo stato "stuck" con isteresi è nel layer (sprite_layer.c), la
+      prossimità al muro è `simp_sample_sdf(x,y) < r + margine`, il facing
+      verso l'ostacolo è il gradiente dell'SDF (campionamento a differenze
+      centrali, come fa il core per le collisioni), la sheet attack è già
+      renderizzata e il playback a tempo (ZSP3 `duration_s`) già supportato.
+      Da decidere: ri-renderizzare attack a più frame (ora 4); i CADAVERI
+      non stanno nell'SDF, quindi gli ammassati contro una barricata di
+      corpi resterebbero in idle (accettabile? altrimenti check sulla
+      lista corpse). Più avanti si fonde con lo stato "attacking" vero
+      del gameplay (muri con HP, drain→DPS, vedi questioni aperte).
+- [ ] **Idle poco animata → effetto copia-incolla nei gruppi bloccati**
+      (prossima sessione). La clip idle Mixamo attuale è quasi statica:
+      i frame sono indistinguibili, quindi la desincronizzazione di fase
+      (che ESISTE già: fase seedata per slot + continuità dal walk) non
+      basta a rompere l'uniformità. Opzioni: (a) clip idle più pronunciata,
+      (b) più idle corte come varianti (es. 4 clip da 4 frame — il
+      meccanismo multi-variante del walk si riusa pari pari per le stuck
+      sheet), (c) in più, velocità di playback per-agente ±20% da hash
+      (una riga, desincronizza anche a parità di clip). Candidate nel
+      pack: scream/biting come "struggle" alternativi.
+- [ ] **Zombie bloccati nel mucchio che ruotano all'impazzata** (prossima
+      sessione). Causa: dentro l'ingorgo il PBD produce velocità di
+      assestamento (0.1–0.3 m/s) con direzione che gira vorticosamente;
+      sopra la soglia di 0.05 m/s l'EMA dell'heading le insegue. Due fix
+      complementari: (1) congelare l'aggiornamento dell'heading in stato
+      stuck (lo stato c'è già, è la fix più pulita), (2) rate limit sul
+      delta di heading per frame (max °/s sensato, proposta utente), che
+      migliora anche i camminatori — uno zombie non piroetta. Da tarare
+      insieme nella stessa sessione.
 - [ ] Torrette: piazzamento (= muri + sorgente di danno), targeting via query
       spaziali, proiettili/raycast sulla griglia.
 - [ ] Wave/spawner, economia, HP/danno, condizioni di vittoria/sconfitta.

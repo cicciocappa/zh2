@@ -415,6 +415,8 @@ int main(int argc, char **argv) {
     };
     SpriteLayer *sprites = sprite_layer_create(ren, WALK_SHEETS, 8, MAX_AGENTS);
     int sprites_on = sprites != NULL;
+    if (sprites)   /* stuck/dormant agents idle instead of freezing */
+        sprite_layer_set_stuck(sprites, ren, "gfx/out/zombie/idle_sheet.zspr");
 
     int   brush = B_WALL, size = 3;
     int   paused = 0, running = 1, spawning = 1;
