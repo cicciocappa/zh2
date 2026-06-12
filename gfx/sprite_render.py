@@ -203,10 +203,9 @@ def import_character(args):
     if zs:
         root.scale = (args.height / max(zs),) * 3
 
+    # the with-skin character FBX carries only a T-pose: never render it.
+    # Actions come exclusively from --anim clips.
     actions = {}
-    if arma.animation_data and arma.animation_data.action:
-        a = arma.animation_data.action
-        actions["base"] = (a, args.frames)
 
     # extra animations: import, steal the action, delete the rest
     for spec in args.anim:
@@ -293,7 +292,10 @@ def render_all(args, root, actions):
             if arma.animation_data is None:
                 arma.animation_data_create()
             arma.animation_data.action = spec["action"]
-            table.rotation_euler.z = 0.0   # measure in character space
+            # measure in character space, with any compensation left over
+            # from the previous action cleared
+            table.rotation_euler.z = 0.0
+            root.location.x = root.location.y = 0.0
             offs = measure_drift(arma, f0, f1, nsmp)
         meta["actions"][name] = {"frames": nsmp}
 
