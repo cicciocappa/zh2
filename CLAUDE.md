@@ -229,6 +229,17 @@ Il progetto ha DUE modelli di simulazione complementari:
   sorgente: la 4K del pack è sprecata su sprite da 35 px e costa RAM).
   `gfx/render_remote.sh` = batch sulla workstation via ssh (rsync,
   render --gpu, pull, pack locale).
+- `sprite_view.c` — previewer standalone delle sheet `.zspr` (riproduce
+  l'animazione al `duration_s` nativo: la filmstrip PNG statica non mostra
+  la temporizzazione, serve per giudicare es. "l'idle è viva?"). Niente
+  dipendenza dal core: parsa l'header ZSP3 e blitta i frame come
+  `sprite_layer.c`. `./sprite_view a.zspr [b.zspr ...]` (Tab cicla le
+  sheet); controlli nell'header (space play/pausa, `,`/`.` step frame,
+  ←/→ direzione, `-`/`=` velocità, B sfondo, G anchor+terra, A montaggio
+  16 direzioni, R reset). Headless: `SPRITE_VIEW_SHOT="[dir]" ./sprite_view
+  s.zspr` dumpa tutti i frame di una direzione in fila in
+  `sprite_view_shot.bmp` (così Claude può ispezionare l'animazione da
+  solo — converti il BMP in PNG con PIL per guardarlo). `make sprite_view`.
 - `sprite_layer.h` / `.c` — layer sprite SDL3 sopra il core (validazione
   del §4 di GFX_DESIGN prima dello stack GPU): heading per slot = EMA
   della velocità (τ 0.25 s) quantizzato sulle direzioni della sheet;

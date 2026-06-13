@@ -45,6 +45,9 @@ sandbox: sandbox_particles.c sim_particles.c sim_particles.h scene.c scene.h \
          sprite_layer.c sprite_layer.h
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) -o $@ sandbox_particles.c sim_particles.c scene.c sprite_layer.c $(SDL_LIBS) $(LDLIBS)
 
+sprite_view: sprite_view.c
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -o $@ sprite_view.c $(SDL_LIBS) $(LDLIBS)
+
 test: all
 	./test_particles
 	./test_impulse
@@ -60,6 +63,6 @@ test: all
 clean:
 	rm -rf test_particles test_impulse test_dormant test_handles test_query \
 	       test_corpses test_types test_density_route test_jam test_scene \
-	       sandbox frames
+	       sandbox sprite_view frames
 
 .PHONY: all test clean

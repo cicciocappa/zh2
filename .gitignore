@@ -1,5 +1,6 @@
 # build artifacts (make / make sandbox)
 sandbox
+sprite_view
 test_particles
 test_impulse
 test_dormant
@@ -15,4 +16,5 @@ frames/
 scene_saved.txt
 gfx/out/
 sandbox_shot.bmp
+sprite_view_shot.bmp
 gfx/__pycache__/
