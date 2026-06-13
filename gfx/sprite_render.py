@@ -11,8 +11,16 @@
 #   --fbx model.fbx          Mixamo "FBX Binary, with skin" character
 #   --anim walk=walk.fbx     extra Mixamo animations, "without skin"
 #                            (repeatable; name before '=' becomes the action
-#                            name; frame count after ':' optional, e.g.
-#                            walk=walk.fbx:8 — default 8)
+#                            name; ':' options follow the path in any order:
+#                            an integer is the frame count (default 8), the
+#                            token 'still' disables root-motion compensation.
+#                            e.g. walk=walk.fbx:8 , idle=idle.fbx:16:still)
+#                            STILL: locomotion clips translate the hips, so we
+#                            cancel that XY per frame to keep them in place.
+#                            But on stationary clips (idle, some attacks) the
+#                            feet are planted and the hip sway IS the motion —
+#                            cancelling it freezes the torso. Mark those 'still'
+#                            so the sway survives.
 #   (no --fbx)               built-in animated placeholder pawn, validates
 #                            the whole chain without any asset
 #
@@ -42,7 +50,8 @@ def parse_args():
     p = argparse.ArgumentParser(prog="sprite_render.py")
     p.add_argument("--fbx", default=None, help="character FBX (with skin)")
     p.add_argument("--anim", action="append", default=[],
-                   help="name=file.fbx[:frames] extra animation (no skin)")
+                   help="name=file.fbx[:frames][:still] extra animation (no "
+                        "skin); 'still' disables root-motion compensation")
     p.add_argument("--out", default="gfx/out/placeholder")
     p.add_argument("--dirs", type=int, default=16)
     p.add_argument("--frames", type=int, default=8,
@@ -238,23 +247,33 @@ def import_character(args):
     # extra animations: import, steal the action, delete the rest
     for spec in args.anim:
         name, _, rest = spec.partition("=")
-        path, _, nstr = rest.partition(":")
-        n = int(nstr) if nstr else args.frames
+        # ':' options after the path, any order: int = frames, 'still' = no
+        # root-motion compensation (see header / measure_drift)
+        parts = rest.split(":")
+        path = parts[0]
+        n, still = args.frames, False
+        for tok in parts[1:]:
+            if tok.isdigit():
+                n = int(tok)
+            elif tok.lower() in ("still", "noroot", "inplace"):
+                still = True
+            elif tok:
+                print(f"[sprite_render] WARNING: unknown anim option '{tok}'")
         before = set(bpy.data.objects)
         prev_actions = set(bpy.data.actions)
         bpy.ops.import_scene.fbx(filepath=path)
         new_act = next(a for a in bpy.data.actions if a not in prev_actions)
         new_act.name = name
-        actions[name] = (new_act, n)
+        actions[name] = (new_act, n, still)
         for o in set(bpy.data.objects) - before:
             bpy.data.objects.remove(o, do_unlink=True)
 
     # resolve to frame ranges keyed by action name; bind happens at render
     out = {}
-    for name, (act, n) in actions.items():
+    for name, (act, n, still) in actions.items():
         f0, f1 = act.frame_range
         out[name] = {"action": act, "armature": arma,
-                     "range": (f0, f1), "samples": n}
+                     "range": (f0, f1), "samples": n, "still": still}
     return root, out
 
 
@@ -325,11 +344,18 @@ def render_all(args, root, actions):
             if arma.animation_data is None:
                 arma.animation_data_create()
             arma.animation_data.action = spec["action"]
-            # measure in character space, with any compensation left over
-            # from the previous action cleared
+            # clear any compensation left over from the previous action; keep
+            # the character at the origin for the whole clip
             table.rotation_euler.z = 0.0
             root.location.x = root.location.y = 0.0
-            offs, stride = measure_drift(arma, f0, f1, nsmp)
+            if spec["still"]:
+                # stationary clip: feet planted, the hip sway IS the motion.
+                # Compensating its XY would freeze the torso (idle looks dead).
+                # Render as authored, time-based (stride 0 -> no locomotion).
+                offs, stride = None, 0.0
+                print(f"[sprite_render] {name}: still, root motion kept")
+            else:
+                offs, stride = measure_drift(arma, f0, f1, nsmp)
         # native clip duration: time-based animations (idle, struggle)
         # play at this speed; locomotion uses stride_m instead
         duration = (f1 - f0) / scn.render.fps
