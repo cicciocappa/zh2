@@ -20,6 +20,11 @@
 /* Radius the sheets are authored for: scale = agent radius / this. */
 #define SHEET_RADIUS_M  0.30f
 #define MAX_VARIANTS    8
+/* Cap on how fast the facing may rotate (rad/s). The EMA already smooths, but
+ * a shove (or the EMA vector passing through the origin on a velocity reversal)
+ * can snap the angle around; this clamp turns that into a slew. Generous: a
+ * full turn in ~1 s, so legit corner turns are unaffected, only spins capped. */
+#define MAX_TURN_RATE   6.0f
 
 typedef struct { float key; int idx; } SprOrd;
 
@@ -174,6 +179,10 @@ void sprite_layer_update(SpriteLayer *sl, const SimP *s, float dt) {
     int n = simp_count(s);
     float alpha = 1.0f - expf(-dt / HEADING_TAU);
     float beta  = 1.0f - expf(-dt / SPEED_TAU);
+    /* max facing rotation this step; constant per frame, so the rotation that
+     * enforces it is precomputed once (no per-agent trig on the hot path) */
+    float maxturn = MAX_TURN_RATE * dt;
+    float ct = cosf(maxturn), st = sinf(maxturn);
     for (int i = 0; i < n; i++) {
         int slot = simp_slot_of(s, i);
         SimPHandle h = simp_handle_of(s, i);
@@ -211,19 +220,41 @@ void sprite_layer_update(SpriteLayer *sl, const SimP *s, float dt) {
         }
         if (fl[i] & SIMP_FLYING) continue;      /* keep launch heading      */
         float sp = sqrtf(vx[i] * vx[i] + vy[i] * vy[i]);
-        if (sp > 0.05f) {                       /* don't erode facing while
-                                                 * standing (PBD micro-jitter) */
-            sl->hx[slot] += alpha * (vx[i] - sl->hx[slot]);
-            sl->hy[slot] += alpha * (vy[i] - sl->hy[slot]);
-        }
 
-        /* stuck detection: speed EMA + hysteresis (dormant agents are
-         * "stuck" by flag, not by speed: they are still on purpose) */
+        /* stuck detection FIRST: the facing freezes while stuck, so it must be
+         * known before the heading update. Speed EMA + hysteresis (dormant
+         * agents are "stuck" by flag, not by speed: they are still on purpose) */
         sl->spd[slot] += beta * (sp - sl->spd[slot]);
         if (!sl->stuckf[slot] && sl->spd[slot] < STUCK_ENTER_MS)
             sl->stuckf[slot] = 1;
         else if (sl->stuckf[slot] && sl->spd[slot] > STUCK_EXIT_MS)
             sl->stuckf[slot] = 0;
+
+        /* heading = EMA of velocity toward the move dir, but: (1) frozen while
+         * stuck or standing — in a jam the PBD micro-jitter would spin the
+         * facing (pirouette); (2) rate-limited so a shove or the EMA vector
+         * passing through zero on a reversal slews instead of snapping. */
+        if (sp > 0.05f && !sl->stuckf[slot]) {
+            float ox = sl->hx[slot], oy = sl->hy[slot];
+            float nx = ox + alpha * (vx[i] - ox);
+            float ny = oy + alpha * (vy[i] - oy);
+            float cross = ox * ny - oy * nx;    /* sign = turn direction   */
+            float dot   = ox * nx + oy * ny;
+            float mo2 = ox * ox + oy * oy, mn2 = nx * nx + ny * ny;
+            /* turn exceeds maxturn iff angle>90 (dot<0) or sin>sin(maxturn) */
+            if ((dot < 0.0f || cross * cross > st * st * mo2 * mn2)
+                && mo2 > 1e-12f) {
+                float mag = sqrtf(mn2);
+                float imo = 1.0f / sqrtf(mo2);
+                float ux = ox * imo, uy = oy * imo;       /* old unit dir   */
+                float s = cross >= 0.0f ? st : -st;       /* rotate toward n */
+                sl->hx[slot] = (ux * ct - uy * s) * mag;
+                sl->hy[slot] = (ux * s  + uy * ct) * mag;
+            } else {
+                sl->hx[slot] = nx;
+                sl->hy[slot] = ny;
+            }
+        }
 
         if (sl->has_stuck && (sl->stuckf[slot] || (fl[i] & SIMP_DORMANT))) {
             /* time-based playback at the clip's native speed */
