@@ -83,6 +83,11 @@ struct SimP {
     SimPHandle *landed;
     int landed_n;
 
+    /* siege sensor: per-agent wall contact of the last step (SIEGE_DESIGN.md).
+     * Filled on the final wall_projection pass; indexed by dense index. */
+    float *wall_pressure;  /* cap : push * max(into_wall,0), 0 = no siege */
+    int   *wall_cell;      /* cap : besieged nav cell, -1 = none          */
+
     /* corpse pool: static obstacle discs, TTL-managed */
     int   corpse_count;
     float *cpx, *cpy, *crad, *cttl;
@@ -450,6 +455,9 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->landed = (SimPHandle *)malloc((size_t)max_agents * sizeof(SimPHandle));
     s->landed_n = 0;
 
+    s->wall_pressure = (float *)calloc((size_t)max_agents, sizeof(float));
+    s->wall_cell     = (int *)malloc((size_t)max_agents * sizeof(int));
+
     s->cpx  = (float *)malloc(CORPSE_CAP * sizeof(float));
     s->cpy  = (float *)malloc(CORPSE_CAP * sizeof(float));
     s->crad = (float *)malloc(CORPSE_CAP * sizeof(float));
@@ -501,6 +509,7 @@ void simp_destroy(SimP *s) {
     free(s->vx); free(s->vy);
     free(s->rad); free(s->vpref); free(s->invm); free(s->seed);
     free(s->aflags); free(s->z); free(s->vz); free(s->landed);
+    free(s->wall_pressure); free(s->wall_cell);
     free(s->cpx); free(s->cpy); free(s->crad); free(s->cttl);
     free(s->slot_to_index); free(s->index_to_slot);
     free(s->slot_gen); free(s->slot_free);
@@ -632,6 +641,8 @@ void simp_kill(SimP *s, int i) {
     s->invm[i] = s->invm[last]; s->seed[i] = s->seed[last];
     s->aflags[i] = s->aflags[last];
     s->z[i] = s->z[last]; s->vz[i] = s->vz[last];
+    s->wall_pressure[i] = s->wall_pressure[last];   /* keep siege sensor in sync */
+    s->wall_cell[i] = s->wall_cell[last];
     int ls = s->index_to_slot[last];
     s->slot_to_index[ls] = i;
     s->index_to_slot[i] = ls;
@@ -984,7 +995,13 @@ static void pbd_iteration(SimP *s) {
     }
 }
 
-static void wall_projection(SimP *s) {
+/* When record is set (the final iteration of the step) the siege sensor is
+ * sampled from the PRE-correction penetration: an agent pressing into a wall
+ * to reach its goal has push > 0 and steers into the wall (into_wall > 0);
+ * one grazing it tangentially has into_wall <= 0 and is left at 0. Measuring
+ * here, before the projection cancels the overlap, is the only place push is
+ * still meaningful (after the push d >= r). See SIEGE_DESIGN.md. */
+static void wall_projection(SimP *s, bool record) {
     const float wall_h = s->params.wall_h;
     for (int i = 0; i < s->count; i++) {
         float r = s->rad[i];
@@ -995,6 +1012,37 @@ static void wall_projection(SimP *s) {
                 float gx, gy;
                 sdf_grad(s, s->px[i], s->py[i], &gx, &gy);
                 float push = r - d;
+                /* siege sensor (skip flyers: ballistic, not besieging) */
+                if (record && !(s->aflags[i] & SIMP_FLYING)) {
+                    float fx, fy;
+                    simp_sample_flow(s, s->px[i], s->py[i], &fx, &fy);
+                    float into_wall = -(fx * gx + fy * gy);  /* >0 = into wall */
+                    if (into_wall > 0.0f) {
+                        /* besieged cell = the SOLID cell near the agent best
+                         * aligned with -gradient (toward the wall). Scanning a
+                         * small window (the wall is within r of the center, so
+                         * within ~1 cell) keeps the cell exactly solid, where a
+                         * single blind step can miss at corners / thin walls. */
+                        int acx = clampi((int)(s->px[i] * s->inv_cell), 0, s->gw - 1);
+                        int acy = clampi((int)(s->py[i] * s->inv_cell), 0, s->gh - 1);
+                        int w = (int)ceilf((r + 0.5f * s->cell) * s->inv_cell);
+                        float best = 0.0f; int bestc = -1;
+                        for (int dy = -w; dy <= w; dy++) for (int dx = -w; dx <= w; dx++) {
+                            int nx = acx + dx, ny = acy + dy;
+                            if (nx < 0 || ny < 0 || nx >= s->gw || ny >= s->gh) continue;
+                            int c = ny * s->gw + nx;
+                            if (!s->solid[c]) continue;
+                            float ccx = ((float)nx + 0.5f) * s->cell - s->px[i];
+                            float ccy = ((float)ny + 0.5f) * s->cell - s->py[i];
+                            float dot = ccx * (-gx) + ccy * (-gy);   /* toward wall */
+                            if (dot > best) { best = dot; bestc = c; }
+                        }
+                        if (bestc >= 0) {
+                            s->wall_pressure[i] = push * into_wall;
+                            s->wall_cell[i] = bestc;
+                        }
+                    }
+                }
                 s->px[i] += gx * push;
                 s->py[i] += gy * push;
             }
@@ -1083,11 +1131,16 @@ int simp_step(SimP *s, float dt) {
         }
     }
 
-    /* 3) constraints: agent-agent (PBD) + walls, iterated */
+    /* 3) constraints: agent-agent (PBD) + walls, iterated. The siege sensor
+     * (SIEGE_DESIGN.md) is reset, then filled on the FINAL wall projection. */
+    for (int i = 0; i < s->count; i++) {
+        s->wall_pressure[i] = 0.0f;
+        s->wall_cell[i] = -1;
+    }
     rebuild_grid(s);
     for (int it = 0; it < P->pbd_iters; it++) {
         pbd_iteration(s);
-        wall_projection(s);
+        wall_projection(s, it == P->pbd_iters - 1);
     }
 
     /* 4) recover effective velocity from positional change. Flyers keep
@@ -1145,6 +1198,8 @@ const float *simp_py(const SimP *s) { return s->py; }
 const float *simp_vx(const SimP *s) { return s->vx; }
 const float *simp_vy(const SimP *s) { return s->vy; }
 const float *simp_radius_arr(const SimP *s) { return s->rad; }
+const float *simp_wall_pressure(const SimP *s) { return s->wall_pressure; }
+const int   *simp_wall_cell(const SimP *s) { return s->wall_cell; }
 const uint8_t *simp_flags_arr(const SimP *s) { return s->aflags; }
 const float *simp_z_arr(const SimP *s) { return s->z; }
 int simp_landed_count(const SimP *s) { return s->landed_n; }

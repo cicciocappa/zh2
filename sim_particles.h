@@ -284,6 +284,24 @@ const float *simp_vx(const SimP *s);
 const float *simp_vy(const SimP *s);
 const float *simp_radius_arr(const SimP *s);
 
+/* ---- siege sensor (SIEGE_DESIGN.md) -------------------------------------- *
+ * Per-grounded-agent wall contact resolved THIS step, for the destructible-
+ * wall mechanic: who is pressing against a wall TO REACH ITS GOAL, and where.
+ * Both arrays are simp_count() long, indexed by DENSE index (like vx/vy) -
+ * convert to slot/handle at once, the index dies on the next kill.
+ *
+ *   simp_wall_pressure[i] = push * max(into_wall, 0), the penetration the wall
+ *      had to resolve at the last projection times how much the agent steers
+ *      INTO the wall (-flow . normal). 0 if not in contact, or in contact but
+ *      steering tangent/away (that is GRAZING, not siege - the hazard mechanic).
+ *   simp_wall_cell[i] = nav cell index being besieged (toward -SDF gradient),
+ *      or -1 if simp_wall_pressure[i] == 0.
+ *
+ * Flyers never register (overflown or ballistic). A fresh snapshot each step;
+ * the siege MEMORY (attack timers, structure HP) lives in game code. */
+const float *simp_wall_pressure(const SimP *s);
+const int   *simp_wall_cell(const SimP *s);
+
 /* Flow-field direction at world point (bilinear, normalized; 0,0 in walls). */
 void  simp_sample_flow(const SimP *s, float x, float y, float *dx, float *dy);
 /* Signed distance to nearest wall at world point (positive = free space).  */

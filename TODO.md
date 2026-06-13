@@ -112,7 +112,11 @@ poi scala, poi gioco.
       non stanno nell'SDF, quindi gli ammassati contro una barricata di
       corpi resterebbero in idle (accettabile? altrimenti check sulla
       lista corpse). Più avanti si fonde con lo stato "attacking" vero
-      del gameplay (muri con HP, drain→DPS, vedi questioni aperte).
+      del gameplay (muri con HP, drain→DPS, vedi questioni aperte): il
+      sensore è già pronto — `simp_wall_pressure[i] > 0` dice quali
+      slot stanno premendo un muro per davvero (verso il goal), più
+      pulito del check SDF generico perché esclude lo sfioramento
+      tangente. Vedi `SIEGE_DESIGN.md` §5.
 - [ ] **Idle poco animata → effetto copia-incolla nei gruppi bloccati**
       (prossima sessione). La clip idle Mixamo attuale è quasi statica:
       i frame sono indistinguibili, quindi la desincronizzazione di fase
@@ -145,6 +149,12 @@ poi scala, poi gioco.
   la folla "scivola" — probabilmente ok per zombie, da valutare a occhio.)
 - Il drain attuale uccide al primo contatto col goal cell: per il TD servirà
   invece "attacca la struttura" (stato attacking + DPS sul bersaglio).
+  → **SENSORE PRONTO** (`SIEGE_DESIGN.md`): `simp_wall_pressure`/`simp_wall_cell`
+    espongono chi preme un muro per raggiungere il goal e quale cella; il modello
+    ad attacchi discreti (timer per-slot, HP della struttura, crollo→reroute) è
+    dimostrato in `test_siege` ma vive lato gioco. Da agganciare quando arrivano
+    le strutture del giocatore e l'animazione attacco (M6). Lo sfioramento
+    tangente (into_wall ≤ 0) resta fuori → futura meccanica hazard ambientali.
 - Politica multi-goal: un solo campo Dijkstra multi-sorgente o campi pesati
   per appetibilità (base vs torrette vs giocatore)?
 - Dimensione cella nav vs collisione: ora indipendenti (0.5 m vs ~0.65 m);

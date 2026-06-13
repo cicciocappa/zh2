@@ -99,6 +99,14 @@ Il progetto ha DUE modelli di simulazione complementari:
      (le correzioni PBD/wall e il drain rendono stantio il binning di metà
      step). Trappola documentata nell'header: gli indici ritornati muoiono al
      primo kill — convertirli subito in handle, o killare per indice decrescente.
+   - **Sensore d'assedio** (`SIEGE_DESIGN.md`): `simp_wall_pressure[i]` =
+     `push · max(into_wall,0)` e `simp_wall_cell[i]` = cella muro assediata,
+     per agente a terra, fotografati a fine `wall_projection`. Espongono CHI
+     preme un muro per raggiungere il goal oltre (e dove): `into_wall =
+     -(flow·normale)` separa l'assedio frontale (>0) dallo sfioramento
+     tangente (≤0, futura meccanica hazard). Il gioco ci costruisce sopra HP
+     delle strutture + attacchi discreti (timer per-slot, soglia di contatto)
+     → crollo via `simp_set_wall(false)` → reroute automatico.
 
 ## Stato verificato (core particellare)
 
@@ -153,6 +161,13 @@ Il progetto ha DUE modelli di simulazione complementari:
   sola densità satura su un'area enorme e finisce per deviare anche lei
   (lentamente) — il jam serve per code piccole rispetto alla deviazione e
   per la reattività.
+- `test_siege` (`SIEGE_DESIGN.md`): selettività del sensore (micro-test
+  deterministico: stesso muro + blocco, flow into-wall 0.033 vs tangente
+  0.0037 sotto il floor d'attacco) e meccanica completa (orda ~1365 preme
+  una banda distruttibile → 400 colpi → crollo step ~2721 → reroute → >50%
+  drenato; controllo indistruttibile = 0 drain; determinismo; zero NaN).
+  Nota: l'assedio frontale sostenuto richiede una folla che spinge — un
+  agente singolo nel muro viene espulso come velocità e non resta a premere.
 
 ## File
 
@@ -167,6 +182,9 @@ Il progetto ha DUE modelli di simulazione complementari:
   dentro `test_impulse.c`.
 - `test_types.c` / `test_density_route.c` / `test_jam.c` — verifica tipi +
   costo utente (M3.5), densità→costo (M3.6) e ingorgo→costo (M3.7).
+- `test_siege.c` — verifica del sensore d'assedio (`SIEGE_DESIGN.md`):
+  selettività into-wall vs tangente + la meccanica completa lato gioco
+  (attacchi discreti → crollo → reroute → drain).
 - `scene.h` / `scene.c` — file di scena ASCII (griglia di char: `#` muro,
   `G` goal, `S` spawner, `P` branco dormiente + direttive `cell`/`set
   <param>`/`cost <rect>`): configurazioni di partenza per sandbox e test

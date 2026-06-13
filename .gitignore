@@ -11,6 +11,7 @@ test_types
 test_density_route
 test_jam
 test_scene
+test_siege
 *.o
 frames/
 scene_saved.txt
