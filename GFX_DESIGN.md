@@ -189,6 +189,28 @@ Decisione: **doppio regime**, che scioglie il dilemma griglia-vs-obliquo.
   indipendente = migliaia di zombie distinti con UN modello. I modelli
   base aggiuntivi sono per i TIPI (walker/runner/tank, già previsti
   sopra), dove il costo vero è l'authoring, non la VRAM.
+- **Team-color masking per il guardaroba** (idea, giugno 2026): ricolorare
+  REGIONI dello sprite (es. maglietta divisa in manica L / busto / manica R)
+  con colori per-agente, alla maniera delle fazioni RTS ma usata per varietà
+  dell'abbigliamento, non per fazioni (qui non servono). Il multiply è già la
+  tecnica giusta: una regione renderizzata grigio-ombreggiata × un colore dà
+  gratis "4+ sfumature" coerenti con l'illuminazione del prerender (niente
+  aree piatte). Sarebbe un asse di varietà in più, regolabile per-livello
+  (folla variopinta indoor vs tutti infangati outdoor vs uniforme = look
+  attuale con regioni a colore bianco). FATTIBILITÀ: il `ColorMod` di
+  SDL_Renderer 2D di oggi è GLOBALE (tutto lo sprite) → per regioni servono o
+  N pass (1 per regione, ~4× i draw: ok nel sandbox a poche migliaia, NO a
+  50–100k) o un fragment shader → cioè lo stack GPU (SDL_GPU/GL, §8 sopra).
+  In GPU il costo runtime è trascurabile (un sample maschera + qualche mult);
+  il prezzo è VRAM per la maschera, contenibile con maschera a INDICE
+  single-channel R8 (regioni mutuamente esclusive: 0=no-tint, 1/2/3=regione)
+  → +12–25% per sheet, dimezzabile a half-res (le maschere sono a bassa
+  frequenza). Lavoro indipendente dallo stack, fattibile da subito: aggiungere
+  un pass MASCHERA al prerender Blender (`sprite_render.py`, material override
+  con regioni a colori piatti) + estensione `.zspr`. Validazione del look
+  senza shader: pre-bakare offline qualche variante ricolorata riusando il
+  meccanismo `var` delle walk-variant (non scala in VRAM per le combo vere, ma
+  mostra "magliette assortite" oggi). Si decide insieme allo stack GPU.
 - **Palette/mood del mondo**: notturno classico zombie vs terroso diurno
   alla WC2. Da decidere col primo tileset; non blocca nulla di tecnico.
 - Crossfade tra tier di zoom: durata e curva, da tarare a occhio.
