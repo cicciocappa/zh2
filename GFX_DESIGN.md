@@ -153,6 +153,55 @@ Decisione: **doppio regime**, che scioglie il dilemma griglia-vs-obliquo.
   Dijkstra/SDF). Da valutare solo allora, insieme alla questione aperta
   sull'unificazione celle nav/collisione per la GPU.
 
+## 6b. Sprite o 3D per ambiente e difese? (DECISO, giugno 2026)
+
+Domanda: gli zombie sono sprite (§4) — mura, recinzioni, cancelli, edifici,
+alberi, torrette devono esserlo per forza? **No.** La premessa è falsa e va
+smontata, perché chiarisce il criterio.
+
+- **Sotto proiezione ortografica (§1) uno sprite *è* un modello 3D cotto da un
+  angolo fisso.** Una mesh renderizzata a runtime con la stessa camera orto a
+  45° e una sprite prerenderizzata sono indistinguibili in screen space (stessa
+  assenza di fuga, stessa scala px, stessa silhouette). Quindi il vincolo NON è
+  "stesso tipo di asset": è **coerenza di camera + luce** (la chiave NW di §4).
+  Se mesh live e sprite cotta condividono angolo e illuminazione, l'occhio non
+  le distingue → si può mischiare, e il confine si decide **per classe di asset**.
+- **Perché gli zombie sono sprite e il resto no**: gli zombie lo sono per NUMERO
+  (50–100k → il quad è il primitivo più economico; VAT preserva l'instancing) e
+  per ANIMAZIONE (ammortizzata in sheet). Ambiente e difese sono POCHI (decine,
+  forse centinaia) e spesso STATICI: i due driver non si applicano.
+
+Decisione **sprite-first per tutto**, caso per caso:
+
+- **Mura, recinzioni, cancelli, edifici, alberi**: sprite/tile prerenderizzati,
+  riusano *esattamente* la pipeline Blender→sheet di §4. Stati di danno discreti
+  (intatto→crepato→macerie, vedi `SIEGE_DESIGN.md`), cancello = pochi frame,
+  albero che cade (hazard, `SIEGE_DESIGN.md` §7) = una clip come la morte zombie.
+  Nessun vantaggio dal 3D qui.
+- **Torrette**: unica classe dove il 3D guadagnerebbe sul serio, perché *mirano
+  in continuo*. Sotto 3/4 ortografico **una sprite NON si ruota in 2D** (sembra
+  far girare una foto, non un oggetto 3D); e 16 direzioni (tollerate sugli zombie
+  piccoli e tanti) tradirebbero la quantizzazione su un oggetto-eroe che il
+  giocatore fissa mentre traccia. Scelta: **restano sprite, prerenderizzate a
+  risoluzione angolare ALTA (32–64 direzioni)** — i tipi di torretta sono pochi,
+  la VRAM regge — evitando del tutto un secondo renderer.
+
+I due costi nascosti che il mix introdurrebbe, e che la scelta sprite-first
+elude: (1) **parità di illuminazione** — una mesh live deve replicare nello
+shader la luce NW *cotta* nelle sprite o stona; (2) **secondo path di rendering**
+— oggi si blitta sprite SDL3 senza nemmeno decodificare PNG, una mesh a runtime è
+una dipendenza nuova.
+
+**Accoppiamento e porta aperta.** La decisione è legata a §8: lo **stack di
+rendering** (se full-GPU, qualche prop 3D è quasi gratis) e il **VAT** (che è già
+un path 3D-animato a runtime: il giorno che gli zombie diventano VAT, i prop 3D
+diventano naturali). Quindi si progetta il **confine degli asset perché ogni
+classe sia swappabile a 3D indipendentemente** — stessa filosofia sprite→VAT
+degli zombie (§4/§8). Il 3D-a-runtime (torrette in primis) si riconsidera SOLO
+quando si decide lo stack GPU o si introduce VAT: a quel punto il costo marginale
+crolla. Decidere il 3D-prop *prima* dello stack significa farsi dettare lo stack
+da un dettaglio.
+
 ## 7. Cosa serve al core (poco)
 
 - Niente: heading EMA, stato animazione, gib e decal vivono nel renderer
