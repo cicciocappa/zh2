@@ -51,6 +51,18 @@ sandbox: sandbox_particles.c sim_particles.c sim_particles.h scene.c scene.h \
 sprite_view: sprite_view.c
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) -o $@ sprite_view.c $(SDL_LIBS) $(LDLIBS)
 
+# VAT 3D previewer (migrazione_3d.md). glad.c e stb compilati con -w (codice di terzi).
+vat_view: vat/vat_view.c vat/glad.c vat/stb_impl.c vat/vat.vs vat/vat.fs
+	$(CC) -O2 -w -Ivat $(SDL_CFLAGS) -c vat/glad.c -o vat/glad.o
+	$(CC) -O2 -w -Ivat -c vat/stb_impl.c -o vat/stb_impl.o
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Ivat -o $@ vat/vat_view.c vat/glad.o vat/stb_impl.o $(SDL_LIBS) $(LDLIBS) -ldl
+
+# Orda reale del core sim_particles resa in 3D VAT (vat_layer + vat_horde).
+vat_horde: vat/vat_horde.c vat/vat_layer.c sim_particles.c vat/glad.c vat/stb_impl.c vat/vat.vs vat/vat.fs sim_particles.h vat/vat_layer.h vat/vat_gl.h
+	$(CC) -O2 -w -Ivat $(SDL_CFLAGS) -c vat/glad.c -o vat/glad.o
+	$(CC) -O2 -w -Ivat -c vat/stb_impl.c -o vat/stb_impl.o
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Ivat -I. -o $@ vat/vat_horde.c vat/vat_layer.c sim_particles.c vat/glad.o vat/stb_impl.o $(SDL_LIBS) $(LDLIBS) -ldl
+
 test: all
 	./test_particles
 	./test_impulse

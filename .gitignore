@@ -19,3 +19,9 @@ gfx/out/
 sandbox_shot.bmp
 sprite_view_shot.bmp
 gfx/__pycache__/
+vat_view
+vat_view_shot.bmp
+vat/assets/
+vat/glad.o
+vat_horde
+vat_horde_shot.bmp
