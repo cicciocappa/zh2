@@ -35,6 +35,22 @@ def log(m): print(f"[VAT] {m}")
 def to_gl(v): return (v.x, v.z, -v.y)
 
 
+def patch_fbx_light_import():
+    """Blender 5.1 io_scene_fbx crasha importando FBX che contengono LUCI:
+    blen_read_light fa `lamp.cycles.cast_shadow = lamp.use_shadow`, ma
+    CyclesLightSettings non ha piu' quell'attributo (rimosso). I modelli
+    esportati dal giocatore possono portarsi dietro la luce di scena.
+    Sostituiamo la funzione con uno stub che ritorna una luce valida senza
+    toccare l'attributo morto: tanto al baker servono solo mesh+armatura."""
+    try:
+        from io_scene_fbx import import_fbx
+    except Exception:
+        return
+    def safe_light(fbx_tmpl, fbx_obj, settings):
+        return bpy.data.lights.new(name="ImportedLight", type='POINT')
+    import_fbx.blen_read_light = safe_light
+
+
 def read_meta(path):
     if not os.path.exists(path): return None
     m = {"clips": []}
@@ -97,6 +113,7 @@ def main():
     normp = prefix + "_norm.raw"; metap = prefix + "_meta.txt"
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
+    patch_fbx_light_import()
     bpy.ops.import_scene.fbx(filepath=model_fbx)
     mesh = next(o for o in bpy.data.objects if o.type == 'MESH')
     arm = next(o for o in bpy.data.objects if o.type == 'ARMATURE')
@@ -125,25 +142,38 @@ def main():
     scene.frame_set(start); deps.update()
 
     # --- topologia con split per-UV (primo frame) ---
+    # L'ordine dei vat-index DEVE essere indipendente dalla posa: ogni clip si
+    # baka in un processo separato, ma mesh.bin (l'index buffer) lo scrive solo
+    # la clip 1 — le clip appese impacchettano pos/norm nel LORO ordine. Se gli
+    # ordini divergono, l'index buffer collega vertici sbagliati nelle clip
+    # appese -> triangoli spuri. La triangolazione 'BEAUTY' sceglie le diagonali
+    # dalla geometria DEFORMATA, quindi a pose diverse riordina i loop_triangles.
+    # FIX: assegnare i vat-index dai LOOP della mesh NON triangolata (ordine
+    # topologico, identico fra processi e pose); triangolare solo per gli indici.
     em = mesh.evaluated_get(deps); md = em.to_mesh()
-    bm = bmesh.new(); bm.from_mesh(md); bmesh.ops.triangulate(bm, faces=bm.faces[:])
-    bm.to_mesh(md); bm.free()
-    md.calc_loop_triangles()
     uvl = md.uv_layers.active.data if md.uv_layers.active else None
     uniq = {}              # (orig_idx, u, v) -> vat index
     vat_orig = []          # vat index -> orig blender vert index
     vat_uv = []            # vat index -> (u, v)
+    for li in range(len(md.loops)):     # ordine topologico, pose-independent
+        oi = md.loops[li].vertex_index
+        u, v = (uvl[li].uv.x, uvl[li].uv.y) if uvl else (0.0, 0.0)
+        key = (oi, round(u, 5), round(v, 5))
+        if key not in uniq:
+            uniq[key] = len(vat_orig); vat_orig.append(oi); vat_uv.append((u, v))
+    # index buffer: triangola e mappa ogni loop sul vat-index gia' assegnato.
+    # La scelta della diagonale dipende dalla posa, ma e' scritta UNA volta sola
+    # (clip 1) ed e' connettivita' valida per tutte le pose.
+    bm = bmesh.new(); bm.from_mesh(md); bmesh.ops.triangulate(bm, faces=bm.faces[:])
+    bm.to_mesh(md); bm.free()
+    md.calc_loop_triangles()
+    uvl = md.uv_layers.active.data if md.uv_layers.active else None
     indices = []
     for tri in md.loop_triangles:
         for li in tri.loops:
             oi = md.loops[li].vertex_index
             u, v = (uvl[li].uv.x, uvl[li].uv.y) if uvl else (0.0, 0.0)
-            key = (oi, round(u, 5), round(v, 5))
-            idx = uniq.get(key)
-            if idx is None:
-                idx = len(vat_orig); uniq[key] = idx
-                vat_orig.append(oi); vat_uv.append((u, v))
-            indices.append(idx)
+            indices.append(uniq[(oi, round(u, 5), round(v, 5))])
     num_verts = len(vat_orig)
     em.to_mesh_clear()
     rows = (num_verts + TEX_W - 1) // TEX_W
