@@ -149,45 +149,49 @@ def main():
     rows = (num_verts + TEX_W - 1) // TEX_W
     log(f"split verts={num_verts} (orig 163) tris={len(indices)//3} rows/frame={rows}")
 
-    # --- bake frame: posizioni/normali world (GL), in-place ---
-    hips = arm.pose.bones.get(ROOT_BONE); hips0 = None
+    # --- bake frame: posizioni/normali world (GL), RAW (centratura in POST) ---
+    # Niente in-place via hips qui. Le hips lette da arm.matrix_world possono
+    # vivere in una scala diversa dalla mesh (Mixamo: mesh 100 / arm 0.01): su
+    # rig mal-scalati il root motion finisce AMPLIFICATO sulla mesh (sia XZ che
+    # il "bob" verticale) e le hips non lo riflettono in modo coerente. Quindi
+    # togliamo il root motion PER-FRAME dalla geometria stessa — centratura XZ +
+    # grounding Y per frame — e la scala dall'altezza PER-FRAME (lo y-span su
+    # tutti i frame e' contaminato dal bob amplificato -> scala troppo piccola).
     raw_pos = []; raw_nrm = []
     for fr in range(start, end + 1):
         scene.frame_set(fr); deps.update()
-        ox = oz = 0.0
-        if hips is not None:
-            hp = to_gl((arm.matrix_world @ hips.matrix).to_translation())
-            if hips0 is None: hips0 = hp
-            ox, oz = hp[0] - hips0[0], hp[2] - hips0[2]
         em = mesh.evaluated_get(deps); md = em.to_mesh()
         nmat = mesh.matrix_world.to_3x3()
         fp = []; fn = []
         for oi in vat_orig:
             v = md.vertices[oi]
             wx, wy, wz = to_gl(mesh.matrix_world @ v.co)
-            fp.append((wx - ox, wy, wz - oz))
+            fp.append((wx, wy, wz))
             n = to_gl(nmat @ v.normal); ln = (n[0]**2+n[1]**2+n[2]**2) ** 0.5 or 1.0
             fn.append((n[0]/ln, n[1]/ln, n[2]/ln))
         raw_pos.append(fp); raw_nrm.append(fn)
         em.to_mesh_clear()
 
-    # --- scala: dalla PRIMA clip (poi riusata da meta) ---
+    # offset per-frame: centro XZ del bounding + piede (min Y); span = altezza
+    cxf = []; czf = []; yminf = []; spanf = []
+    for f in raw_pos:
+        xs = [p[0] for p in f]; ys = [p[1] for p in f]; zs = [p[2] for p in f]
+        cxf.append((min(xs)+max(xs))*0.5); czf.append((min(zs)+max(zs))*0.5)
+        yminf.append(min(ys)); spanf.append(max(ys)-min(ys))
+
+    # --- scala: dalla PRIMA clip (poi riusata da meta), altezza PER-FRAME ---
     meta = read_meta(metap) if append else None
     if meta and "scale" in meta:
         scale = float(meta["scale"])
         if int(meta["rowsPerFrame"]) != rows or int(meta["texW"]) != TEX_W:
             log("ERRORE: mesh/rows incompatibili con l'asset esistente"); sys.exit(1)
     else:
-        ys = [p[1] for f in raw_pos for p in f]
-        scale = TARGET_HEIGHT_M / (max(ys) - min(ys))
-    # grounding + centratura per-clip
-    ymin = min(p[1] for f in raw_pos for p in f)
-    xs0 = [p[0] for p in raw_pos[0]]; zs0 = [p[2] for p in raw_pos[0]]
-    cx = (min(xs0)+max(xs0))*0.5; cz = (min(zs0)+max(zs0))*0.5
+        scale = TARGET_HEIGHT_M / max(spanf)
 
     def pack(frames):
         out = []
-        for f in frames:
+        for fi, f in enumerate(frames):
+            cx, cz, ymin = cxf[fi], czf[fi], yminf[fi]
             row = [0.0]*(TEX_W*4*rows)
             for vi, (px, py, pz) in enumerate(f):
                 px=(px-cx)*scale; py=(py-ymin)*scale; pz=(pz-cz)*scale
@@ -207,12 +211,11 @@ def main():
 
     new_pos = pack(raw_pos); new_nrm = packn(raw_nrm)
 
-    # stride (in-place -> ~0)
-    stride = 0.0
-    if hips is not None:
-        scene.frame_set(end); deps.update()
-        hpe = to_gl((arm.matrix_world @ hips.matrix).to_translation())
-        stride = (((hpe[0]-hips0[0])**2 + (hpe[2]-hips0[2])**2) ** 0.5) * scale
+    # stride: spostamento netto XZ del centroide mesh (start->end), in metri.
+    # Robusto per rig ben scalati; su rig mal-scalati il root motion e'
+    # amplificato e lo stride risulta inaffidabile -> il layer puo' ripiegare
+    # sulla fase-da-tempo (duration_s) come per idle/attack.
+    stride = (((cxf[-1]-cxf[0])**2 + (czf[-1]-czf[0])**2) ** 0.5) * scale
     duration = num_frames / fps
 
     os.makedirs(os.path.dirname(prefix) or ".", exist_ok=True)

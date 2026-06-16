@@ -8,12 +8,13 @@
 # <model.fbx>  = modello lowpoly riggato in Mixamo (mesh+UV+skin, una T-pose
 #                qualunque va bene: dell'animazione del file non importa nulla).
 # <out_prefix> = es. vat/assets/zombie_man  -> _mesh.bin/_pos.raw/.../_meta.txt
-# [anim_dir]   = cartella con gli FBX d'animazione (default: la lowpoly attuale).
-#                Gli FBX d'anim possono essere "senza skin": serve solo l'Action.
+# [anim_dir]   = cartella con gli FBX d'animazione (default: vat/source/, i
+#                sorgenti versionati). Gli FBX d'anim possono essere "senza
+#                skin": serve solo l'Action. (es. vat/source/fem_rigged.fbx)
 set -e
 BL=${BLENDER:-$HOME/Scaricati/blender-5.1.0-linux-x64/blender}
 MODEL="$1"; PREFIX="$2"
-ADIR="${3:-/home/france/Scaricati/Scary_Zombie_Pack/lowpoly}"
+ADIR="${3:-vat/source}"
 [ -z "$PREFIX" ] && { echo "uso: $0 <model.fbx> <out_prefix> [anim_dir]"; exit 1; }
 
 # nome clip -> file anim. Adatta i nomi file se scarichi le anim separate.
