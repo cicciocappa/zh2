@@ -6,8 +6,12 @@
 //   ./vat_view [prefix]            default prefix = vat/assets/zombie
 //
 // Controlli: 1=IDLE 2=WALK 3=RUN 4=ATTACK(one-shot) 5=SCREAM(one-shot)
-//            C=camera SPACE=pausa N/P=clip libera (no FSM) T=texture frecce=orbita
+//            C=camera SPACE=pausa N/P=clip libera (no FSM) T=texture on/off frecce=orbita
 //            +/-=distanza R=reset ESC=esci
+//   Texture check: G=singolo zombie <-> griglia   L=ricarica diffuse da disco
+//                  Q/E=cella outfit (atlante 4x4). In singolo: tinta neutra (colori
+//                  veri della texture), camera prospettica vicina, heading fisso ->
+//                  orbita la camera per ispezionare ogni lato del modello.
 // Headless:  VAT_VIEW_SHOT="walk"          -> fila pose del ciclo della clip
 //            VAT_VIEW_SHOT="blend:idle:attack" -> fila del morph A->B (prova blend)
 #include <SDL3/SDL.h>
@@ -151,12 +155,15 @@ int main(int argc,char**argv){
 
     // --- modalità shot ---
     const char*shot=getenv("VAT_VIEW_SHOT");
-    int shot_blend=0, blendA=0, blendB=0, shotClip=0;
+    int shot_blend=0, shot_single=0, blendA=0, blendB=0, shotClip=0;
     if(shot && !strncmp(shot,"blend",5)){ shot_blend=1;
         char a[32]="idle",b[32]="attack"; sscanf(shot,"blend:%31[^:]:%31s",a,b);
         int ia=clip_by_name(&meta,a),ib=clip_by_name(&meta,b); blendA=ia<0?0:ia; blendB=ib<0?0:ib;
+    } else if(shot && !strncmp(shot,"single",6)){ shot_single=1;   // singolo zombie centrato
+        char c[32]="idle"; sscanf(shot,"single:%31s",c); int ic=clip_by_name(&meta,c); shotClip=ic<0?0:ic;
     } else if(shot && shot[0]){ int c=clip_by_name(&meta,shot); shotClip=c<0?0:c; }
-    int SW=shot?1000:1280, SH=shot?360:720;
+    int SW=1280,SH=720;
+    if(shot_single){SW=540;SH=720;} else if(shot){SW=1000;SH=360;}
 
     if(!SDL_Init(SDL_INIT_VIDEO)){fprintf(stderr,"SDL:%s\n",SDL_GetError());return 1;}
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION,3);SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,3);
@@ -206,6 +213,7 @@ int main(int argc,char**argv){
 
     int cam_free=0;float az=0.6f,el=0.45f,dist=18.0f;float cx=0,cy=0.9f,cz=0;int paused=0;
     int K=6;
+    int single=0, curOutfit=0;   // modalità ispezione texture (singolo zombie)
     Uint64 last=SDL_GetTicks();int running=1,shot_done=0;
     while(running){
         SDL_Event e;
@@ -220,16 +228,29 @@ int main(int argc,char**argv){
                 case SDLK_N:useFSM=0;clipLibero=(clipLibero+1)%meta.nclips;printf("clip libera: %s\n",meta.clip[clipLibero].name);break;
                 case SDLK_P:useFSM=0;clipLibero=(clipLibero+meta.nclips-1)%meta.nclips;printf("clip libera: %s\n",meta.clip[clipLibero].name);break;
                 case SDLK_T:useTex=hasTex?!useTex:0;break;
+                case SDLK_G: single=!single;             // singolo zombie <-> griglia
+                    if(single){cam_free=1;dist=3.5f;el=0.20f;az=0.0f;}else{cam_free=0;dist=18;el=0.45f;az=0.6f;}
+                    printf("modalità: %s\n",single?"SINGOLO (texture check)":"griglia"); break;
+                case SDLK_L:                             // ricarica la diffuse da disco
+                    if(texD){glDeleteTextures(1,&texD);}
+                    texD=tex_png(diffp); hasTex=texD!=0; useTex=hasTex;
+                    printf("texture ricaricata da %s\n",diffp); break;
+                case SDLK_Q: curOutfit=(curOutfit+15)%16; printf("outfit %d\n",curOutfit); break;
+                case SDLK_E: curOutfit=(curOutfit+1)%16; printf("outfit %d\n",curOutfit); break;
                 case SDLK_LEFT:az-=0.08f;break; case SDLK_RIGHT:az+=0.08f;break;
                 case SDLK_UP:el+=0.05f;break; case SDLK_DOWN:el-=0.05f;break;
                 case SDLK_EQUALS:case SDLK_PLUS:dist*=0.9f;break; case SDLK_MINUS:dist*=1.1f;break;
-                case SDLK_R:az=0.6f;el=0.45f;dist=18;break;
+                case SDLK_R:az=single?0.0f:0.6f;el=single?0.20f:0.45f;dist=single?3.5f:18;break;
             }
         }
         Uint64 now=SDL_GetTicks();float dt=(now-last)/1000.0f;last=now; if(dt>0.1f)dt=0.1f;
 
         inst_count=0;
-        if(shot_blend){                     // fila: morph congelato A -> B (prova crossfade)
+        if(shot_single){                     // singolo zombie centrato (verifica texture headless)
+            cam_free=1; az=0.0f; el=0.18f; dist=3.6f; cx=0; cy=0.9f; cz=0;
+            Clip*c=&meta.clip[shotClip]; float fa=floorf(c->numFrames*0.4f),fb=fa+1; if(fb>=c->numFrames)fb=0;
+            inst_push(0,0,0,0.0f,1.0f,c->startFrame+fa,c->startFrame+fb,0.0f,(float)curOutfit,1.0f,1.0f,1.0f);
+        } else if(shot_blend){               // fila: morph congelato A -> B (prova crossfade)
             az=0.6f;el=0.42f;cx=0;cy=0.9f;cz=0;dist=30; float sp=1.3f,head=az;
             Clip*ca=&meta.clip[blendA],*cb=&meta.clip[blendB];
             for(int i=0;i<K;i++){ float x=(i-(K-1)/2.0f)*sp; float t=(K>1)?(float)i/(K-1):0;
@@ -239,6 +260,14 @@ int main(int argc,char**argv){
             for(int i=0;i<K;i++){ float x=(i-(K-1)/2.0f)*sp; float local=(float)i/K*c->numFrames;
                 float fa=floorf(local),fb=fa+1; if(fb>=c->numFrames)fb=0;
                 inst_push(x,0,0,head,1.0f,c->startFrame+fa,c->startFrame+fb,local-fa,(float)(i%16),pal[i%8][0],pal[i%8][1],pal[i%8][2]); }
+        } else if(single){                   // singolo zombie: ispezione texture
+            cx=0;cy=0.9f;cz=0; int id=0; float gA,gB,mix;
+            if(useFSM){ if(!paused)agent_update(&agents[id],id,&meta,dt); agent_frames(&agents[id],&meta,&gA,&gB,&mix); }
+            else { Clip*c=&meta.clip[clipLibero];
+                float local=fmodf((float)(now/1000.0)*meta.fps,(float)c->numFrames);
+                float fa=floorf(local),fb=fa+1; if(fb>=c->numFrames)fb=0; gA=c->startFrame+fa;gB=c->startFrame+fb;mix=local-fa; }
+            // heading fisso a 0 (la camera orbita attorno) + tinta neutra (1,1,1) = colori veri
+            inst_push(0,0,0,0.0f,1.0f,gA,gB,mix,(float)curOutfit,1.0f,1.0f,1.0f);
         } else {                             // griglia interattiva
             cx=0;cy=0.9f;cz=0;
             for(int gz=0;gz<G;gz++)for(int gx=0;gx<G;gx++){int id=gz*G+gx;
