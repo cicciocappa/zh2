@@ -31,7 +31,9 @@ declare -A A=(
 )
 ORDER="walk walk_2 walk_3 walk_4 walk_5 walk_6 run run_2 idle idle_2 attack attack_2 scream"
 
-rm -f "${PREFIX}"_*.raw "${PREFIX}"_*.bin "${PREFIX}"_*.txt
+# suffissi ESATTI: un glob "${PREFIX}"_*.bin cancellerebbe anche le varianti che
+# condividono il prefisso (es. zombie_fem vs zombie_fem_obese).
+rm -f "${PREFIX}"_mesh.bin "${PREFIX}"_pos.raw "${PREFIX}"_norm.raw "${PREFIX}"_meta.txt
 first=1
 for name in $ORDER; do
   fbx="$ADIR/${A[$name]}"
