@@ -12,8 +12,12 @@
 //                  Q/E=cella outfit (atlante 4x4). In singolo: tinta neutra (colori
 //                  veri della texture), camera prospettica vicina, heading fisso ->
 //                  orbita la camera per ispezionare ogni lato del modello.
+//   Test-drive:    D = il modello cammina il loop quadrato 10x10 m (avanza con la
+//                  clip walk: fase guidata dalla distanza -> piedi piantati, heading =
+//                  direzione di marcia). Griglia 1 m a terra per leggere stride/slittamento.
 // Headless:  VAT_VIEW_SHOT="walk"          -> fila pose del ciclo della clip
 //            VAT_VIEW_SHOT="blend:idle:attack" -> fila del morph A->B (prova blend)
+//            VAT_VIEW_SHOT="drive"         -> strobo del walk lungo +X sulla griglia
 #include <SDL3/SDL.h>
 #include <glad/glad.h>
 #include "stb_image.h"
@@ -54,6 +58,13 @@ static GLuint mk_shader(const char*vsp,const char*fsp){char*vs=read_file(vsp),*f
     GLuint p=glCreateProgram();glAttachShader(p,v);glAttachShader(p,fr);glLinkProgram(p);
     glGetProgramiv(p,GL_LINK_STATUS,&ok);if(!ok){glGetProgramInfoLog(p,1024,0,log);fprintf(stderr,"LINK:%s\n",log);}
     free(vs);free(fs);glDeleteShader(v);glDeleteShader(fr);return p;}
+static GLuint mk_shader_src(const char*vs,const char*fs){GLint ok;char log[1024];
+    GLuint v=glCreateShader(GL_VERTEX_SHADER);glShaderSource(v,1,&vs,0);glCompileShader(v);
+    glGetShaderiv(v,GL_COMPILE_STATUS,&ok);if(!ok){glGetShaderInfoLog(v,1024,0,log);fprintf(stderr,"gVS:%s\n",log);}
+    GLuint fr=glCreateShader(GL_FRAGMENT_SHADER);glShaderSource(fr,1,&fs,0);glCompileShader(fr);
+    glGetShaderiv(fr,GL_COMPILE_STATUS,&ok);if(!ok){glGetShaderInfoLog(fr,1024,0,log);fprintf(stderr,"gFS:%s\n",log);}
+    GLuint p=glCreateProgram();glAttachShader(p,v);glAttachShader(p,fr);glLinkProgram(p);
+    glDeleteShader(v);glDeleteShader(fr);return p;}
 static GLuint tex_raw(const char*p,int w,int h){char*d=read_file(p);if(!d)return 0;
     GLuint t;glGenTextures(1,&t);glBindTexture(GL_TEXTURE_2D,t);
     glTexImage2D(GL_TEXTURE_2D,0,GL_RGB32F,w,h,0,GL_RGBA,GL_FLOAT,d);
@@ -155,15 +166,16 @@ int main(int argc,char**argv){
 
     // --- modalità shot ---
     const char*shot=getenv("VAT_VIEW_SHOT");
-    int shot_blend=0, shot_single=0, blendA=0, blendB=0, shotClip=0;
+    int shot_blend=0, shot_single=0, shot_drive=0, blendA=0, blendB=0, shotClip=0;
     if(shot && !strncmp(shot,"blend",5)){ shot_blend=1;
         char a[32]="idle",b[32]="attack"; sscanf(shot,"blend:%31[^:]:%31s",a,b);
         int ia=clip_by_name(&meta,a),ib=clip_by_name(&meta,b); blendA=ia<0?0:ia; blendB=ib<0?0:ib;
     } else if(shot && !strncmp(shot,"single",6)){ shot_single=1;   // singolo zombie centrato
         char c[32]="idle"; sscanf(shot,"single:%31s",c); int ic=clip_by_name(&meta,c); shotClip=ic<0?0:ic;
+    } else if(shot && !strncmp(shot,"drive",5)){ shot_drive=1;      // strobo: walk lungo +X sulla griglia
     } else if(shot && shot[0]){ int c=clip_by_name(&meta,shot); shotClip=c<0?0:c; }
     int SW=1280,SH=720;
-    if(shot_single){SW=540;SH=720;} else if(shot){SW=1000;SH=360;}
+    if(shot_single){SW=540;SH=720;} else if(shot_drive){SW=1100;SH=420;} else if(shot){SW=1000;SH=360;}
 
     if(!SDL_Init(SDL_INIT_VIDEO)){fprintf(stderr,"SDL:%s\n",SDL_GetError());return 1;}
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION,3);SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,3);
@@ -199,6 +211,31 @@ int main(int argc,char**argv){
     glBindVertexArray(0);
     glEnable(GL_DEPTH_TEST);
 
+    // --- griglia a terra (riferimento per la modalità test-drive) ---
+    // linee XZ ogni 1 m da -2 a 12: serve a vedere se i piedi slittano (stride)
+    // e a leggere i 10 m di ogni lato del loop.
+    float gridv[64*4*3]; int gn=0;
+    for(int i=-2;i<=12;i++){
+        gridv[gn++]=i; gridv[gn++]=0; gridv[gn++]=-2;  gridv[gn++]=i; gridv[gn++]=0; gridv[gn++]=12;
+        gridv[gn++]=-2; gridv[gn++]=0; gridv[gn++]=i;  gridv[gn++]=12; gridv[gn++]=0; gridv[gn++]=i;
+    }
+    int gridVerts=gn/3;
+    GLuint gvao,gvbo;
+    glGenVertexArrays(1,&gvao);glBindVertexArray(gvao);
+    glGenBuffers(1,&gvbo);glBindBuffer(GL_ARRAY_BUFFER,gvbo);glBufferData(GL_ARRAY_BUFFER,gn*4,gridv,GL_STATIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,0,0,0);glEnableVertexAttribArray(0);glBindVertexArray(0);
+    GLuint gprog=mk_shader_src(
+        "#version 330 core\nlayout(location=0) in vec3 p;uniform mat4 uVP;void main(){gl_Position=uVP*vec4(p,1.0);}",
+        "#version 330 core\nout vec4 c;uniform vec3 col;void main(){c=vec4(col,1.0);}");
+    GLint uGVP=glGetUniformLocation(gprog,"uVP"),uGcol=glGetUniformLocation(gprog,"col");
+
+    // --- stato modalità test-drive (loop quadrato 10x10 m) ---
+    int wclip = groups[ST_WALK].n ? groups[ST_WALK].idx[0] : 0;  // prima variante walk
+    const float LEG=10.0f;
+    const float legdir[4][2]={{1,0},{0,1},{-1,0},{0,-1}};        // +X,+Z,-X,-Z
+    const float corner[4][2]={{0,0},{10,0},{10,10},{0,10}};
+    int drive=0, dleg=0; float dlegdist=0, dphase=0;
+
     GLint uVP=glGetUniformLocation(prog,"uVP"),uTS=glGetUniformLocation(prog,"texSize"),uRPF=glGetUniformLocation(prog,"rowsPerFrame");
     GLint uHas=glGetUniformLocation(prog,"uHasTex");
     float pal[8][3]={{0.45,0.55,0.40},{0.50,0.58,0.42},{0.40,0.50,0.38},{0.55,0.55,0.45},
@@ -231,6 +268,13 @@ int main(int argc,char**argv){
                 case SDLK_G: single=!single;             // singolo zombie <-> griglia
                     if(single){cam_free=1;dist=3.5f;el=0.20f;az=0.0f;}else{cam_free=0;dist=18;el=0.45f;az=0.6f;}
                     printf("modalità: %s\n",single?"SINGOLO (texture check)":"griglia"); break;
+                case SDLK_D: drive=!drive;               // test-drive: cammina il loop 10x10 m
+                    if(drive){ dleg=0;dlegdist=0;dphase=0; cam_free=1;dist=22;el=0.40f;az=0.7f;
+                        float sp=meta.clip[wclip].duration>0?meta.clip[wclip].stride/meta.clip[wclip].duration:0;
+                        printf("modalità: TEST-DRIVE (walk %s, stride=%.2fm, v=%.2f m/s)\n",
+                               meta.clip[wclip].name,meta.clip[wclip].stride,sp); }
+                    else { cam_free=0;dist=18;el=0.45f;az=0.6f; printf("modalità: griglia\n"); }
+                    break;
                 case SDLK_L:                             // ricarica la diffuse da disco
                     if(texD){glDeleteTextures(1,&texD);}
                     texD=tex_png(diffp); hasTex=texD!=0; useTex=hasTex;
@@ -255,11 +299,28 @@ int main(int argc,char**argv){
             Clip*ca=&meta.clip[blendA],*cb=&meta.clip[blendB];
             for(int i=0;i<K;i++){ float x=(i-(K-1)/2.0f)*sp; float t=(K>1)?(float)i/(K-1):0;
                 inst_push(x,0,0,head,1.0f,(float)ca->startFrame,(float)cb->startFrame,t,0,pal[i%8][0],pal[i%8][1],pal[i%8][2]); }
+        } else if(shot_drive){               // strobo: walk lungo +X sulla griglia (verifica stride+heading)
+            cam_free=1; cx=4.5f; cy=0.9f; cz=0; az=3.14159f; el=0.18f; dist=12;
+            Clip*c=&meta.clip[wclip]; float st=c->stride>0.1f?c->stride:1.0f; int N=10;
+            for(int i=0;i<N;i++){ float x=i*1.0f; float ph=x/st; ph-=floorf(ph);
+                float local=ph*c->numFrames; float fa=floorf(local),fb=fa+1; if(fb>=c->numFrames)fb=0;
+                inst_push(x,0,0, 1.5708f, 1.0f, c->startFrame+fa, c->startFrame+fb, local-fa, 0, 1,1,1); }
         } else if(shot){                     // fila: pose del ciclo di una clip
             az=0.6f;el=0.42f;cx=0;cy=0.9f;cz=0;dist=30; float sp=1.3f,head=az; Clip*c=&meta.clip[shotClip];
             for(int i=0;i<K;i++){ float x=(i-(K-1)/2.0f)*sp; float local=(float)i/K*c->numFrames;
                 float fa=floorf(local),fb=fa+1; if(fb>=c->numFrames)fb=0;
                 inst_push(x,0,0,head,1.0f,c->startFrame+fa,c->startFrame+fb,local-fa,(float)(i%16),pal[i%8][0],pal[i%8][1],pal[i%8][2]); }
+        } else if(drive){                    // TEST-DRIVE: cammina il loop 10x10 m (stride+heading)
+            cx=5;cy=1.0f;cz=5;               // camera centrata sul quadrato
+            Clip*c=&meta.clip[wclip]; float st=c->stride>0.1f?c->stride:1.0f;
+            float sp=c->duration>0? c->stride/c->duration : 0.5f;   // velocità naturale del walk
+            if(!paused){ float d=sp*dt; dlegdist+=d; dphase+=d/st; dphase-=floorf(dphase);
+                if(dlegdist>=LEG){ dlegdist-=LEG; dleg=(dleg+1)&3; } }
+            float px=corner[dleg][0]+legdir[dleg][0]*dlegdist;
+            float pz=corner[dleg][1]+legdir[dleg][1]*dlegdist;
+            float head=atan2f(legdir[dleg][0],legdir[dleg][1]);
+            float local=dphase*c->numFrames; float fa=floorf(local),fb=fa+1; if(fb>=c->numFrames)fb=0;
+            inst_push(px,0,pz,head,1.0f,c->startFrame+fa,c->startFrame+fb,local-fa,0,1,1,1);
         } else if(single){                   // singolo zombie: ispezione texture
             cx=0;cy=0.9f;cz=0; int id=0; float gA,gB,mix;
             if(useFSM){ if(!paused)agent_update(&agents[id],id,&meta,dt); agent_frames(&agents[id],&meta,&gA,&gB,&mix); }
@@ -288,6 +349,8 @@ int main(int argc,char**argv){
         m_lookat(view,eye,ctr,up);m_mul(vp,proj,view);
 
         glViewport(0,0,SW,SH);glClearColor(0.10f,0.11f,0.14f,1);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+        if(drive||shot_drive){ glUseProgram(gprog);glUniformMatrix4fv(uGVP,1,GL_FALSE,vp);
+            glUniform3f(uGcol,0.30f,0.32f,0.38f);glBindVertexArray(gvao);glDrawArrays(GL_LINES,0,gridVerts);glBindVertexArray(0); }
         glUseProgram(prog);glUniformMatrix4fv(uVP,1,GL_FALSE,vp);
         glUniform2f(uTS,(float)meta.texW,(float)meta.texH);glUniform1f(uRPF,(float)meta.rowsPerFrame);glUniform1i(uHas,useTex);
         glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,texP);glUniform1i(glGetUniformLocation(prog,"texPos"),0);

@@ -63,39 +63,108 @@ mesh caricata. Verifica col parser: il nuovo upload deve leggere `UpAxis=1`,
 mesh **e** armatura a 0.01 (come il normale) e baka uno zombie **in piedi col deform
 corretto** (verificato a video con `vat_view`).
 
-## Bug 2 — scala assoluta del modeling diversa (stride 100× sballato) — APERTO
+## Bug 2 — Scale sbagliato nel dialog di export FBX (stride 100×) — RISOLTO (causa nota)
 
-**Sintomo:** l'obeso a baking dà `scale ≈ 1.10` e `stride_m ≈ 131` per il walk (il
-normale: `scale ≈ 0.011`, `stride ≈ 1.31`). Il **visual è corretto** (l'altezza viene
-normalizzata a 1.8 m dal baker), ma lo `stride` è 100× troppo grande.
+**Sintomo:** l'obeso a baking dà `stride_m ≈ 131` per il walk (il normale: `≈ 1.31`).
+Il **visual è corretto** (l'altezza viene normalizzata dal baker), ma lo `stride` è
+esattamente 100× troppo grande su TUTTE le clip (131.85/1.31, 82.46/0.82, … = 100.x).
 
 **Perché è un problema:** `vat_layer.c` avanza la fase del passo con
 `phaseA += dist/stride` se `stride > 0.1`, altrimenti `dt/duration`. Con `stride=131`
 i piedi avanzano 1/100 del dovuto → **piedi quasi congelati** mentre il corpo scivola.
 Il fallback a tempo NON scatta (131 ≫ 0.1).
 
-**Causa precisa (misurata):** il personaggio normale è modellato a scala "cm"
-(bbox mesh ~17600 unità, world span ~176), l'obeso a scala "metri" (bbox ~175,
-world span ~1.76) → **100× di differenza di taglia assoluta** nel file. Mixamo però
-esporta il root motion delle clip in cm (~119 unità in entrambi). Sul normale è
-proporzionato; sull'obeso quel movimento è ~68× la sua taglia. È il **rapporto
-taglia-mesh / movimento-root** ad essere sbagliato nel rig: uno scaling UNIFORME nel
-baker non lo corregge (mesh e movimento scalano insieme, il rapporto resta).
+**Causa REALE (non quella che credevamo):** NON è la scala del modeling — i due `.blend`
+sono identici (mesh ~176 unità, world_scale 1.0 entrambi). La differenza è stata fatta
+**nel dialog di export FBX di Blender**: per il normale il campo *Transform → Scale* era
+**1**, per l'obeso era **0.01**. Quel `0.01` rimpicciolisce la geometria caricata su
+Mixamo ×100 (normale rigged ≈ 17.600 unità raw, obeso rigged ≈ 177). Mixamo emette il
+root motion delle clip in unità FISSE (~119) indipendenti dalla taglia mesh: sul normale
+"grande" è proporzionato → stride 1.31; sull'obeso "piccolo" è ~100× la sua taglia →
+stride 131. (La vecchia teoria "obeso a scala metri / rapporto mesh-root" era sbagliata:
+il rapporto nasce SOLO dal campo Scale dell'export, non dal blend.)
 
-**Due strade (DECISIONE DA PRENDERE a casa):**
-1. **`--stride-scale 0.01` nel baker** (manopola da aggiungere): moltiplica solo il
-   numero `stride_m` scritto nel meta (131 → 1.31), niente tocca geometria/anim già
-   corrette. Asset pronto subito; resta un rig "mal-scalato" ma funzionante e documentato.
-2. **Ri-upload su Mixamo a scala cm**: in Blender scalare l'obeso ×100 per matchare i
-   ~176 unità del normale, ri-esportare (stesso preset del Bug 1) e ri-riggare. Rig
-   pulito e coerente col normale, stride corretto nativo. Costo: un altro giro Mixamo.
-   → Probabilmente la scelta giusta long-term: tenere TUTTI i modelli alla stessa scala
-   (cm) evita che il bug si ripresenti su ogni nuovo personaggio.
+**Fix:** ri-esportare l'obeso da `blend/male_version_obese.blend` con **Transform →
+Scale = 1** (tutto il resto come il preset Bug 1: Up=Y, Forward=Z, Apply Scalings = FBX
+All, Apply Transform ON), ri-uploadare su Mixamo, ri-riggare, ri-bakare. Niente da
+scalare nel blend. **FATTO il 17/6** (`male_version_obese.fbx` ore 19:48).
 
-**Stato attuale degli asset:** `vat/assets/zombie_man_obese_*` è bakato col rig BUONO
-(in piedi, deform corretto) ma con lo **stride ancora 100×** (vedi i `stride_m` enormi
-nel `_meta.txt`). Va sistemato con una delle due strade prima di usarlo per il walk/run.
-`vat/assets/zombie_man_*` (normale) è invece a posto.
+**Verifica (ciò che conta):** l'unico predittore dello stride è l'**altezza WORLD** che
+l'upload FBX presenta a Mixamo. Il baker legge `mesh.matrix_world @ v.co` (coord world) e
+calcola `scale = 1.8/altezza_world`, `stride = spostamento_world × scale` — un RAPPORTO,
+invariante a scalature uniformi. Mixamo emette un root motion ASSOLUTO (~128 cm): su mesh
+world ~176 → stride 128/176×1.8 ≈ 1.31; su mesh world ~1.76 → ≈ 131. NON contano le unità
+raw (normale 17.640 a wscale 0.01 vs obeso 175 a wscale 1.0): conta solo l'altezza fisica.
+Misurato sul ri-export: obeso upload world **175.6** ≈ normale **176.4** → atteso stride ≈ 1.3.
+Conferma finale: dopo Mixamo + re-bake, `stride_m(walk)` deve uscire ≈ 1.31.
+
+**Regola per i prossimi personaggi:** export FBX verso Mixamo SEMPRE con Scale = 1
+(Apply Transform ON). NON usare Scale=0.01 per "rimpicciolire" un modello che sembra
+troppo grande: cambia l'altezza world e rompe lo stride.
+
+**Stato asset:** `vat/assets/zombie_man_obese_*` è ancora bakato col rig vecchio
+(Scale 0.01) → stride 100×. Da rifare con il giro qui sopra prima di usarlo per walk/run.
+`vat/assets/zombie_man_*` (normale) è a posto.
+
+## Bug 3 — auto-rig Mixamo FALLISCE (UnitScaleFactor 100) — RISOLTO
+
+**Sintomo:** ri-esportato l'obeso a "Scale=1" per fixare il Bug 2, Mixamo rifiuta
+l'auto-rig (fallisce del tutto, non solo stride storto).
+
+**Causa (letta dagli FBX):** l'export obeso usciva con **`UnitScaleFactor = 100`** mentre
+il normale (che rigga) ha **`UnitScaleFactor = 1.0`**. Con 100, Mixamo moltiplica la
+geometria raw (~175 unità) → vede un personaggio alto **~175 metri** → fuori tolleranza
+auto-rig. Il normale ha invece la conversione di unità **cotta nei vertici** (raw ~17.640,
+Unit 1.0). Cambiare solo il campo *Scale* nel dialog non basta: conta **Apply Scalings**.
+
+**Fix (verificato con uno sweep di tutti i parametri, GS confrontati col normale):**
+ricetta esatta in **`vat/export_mixamo_fbx.py`** (headless, riproducibile). I tre
+parametri che contano:
+- `axis_up='Y'`, `axis_forward='-Z'` → `FrontAxisSign/CoordAxisSign = +1` (con `'Z'`
+  escono −1 = il facing invertito del Bug 1);
+- `bake_space_transform=True` ("Apply Transform") → raddrizza su Y + cuoce il ×100;
+- `apply_scale_options='FBX_SCALE_NONE'` → `UnitScaleFactor = 1.0` (con `'FBX_SCALE_ALL'`
+  o `'FBX_SCALE_UNITS'` esce 100 → il fail). `global_scale=1.0`.
+
+Uso: `blender --background blend/<modello>.blend --python vat/export_mixamo_fbx.py --
+blend/<modello>.fbx`. Verifica con `fbx_inspect.py`: deve leggere identico al normale
+(Front +1, Coord +1, Unit 1.0; al reimport geometria Y-up wscale 0.01, raw ~17.6k).
+
+**Stato:** `blend/male_version_obese.fbx` rigenerato con lo script il 17/6 → GS e geometria
+identici al normale. Pronto per l'upload Mixamo. (Backup del file rotto Unit=100:
+`/tmp/obese_backup_unit100.fbx`, temporaneo.)
+
+## Pipeline DEFINITIVA varianti (obesi/bambini/donne) — non ri-riggare su Mixamo
+
+L'auto-rig di Mixamo sul lowpoly (297 vert) è una lotteria: dipende dalla posizione dei
+marker piazzati a mano, e con così pochi vertici l'auto-detector spesso fallisce
+("please place all markers" / "unknown error while generating motion"). Un modello denso
+(es. `working_test.fbx`, 2237 vert) rigga senza problemi → conferma che è la geometria
+rada il limite. La subdivision surface fa passare il rig ma rende la mesh densa (VAT
+pesante, stile non coerente col lowpoly).
+
+**Soluzione adottata: riggare UNA volta sola il normale su Mixamo, poi trasferire il rig
+alle varianti.** Tutti i 5 modelli condividono base e scheletro (cambiano pochi vertici:
+pancia per gli obesi, loop cut+seno per le donne). Verificato che Mixamo PRESERVA l'ordine
+dei vertici (Procrustes `male_version.blend` vs `male_version_rigged.fbx`: rotazione
+identità, scala 1, residuo ~0).
+
+- **Obesi, bambini** (topologia IDENTICA al normale): `vat/transfer_rig.py` — importa il
+  normale riggato, sposta i vertici per INDICE col delta (variante − base) dai .blend,
+  pesi intatti → FBX riggato. Esatto. Es.:
+  `blender --background --python vat/transfer_rig.py -- blend/male_version_rigged.fbx
+  blend/male_version.blend blend/male_version_obese.blend blend/male_version_obese_rigged.fbx`
+  poi `vat/bake_zombie.sh blend/male_version_obese_rigged.fbx vat/assets/zombie_man_obese`.
+- **Donne** (loop cut → topologia diversa): NON usare transfer_rig.py. Serve trasferimento
+  pesi per PROSSIMITÀ (modificatore Data Transfer dalla mesh riggata, stessa armatura).
+  Script da scrivere quando serve.
+
+**Stato:** `vat/assets/zombie_man_obese_*` RI-BAKATO il 17/6 via transfer_rig.py →
+stride walk 1.3204 (era 131), scale 0.01103, tutte le 13 clip, in piedi e deforma
+corretto (verificato con `vat_view` shot). Bug 2 CHIUSO. NB: tutta la saga
+export-FBX (Bug 1/2/3 qui sopra) è stata in parte un detour — per le VARIANTI non si
+passa più da Mixamo, quindi i settaggi di export contano solo per riggare un modello
+NUOVO da zero (lì resta valido `vat/export_mixamo_fbx.py`).
 
 ## Manopole aggiunte al baker durante il debug
 

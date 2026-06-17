@@ -2,18 +2,18 @@ texW=256
 texH=2018
 rowsPerFrame=2
 fps=30
-scale=1.10141196
+scale=0.01103038
 totalFrames=1009
-clip=walk startFrame=0 numFrames=122 duration_s=4.0667 stride_m=131.8475
-clip=walk_2 startFrame=122 numFrames=47 duration_s=1.5667 stride_m=82.4556
-clip=walk_3 startFrame=169 numFrames=91 duration_s=3.0333 stride_m=248.5716
-clip=walk_4 startFrame=260 numFrames=64 duration_s=2.1333 stride_m=286.4454
-clip=walk_5 startFrame=324 numFrames=36 duration_s=1.2000 stride_m=88.3742
-clip=walk_6 startFrame=360 numFrames=50 duration_s=1.6667 stride_m=88.7145
-clip=run startFrame=410 numFrames=25 duration_s=0.8333 stride_m=236.7888
-clip=run_2 startFrame=435 numFrames=20 duration_s=0.6667 stride_m=149.3415
+clip=walk startFrame=0 numFrames=122 duration_s=4.0667 stride_m=1.3204
+clip=walk_2 startFrame=122 numFrames=47 duration_s=1.5667 stride_m=0.8258
+clip=walk_3 startFrame=169 numFrames=91 duration_s=3.0333 stride_m=2.4894
+clip=walk_4 startFrame=260 numFrames=64 duration_s=2.1333 stride_m=2.8687
+clip=walk_5 startFrame=324 numFrames=36 duration_s=1.2000 stride_m=0.8850
+clip=walk_6 startFrame=360 numFrames=50 duration_s=1.6667 stride_m=0.8869
+clip=run startFrame=410 numFrames=25 duration_s=0.8333 stride_m=2.3714
+clip=run_2 startFrame=435 numFrames=20 duration_s=0.6667 stride_m=1.4977
 clip=idle startFrame=455 numFrames=121 duration_s=4.0333 stride_m=0.0000
-clip=idle_2 startFrame=576 numFrames=128 duration_s=4.2667 stride_m=0.0004
-clip=attack startFrame=704 numFrames=80 duration_s=2.6667 stride_m=0.0001
+clip=idle_2 startFrame=576 numFrames=128 duration_s=4.2667 stride_m=0.0000
+clip=attack startFrame=704 numFrames=80 duration_s=2.6667 stride_m=0.0000
 clip=attack_2 startFrame=784 numFrames=140 duration_s=4.6667 stride_m=0.0000
-clip=scream startFrame=924 numFrames=85 duration_s=2.8333 stride_m=0.0010
+clip=scream startFrame=924 numFrames=85 duration_s=2.8333 stride_m=0.0004

@@ -24,3 +24,8 @@ vat_view_shot.bmp
 vat/glad.o
 vat_horde
 vat_horde_shot.bmp
+
+# debug/esperimenti rig (non parte della pipeline)
+vat/__pycache__/
+blend/working_test.fbx
+blend/male_version_obese_subdiv.fbx
