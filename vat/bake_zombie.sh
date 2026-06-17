@@ -15,6 +15,9 @@ set -e
 BL=${BLENDER:-$HOME/Scaricati/blender-5.1.0-linux-x64/blender}
 MODEL="$1"; PREFIX="$2"
 ADIR="${3:-vat/source}"
+# Flag extra passate a bake_vat.py (es. correzione orientamento):
+#   EXTRA="--rotx -90" vat/bake_zombie.sh model.fbx out_prefix
+EXTRA="${EXTRA:-}"
 [ -z "$PREFIX" ] && { echo "uso: $0 <model.fbx> <out_prefix> [anim_dir]"; exit 1; }
 
 # nome clip -> file anim. Adatta i nomi file se scarichi le anim separate.
@@ -34,7 +37,7 @@ for name in $ORDER; do
   fbx="$ADIR/${A[$name]}"
   [ -f "$fbx" ] || { echo "SKIP $name (manca $fbx)"; continue; }
   flag=""; [ $first -eq 0 ] && flag="--append"; first=0
-  "$BL" --background --python vat/bake_vat.py -- --model "$MODEL" --anim "$fbx" "$PREFIX" "$name" $flag \
+  "$BL" --background --python vat/bake_vat.py -- --model "$MODEL" --anim "$fbx" "$PREFIX" "$name" $flag $EXTRA \
      2>&1 | grep -E "\[VAT\] OK|ERRORE|Traceback" || true
 done
 echo "=== $PREFIX ==="; tail -n +1 "${PREFIX}_meta.txt" | head -20

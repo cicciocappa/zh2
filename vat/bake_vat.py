@@ -23,8 +23,8 @@ Formato (definito da noi, multi-clip):
   <prefix>_meta.txt : texW,texH,rowsPerFrame,fps,scale,totalFrames + righe "clip=..."
 """
 
-import bpy, bmesh, sys, os, struct
-from mathutils import Vector
+import bpy, bmesh, sys, os, struct, math
+from mathutils import Vector, Euler
 
 TEX_W = 256
 TARGET_HEIGHT_M = 1.8
@@ -132,6 +132,24 @@ def main():
     else:
         action = bpy.data.actions[0]
     bind_action(arm, action)
+
+    # Correzione orientamento: alcuni FBX arrivano con assi sbagliati (es. esportati
+    # Y-up -> lo zombie nasce coricato). --rotx/--roty/--rotz (gradi, assi Blender)
+    # ruotano il modello via un empty-pivot all'origine, cosi' la deformazione
+    # dell'armatura resta corretta e il bake (mesh.matrix_world @ co) eredita la
+    # rotazione. Si parentano solo gli oggetti top-level (la mesh figlia segue l'arm).
+    rx, ry, rz = float(opt("--rotx") or 0), float(opt("--roty") or 0), float(opt("--rotz") or 0)
+    if rx or ry or rz:
+        piv = bpy.data.objects.new("vat_pivot", None)
+        bpy.context.scene.collection.objects.link(piv)
+        for o in (arm, mesh):
+            if o.parent is None:
+                o.parent = piv
+                o.matrix_parent_inverse = piv.matrix_world.inverted()
+        piv.rotation_euler = Euler((math.radians(rx), math.radians(ry), math.radians(rz)), 'XYZ')
+        bpy.context.view_layer.update()
+        log(f"orientamento corretto: rotx={rx} roty={ry} rotz={rz}")
+
     start, end = int(action.frame_range[0]), int(action.frame_range[1])
     num_frames = end - start + 1
     scene = bpy.context.scene
