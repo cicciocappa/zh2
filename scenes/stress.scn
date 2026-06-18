@@ -1,0 +1,12 @@
+# horde scene (vector, meters) — STRESS test field for vat_horde benchmark.
+# Big open field so 50k agents fit without overlap. Nav cell 1.0 (coarse, cheap
+# Dijkstra over 200x200 cells); collision grid is independent (~2*r). Goal band
+# at the top so the prefilled crowd streams toward it (congestion = worst case).
+# Use with VAT_HORDE_FILL=N VAT_HORDE_BENCH="warmup,measure".
+cell 1.0
+world 200 200
+set k_density 2.5
+set k_jam 6
+
+spawn 2 2 196 6
+goal 80 196 40 3

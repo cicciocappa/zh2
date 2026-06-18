@@ -185,14 +185,20 @@ Il progetto ha DUE modelli di simulazione complementari:
 - `test_siege.c` — verifica del sensore d'assedio (`SIEGE_DESIGN.md`):
   selettività into-wall vs tangente + la meccanica completa lato gioco
   (attacchi discreti → crollo → reroute → drain).
-- `scene.h` / `scene.c` — file di scena ASCII (griglia di char: `#` muro,
-  `G` goal, `S` spawner, `P` branco dormiente + direttive `cell`/`set
-  <param>`/`cost <rect>`): configurazioni di partenza per sandbox e test
-  senza disegnare a mano. `scene_instantiate` è deterministico (stessa
-  scena ⇒ stessi agenti). Modulo separato, il core non lo conosce; gli
-  spawner restano del chiamante. `test_scene.c` = roundtrip + parsing +
-  determinismo. Esempi in `scenes/` (chokepoint classico, fortezza
-  d'assedio con torrette-goal cintate).
+- `scene.h` / `scene.c` — file di scena VETTORIALI (M7, giugno 2026; sostituisce
+  il vecchio formato ASCII a griglia di char). Entità in METRI rasterizzate
+  sulla griglia all'instantiate: `cell`/`world W H`/`set <param>`, rect
+  `goal`/`spawn`/`pack`/`cost x y w h [w]`, e OSTACOLI `poly <height>
+  solid|cost <w> x0 y0 x1 y1 …` = poligoni convessi con un'altezza di
+  render (estrusione 3D) e un effetto nav (muro o costo Dijkstra).
+  Rasterizzazione scanline even-odd (gestisce anche concavi; il render fan
+  vuole convessi). `scene_instantiate` è deterministico (stessa scena ⇒
+  stessi agenti). Modulo separato, il core non lo conosce; gli spawner
+  (rect) restano del chiamante. `test_scene.c` = roundtrip + raster +
+  determinismo. Esempi in `scenes/` (`obstacles.scn`). NOTA: il vecchio
+  sandbox 2D `sandbox_particles.c` usa ancora l'API a griglia e NON compila
+  finché non è portato (TODO M7); non è nei target di default. I `.txt`
+  legacy (`chokepoint`/`fortress`) sono nel vecchio formato, non più caricabili.
 - `M3_DESIGN.md` — design tecnico di M3 (handle, volo, cadaveri, query, tipi,
   densità→costo): API, dettagli, piani di verifica.
 - `GFX_DESIGN.md` — direzione artistica e design grafico (DECISO, giugno 2026):

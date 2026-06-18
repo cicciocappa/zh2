@@ -1,10 +1,12 @@
-/* scene.c — implementation. See scene.h for the file format. */
+/* scene.c — vector scene loader/rasterizer. See scene.h for the file format. */
 
+#define _POSIX_C_SOURCE 200809L   /* strtok_r under -std=c11 */
 #include "scene.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stddef.h>
+#include <math.h>
 
 /* ---- SimPParams fields addressable from "set <name> <value>" ------------ */
 
@@ -36,30 +38,33 @@ static const ParamEntry *param_find(const char *name) {
 
 /* ---- lifecycle ----------------------------------------------------------- */
 
-int scene_alloc(Scene *sc, int gw, int gh, float cell) {
-    memset(sc, 0, sizeof *sc);
-    if (gw <= 0 || gh <= 0 || cell <= 0.0f) return -1;
-    sc->gw = gw; sc->gh = gh; sc->cell = cell;
-    size_t n = (size_t)gw * gh;
-    sc->wall  = (uint8_t *)calloc(n, 1);
-    sc->goal  = (uint8_t *)calloc(n, 1);
-    sc->spawn = (uint8_t *)calloc(n, 1);
-    sc->pack  = (uint8_t *)calloc(n, 1);
-    if (!sc->wall || !sc->goal || !sc->spawn || !sc->pack) {
-        scene_free(sc);
-        return -1;
+void scene_free(Scene *sc) { memset(sc, 0, sizeof *sc); }
+
+static void scene_derive_grid(Scene *sc) {
+    sc->gw = (int)lroundf(sc->world_w / sc->cell);
+    sc->gh = (int)lroundf(sc->world_h / sc->cell);
+    if (sc->gw < 1) sc->gw = 1;
+    if (sc->gh < 1) sc->gh = 1;
+}
+
+/* ---- load ---------------------------------------------------------------- */
+
+#define LINE_MAX_LEN 4096
+
+/* parse a run of "x y" pairs from the rest of a tokenized line into a poly */
+static int parse_poly_verts(char **save, ScenePoly *p) {
+    char *tx, *ty;
+    p->nverts = 0;
+    while ((tx = strtok_r(NULL, " \t", save)) != NULL) {
+        ty = strtok_r(NULL, " \t", save);
+        if (!ty) return -1;                       /* odd vertex count */
+        if (p->nverts >= SCENE_POLY_MAX_VERTS) return -1;
+        p->vx[p->nverts] = (float)atof(tx);
+        p->vy[p->nverts] = (float)atof(ty);
+        p->nverts++;
     }
-    return 0;
+    return p->nverts >= 3 ? 0 : -1;
 }
-
-void scene_free(Scene *sc) {
-    free(sc->wall); free(sc->goal); free(sc->spawn); free(sc->pack);
-    memset(sc, 0, sizeof *sc);
-}
-
-/* ---- load ----------------------------------------------------------------- */
-
-#define LINE_MAX_LEN 1024
 
 int scene_load(const char *path, Scene *sc) {
     FILE *f = fopen(path, "r");
@@ -67,123 +72,105 @@ int scene_load(const char *path, Scene *sc) {
 
     memset(sc, 0, sizeof *sc);
     sc->cell = 0.5f;
+    sc->world_w = sc->world_h = 0.0f;
 
-    /* two passes over the map block would need rewinding; instead buffer the
-     * row lines first, then size the grid from them */
-    char  line[LINE_MAX_LEN];
-    char **rows = NULL;
-    int   n_rows = 0, cap_rows = 0, in_map = 0, err = 0;
+    char line[LINE_MAX_LEN];
+    int err = 0;
 
-    while (fgets(line, sizeof line, f)) {
-        size_t len = strcspn(line, "\r\n");
-        line[len] = '\0';
-        if (!in_map) {
-            char *p = line;
-            while (*p == ' ' || *p == '\t') p++;
-            if (*p == '\0' || *p == '#') continue;
-            char key[32];
-            if (sscanf(p, "%31s", key) != 1) continue;
-            if (strcmp(key, "map") == 0) { in_map = 1; continue; }
-            if (strcmp(key, "cell") == 0) {
-                if (sscanf(p, "%*s %f", &sc->cell) != 1 || sc->cell <= 0.0f) err = -2;
-            } else if (strcmp(key, "set") == 0) {
-                char name[24]; float v;
-                if (sscanf(p, "%*s %23s %f", name, &v) == 2 && param_find(name) &&
-                    sc->n_set < SCENE_MAX_SET) {
-                    strcpy(sc->set[sc->n_set].name, name);
-                    sc->set[sc->n_set].value = v;
-                    sc->n_set++;
-                } else err = -2;
-            } else if (strcmp(key, "cost") == 0) {
-                if (sc->n_cost < SCENE_MAX_COST &&
-                    sscanf(p, "%*s %d %d %d %d %f",
-                           &sc->cost[sc->n_cost].x0, &sc->cost[sc->n_cost].y0,
-                           &sc->cost[sc->n_cost].x1, &sc->cost[sc->n_cost].y1,
-                           &sc->cost[sc->n_cost].w) == 5)
-                    sc->n_cost++;
-                else err = -2;
-            } else err = -2;                     /* unknown directive */
-            if (err) break;
-        } else {
-            if (n_rows == cap_rows) {
-                cap_rows = cap_rows ? cap_rows * 2 : 64;
-                char **nr = (char **)realloc(rows, (size_t)cap_rows * sizeof(char *));
-                if (!nr) { err = -1; break; }
-                rows = nr;
+    while (!err && fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        char *save = NULL;
+        char *key = strtok_r(line, " \t", &save);
+        if (!key || key[0] == '#') continue;
+
+        if (!strcmp(key, "cell")) {
+            char *v = strtok_r(NULL, " \t", &save);
+            if (!v || (sc->cell = (float)atof(v)) <= 0.0f) err = -2;
+        } else if (!strcmp(key, "world")) {
+            char *w = strtok_r(NULL, " \t", &save), *h = strtok_r(NULL, " \t", &save);
+            if (!w || !h) err = -2;
+            else { sc->world_w = (float)atof(w); sc->world_h = (float)atof(h); }
+        } else if (!strcmp(key, "set")) {
+            char *n = strtok_r(NULL, " \t", &save), *v = strtok_r(NULL, " \t", &save);
+            if (n && v && param_find(n) && sc->n_set < SCENE_MAX_SET) {
+                strncpy(sc->set[sc->n_set].name, n, 23);
+                sc->set[sc->n_set].value = (float)atof(v);
+                sc->n_set++;
+            } else err = -2;
+        } else if (!strcmp(key, "goal") || !strcmp(key, "spawn") ||
+                   !strcmp(key, "pack") || !strcmp(key, "cost")) {
+            int is_cost = !strcmp(key, "cost");
+            char *t[5]; int nt = 0;
+            for (; nt < (is_cost ? 5 : 4); nt++) {
+                t[nt] = strtok_r(NULL, " \t", &save);
+                if (!t[nt]) { err = -2; break; }
             }
-            rows[n_rows] = (char *)malloc(len + 1);
-            if (!rows[n_rows]) { err = -1; break; }
-            memcpy(rows[n_rows], line, len + 1);
-            n_rows++;
+            if (err) break;
+            SceneRect r = { (float)atof(t[0]), (float)atof(t[1]),
+                            (float)atof(t[2]), (float)atof(t[3]),
+                            is_cost ? (float)atof(t[4]) : 0.0f };
+            SceneRect *dst; int *cnt;
+            if (!strcmp(key, "goal"))       { dst = sc->goal;  cnt = &sc->n_goal; }
+            else if (!strcmp(key, "spawn")) { dst = sc->spawn; cnt = &sc->n_spawn; }
+            else if (!strcmp(key, "pack"))  { dst = sc->pack;  cnt = &sc->n_pack; }
+            else                            { dst = sc->cost;  cnt = &sc->n_cost; }
+            if (*cnt < SCENE_MAX_RECT) dst[(*cnt)++] = r; else err = -2;
+        } else if (!strcmp(key, "poly")) {
+            if (sc->n_poly >= SCENE_MAX_POLY) { err = -2; break; }
+            ScenePoly *p = &sc->poly[sc->n_poly];
+            memset(p, 0, sizeof *p);
+            char *hs = strtok_r(NULL, " \t", &save);
+            char *kind = strtok_r(NULL, " \t", &save);
+            if (!hs || !kind) { err = -2; break; }
+            p->height = (float)atof(hs);
+            if (!strcmp(kind, "solid")) { p->solid = true; p->cost = 0.0f; }
+            else if (!strcmp(kind, "cost")) {
+                char *w = strtok_r(NULL, " \t", &save);
+                if (!w) { err = -2; break; }
+                p->solid = false; p->cost = (float)atof(w);
+            } else { err = -2; break; }
+            if (parse_poly_verts(&save, p) != 0) { err = -2; break; }
+            sc->n_poly++;
+        } else {
+            err = -2;                              /* unknown directive */
         }
     }
     fclose(f);
 
-    int gw = 0;
-    for (int r = 0; r < n_rows; r++) {
-        int w = (int)strlen(rows[r]);
-        if (w > gw) gw = w;
-    }
-    if (!err && (n_rows == 0 || gw == 0)) err = -2;
-    if (!err) {
-        Scene hdr = *sc;     /* scene_alloc zeroes the struct: keep the header */
-        if (scene_alloc(sc, gw, n_rows, hdr.cell) != 0) err = -1;
-        else {
-            memcpy(sc->set, hdr.set, sizeof sc->set);
-            memcpy(sc->cost, hdr.cost, sizeof sc->cost);
-            sc->n_set = hdr.n_set;
-            sc->n_cost = hdr.n_cost;
-        }
-    }
-
-    if (!err) {
-        for (int cy = 0; cy < sc->gh; cy++) {
-            const char *row = rows[cy];
-            int w = (int)strlen(row);
-            for (int cx = 0; cx < w; cx++) {
-                int i = cy * sc->gw + cx;
-                switch (row[cx]) {
-                case '#': sc->wall[i]  = 1; break;
-                case 'G': case 'g': sc->goal[i]  = 1; break;
-                case 'S': case 's': sc->spawn[i] = 1; break;
-                case 'P': case 'p': sc->pack[i]  = 1; break;
-                case '.': case ' ': break;
-                default: break;                  /* unknown chars = floor */
-                }
-            }
-        }
-    }
-
-    for (int r = 0; r < n_rows; r++) free(rows[r]);
-    free(rows);
+    if (!err && (sc->world_w <= 0.0f || sc->world_h <= 0.0f)) err = -2;
     if (err) { scene_free(sc); return err; }
+    scene_derive_grid(sc);
     return 0;
 }
 
-/* ---- save ----------------------------------------------------------------- */
+/* ---- save ---------------------------------------------------------------- */
 
 int scene_save(const char *path, const Scene *sc) {
     FILE *f = fopen(path, "w");
     if (!f) return -1;
-    fprintf(f, "# horde scene %dx%d\n", sc->gw, sc->gh);
+    fprintf(f, "# horde scene (vector, meters)\n");
     fprintf(f, "cell %g\n", (double)sc->cell);
+    fprintf(f, "world %g %g\n", (double)sc->world_w, (double)sc->world_h);
     for (int k = 0; k < sc->n_set; k++)
         fprintf(f, "set %s %g\n", sc->set[k].name, (double)sc->set[k].value);
+    for (int k = 0; k < sc->n_goal; k++)
+        fprintf(f, "goal %g %g %g %g\n", (double)sc->goal[k].x, (double)sc->goal[k].y,
+                (double)sc->goal[k].w, (double)sc->goal[k].h);
+    for (int k = 0; k < sc->n_spawn; k++)
+        fprintf(f, "spawn %g %g %g %g\n", (double)sc->spawn[k].x, (double)sc->spawn[k].y,
+                (double)sc->spawn[k].w, (double)sc->spawn[k].h);
+    for (int k = 0; k < sc->n_pack; k++)
+        fprintf(f, "pack %g %g %g %g\n", (double)sc->pack[k].x, (double)sc->pack[k].y,
+                (double)sc->pack[k].w, (double)sc->pack[k].h);
     for (int k = 0; k < sc->n_cost; k++)
-        fprintf(f, "cost %d %d %d %d %g\n",
-                sc->cost[k].x0, sc->cost[k].y0, sc->cost[k].x1, sc->cost[k].y1,
-                (double)sc->cost[k].w);
-    fprintf(f, "map\n");
-    for (int cy = 0; cy < sc->gh; cy++) {
-        for (int cx = 0; cx < sc->gw; cx++) {
-            int i = cy * sc->gw + cx;
-            char c = '.';
-            if (sc->wall[i])       c = '#';
-            else if (sc->goal[i])  c = 'G';
-            else if (sc->spawn[i]) c = 'S';
-            else if (sc->pack[i])  c = 'P';
-            fputc(c, f);
-        }
+        fprintf(f, "cost %g %g %g %g %g\n", (double)sc->cost[k].x, (double)sc->cost[k].y,
+                (double)sc->cost[k].w, (double)sc->cost[k].h, (double)sc->cost[k].weight);
+    for (int k = 0; k < sc->n_poly; k++) {
+        const ScenePoly *p = &sc->poly[k];
+        if (p->solid) fprintf(f, "poly %g solid", (double)p->height);
+        else          fprintf(f, "poly %g cost %g", (double)p->height, (double)p->cost);
+        for (int v = 0; v < p->nverts; v++)
+            fprintf(f, " %g %g", (double)p->vx[v], (double)p->vy[v]);
         fputc('\n', f);
     }
     int bad = ferror(f);
@@ -191,13 +178,69 @@ int scene_save(const char *path, const Scene *sc) {
     return bad ? -1 : 0;
 }
 
-/* ---- instantiate ----------------------------------------------------------- */
+/* ---- rasterization ------------------------------------------------------- */
 
-/* deterministic jitter for pack placement: same scene -> same agents */
+/* Scanline fill of a simple polygon (convex or concave) into the grid. For
+ * each cell whose CENTER falls inside the polygon, calls cb(s, cx, cy, ud).
+ * Even-odd rule on horizontal lines through cell-row centers. */
+static void raster_poly(SimP *s, const ScenePoly *p, float cell, int gw, int gh,
+                        void (*cb)(SimP *, int, int, const ScenePoly *), const ScenePoly *ud) {
+    float xs[SCENE_POLY_MAX_VERTS];
+    for (int cy = 0; cy < gh; cy++) {
+        float yc = ((float)cy + 0.5f) * cell;
+        int n = 0;
+        for (int i = 0, j = p->nverts - 1; i < p->nverts; j = i++) {
+            float yi = p->vy[i], yj = p->vy[j];
+            if ((yi <= yc && yc < yj) || (yj <= yc && yc < yi)) {
+                float t = (yc - yi) / (yj - yi);
+                xs[n++] = p->vx[i] + t * (p->vx[j] - p->vx[i]);
+            }
+        }
+        /* insertion sort the crossings */
+        for (int a = 1; a < n; a++) {
+            float key = xs[a]; int b = a - 1;
+            while (b >= 0 && xs[b] > key) { xs[b + 1] = xs[b]; b--; }
+            xs[b + 1] = key;
+        }
+        for (int a = 0; a + 1 < n; a += 2) {
+            int cx0 = (int)ceilf(xs[a]     / cell - 0.5f);
+            int cx1 = (int)floorf(xs[a + 1] / cell - 0.5f);
+            if (cx0 < 0) cx0 = 0;
+            if (cx1 >= gw) cx1 = gw - 1;
+            for (int cx = cx0; cx <= cx1; cx++) cb(s, cx, cy, ud);
+        }
+    }
+}
+
+static void cb_poly(SimP *s, int cx, int cy, const ScenePoly *p) {
+    if (p->solid) simp_set_wall(s, cx, cy, true);
+    else          simp_add_cost(s, cx, cy, p->cost);
+}
+
+/* rect in meters -> inclusive cell range; cb per cell */
+static void raster_rect(SimP *s, const SceneRect *r, float cell, int gw, int gh,
+                        void (*cb)(SimP *, int, int, const SceneRect *)) {
+    int cx0 = (int)floorf(r->x / cell), cy0 = (int)floorf(r->y / cell);
+    int cx1 = (int)floorf((r->x + r->w) / cell - 1e-4f);
+    int cy1 = (int)floorf((r->y + r->h) / cell - 1e-4f);
+    if (cx0 < 0) cx0 = 0;
+    if (cy0 < 0) cy0 = 0;
+    if (cx1 >= gw) cx1 = gw - 1;
+    if (cy1 >= gh) cy1 = gh - 1;
+    for (int cy = cy0; cy <= cy1; cy++)
+        for (int cx = cx0; cx <= cx1; cx++) cb(s, cx, cy, r);
+}
+static void cb_goal(SimP *s, int cx, int cy, const SceneRect *r) {
+    (void)r; if (!simp_is_wall(s, cx, cy)) simp_set_goal(s, cx, cy, true);
+}
+static void cb_cost(SimP *s, int cx, int cy, const SceneRect *r) {
+    simp_add_cost(s, cx, cy, r->weight);
+}
+
+/* ---- instantiate --------------------------------------------------------- */
+
 static inline uint32_t srng_next(uint32_t *st) {
-    uint32_t x = *st;
-    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-    return *st = x;
+    uint32_t x = *st; x ^= x << 13; x ^= x >> 17; x ^= x << 5; return *st = x;
 }
 static inline float srng_f01(uint32_t *st) {
     return (float)(srng_next(st) >> 8) * (1.0f / 16777216.0f);
@@ -215,30 +258,25 @@ SimP *scene_instantiate(const Scene *sc, int max_agents) {
         else           *(float *)((char *)P + e->off) = sc->set[k].value;
     }
 
-    for (int cy = 0; cy < sc->gh; cy++)
-        for (int cx = 0; cx < sc->gw; cx++) {
-            int i = cy * sc->gw + cx;
-            if (sc->wall[i]) simp_set_wall(s, cx, cy, true);
-            if (sc->goal[i] && !sc->wall[i]) simp_set_goal(s, cx, cy, true);
-        }
+    for (int k = 0; k < sc->n_poly; k++)
+        raster_poly(s, &sc->poly[k], sc->cell, sc->gw, sc->gh, cb_poly, &sc->poly[k]);
     for (int k = 0; k < sc->n_cost; k++)
-        for (int cy = sc->cost[k].y0; cy <= sc->cost[k].y1; cy++)
-            for (int cx = sc->cost[k].x0; cx <= sc->cost[k].x1; cx++)
-                simp_add_cost(s, cx, cy, sc->cost[k].w);
+        raster_rect(s, &sc->cost[k], sc->cell, sc->gw, sc->gh, cb_cost);
+    for (int k = 0; k < sc->n_goal; k++)
+        raster_rect(s, &sc->goal[k], sc->cell, sc->gw, sc->gh, cb_goal);
     simp_terrain_commit(s);
 
-    /* dormant packs: a few jittered attempts per cell, admitted by
-     * simp_free_at like the sandbox PACK brush (no initial overlap) */
+    /* dormant packs: jittered attempts admitted by simp_free_at (no overlap) */
     uint32_t rng = 0x5CE9E5EEu;
     float r_adm = P->radius * (1.0f + P->r_jitter);
-    for (int cy = 0; cy < sc->gh; cy++)
-        for (int cx = 0; cx < sc->gw; cx++) {
-            if (!sc->pack[cy * sc->gw + cx]) continue;
-            for (int t = 0; t < 3; t++) {
-                float x = ((float)cx + srng_f01(&rng)) * sc->cell;
-                float y = ((float)cy + srng_f01(&rng)) * sc->cell;
-                if (simp_free_at(s, x, y, r_adm)) simp_spawn_dormant(s, x, y);
-            }
+    for (int k = 0; k < sc->n_pack; k++) {
+        const SceneRect *r = &sc->pack[k];
+        int tries = (int)((r->w * r->h) / (r_adm * r_adm) * 2.0f) + 1;
+        for (int t = 0; t < tries; t++) {
+            float x = r->x + srng_f01(&rng) * r->w;
+            float y = r->y + srng_f01(&rng) * r->h;
+            if (simp_free_at(s, x, y, r_adm)) simp_spawn_dormant(s, x, y);
         }
+    }
     return s;
 }

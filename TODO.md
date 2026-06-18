@@ -4,6 +4,45 @@ Agenda operativa. Riferimento architetturale completo in `CLAUDE.md`.
 Ordine consigliato: prima rendere visibile e tastabile (sandbox), poi fisica,
 poi scala, poi gioco.
 
+## M7 — Scena vettoriale + ostacoli (in corso, giugno 2026)
+
+- [x] **Formato scena vettoriale** (`scene.h/.c` riscritti): entità in METRI
+      rasterizzate sulla griglia all'instantiate. Ostacoli = poligoni convessi
+      con `height` (estrusione 3D) + effetto nav (`solid`→muro / `cost W`→costo
+      Dijkstra). Rect per goal/spawn/pack/cost. `test_scene` riscritto e PASS
+      (roundtrip + raster muro-da-poligono + cost + packs + determinismo).
+      Scanline even-odd (gestisce anche concavi); render fan = solo convessi.
+- [x] **Ostacoli renderizzati in `vat_horde`**: carica una `.scn` (default
+      `scenes/obstacles.scn`), estrude i poligoni (top fan + pareti) + suolo in
+      una mesh statica, pass flat-shaded (`vat/flat.vs/.fs`, key NW). Spawn dalle
+      rect di scena. Verificato headless: l'orda imbuta nei varchi del muro
+      spezzato e si spacca attorno al diamante; fango (cost) aggirato.
+- [x] **HUD prestazioni** nel titolo: ms sim vs ms render separati (medie mobili).
+      MAXA alzato 8000→16000. A ~3900 agenti: sim ~9 ms / render ~9 ms.
+- [x] **Stress test** (M7b): modalità benchmark in `vat_horde`
+      (`VAT_HORDE_FILL=N VAT_HORDE_BENCH="warmup,measure"`, prefill a lattice
+      senza burst, scene `scenes/stress.scn` 200×200 m). Timer separati
+      core_sim / vat_layer / render. Misurato su **AMD Vega 10 iGPU** (debole;
+      la workstation ha la RTX A2000 → render lì molto più basso):
+        N      core_sim  vat_layer  render   tot     cap
+        ~4.9k   4.3 ms    0.4 ms    10.2 ms  14.9    67 fps
+        ~9.8k   7.3 ms    0.7 ms    16.6 ms  24.6    41 fps
+        ~19.5k 14.3 ms    1.2 ms    35.1 ms  50.6    20 fps
+        ~34k   27.7 ms    2.0 ms    72.3 ms 102.0    10 fps
+        ~46k   33.9 ms    2.3 ms    84.3 ms 120.6     8 fps
+      LETTURE: core_sim LINEARE ~0.75 ms/1000 (M4 multithread/SIMD lo taglia
+      ~3-4×); vat_layer trascurabile; render DOMINA ma è puro fill GPU su iGPU
+      debole → su GPU discreta crolla. Il limite ARCHITETTURALE è core_sim:
+      **20k già sta nei 16.6 ms a 60 Hz single-thread (14.3 ms)** — il collo
+      di bottiglia OGGI è il render sull'iGPU. 50k stabile (nessuna esplosione
+      PBD) ma 34 ms sim → serve M4 per 60 Hz. 20k è ampiamente alla portata.
+- [ ] **Portare il sandbox 2D** (`sandbox_particles.c`) al formato vettoriale:
+      oggi NON compila (usava `.wall`/`scene_alloc`/save-celle-dipinte). Non è
+      nei target di default. Decidere: pennelli che editano poligoni, o ritirarlo
+      in favore di `vat_horde`.
+- [ ] Editor di ostacoli nel sandbox 3D: piazzare/spostare poligoni a runtime,
+      salvare la `.scn`.
+
 ## Subito (prossima sessione)
 
 - [x] **Sandbox SDL3 per il core particellare** (`sandbox_particles.c`):

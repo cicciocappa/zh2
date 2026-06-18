@@ -1,9 +1,9 @@
-/* test_scene.c — scene file loader verification.
+/* test_scene.c — vector scene loader/rasterizer verification.
  *
- *   1. ROUNDTRIP: build a scene in code, save, load, compare every layer.
- *   2. PARSE: a hand-written file with directives (cell, set, cost, short
- *      rows, comments) instantiates with the right params, walls, goals,
- *      user cost and dormant packs.
+ *   1. ROUNDTRIP: build a scene in code, save, load, compare every field.
+ *   2. PARSE: a hand-written file (cell/world/set/rects/poly + comments)
+ *      instantiates with the right params, rasterized walls (from a polygon),
+ *      goals, cost, dormant packs, and reports spawner rects back.
  *   3. DETERMINISM: two instantiates of the same scene produce identical
  *      agents (count and positions).
  */
@@ -17,71 +17,72 @@
 
 static int roundtrip(void) {
     Scene a;
-    if (scene_alloc(&a, 60, 40, 0.5f) != 0) return 0;
-    for (int x = 0; x < 60; x++) { a.wall[x] = 1; a.wall[39 * 60 + x] = 1; }
-    for (int y = 10; y < 20; y++) a.goal[y * 60 + 55] = 1;
-    for (int y = 15; y < 25; y++) a.spawn[y * 60 + 3] = 1;
-    for (int y = 18; y < 22; y++) for (int x = 20; x < 26; x++)
-        a.pack[y * 60 + x] = 1;
+    memset(&a, 0, sizeof a);
+    a.cell = 0.5f; a.world_w = 30.0f; a.world_h = 20.0f;
     a.n_set = 2;
-    strcpy(a.set[0].name, "k_density");  a.set[0].value = 3.0f;
-    strcpy(a.set[1].name, "pbd_iters");  a.set[1].value = 5.0f;
-    a.n_cost = 1;
-    a.cost[0].x0 = 10; a.cost[0].y0 = 5; a.cost[0].x1 = 30; a.cost[0].y1 = 8;
-    a.cost[0].w = 2.5f;
+    strcpy(a.set[0].name, "k_density"); a.set[0].value = 3.0f;
+    strcpy(a.set[1].name, "pbd_iters"); a.set[1].value = 5.0f;
+    a.n_goal = 1;  a.goal[0]  = (SceneRect){ 24, 8, 3, 2, 0 };
+    a.n_spawn = 1; a.spawn[0] = (SceneRect){ 1, 1, 28, 2, 0 };
+    a.n_pack = 1;  a.pack[0]  = (SceneRect){ 10, 9, 2, 2, 0 };
+    a.n_cost = 1;  a.cost[0]  = (SceneRect){ 5, 5, 4, 2, 2.5f };
+    a.n_poly = 2;
+    a.poly[0] = (ScenePoly){ .nverts = 4, .height = 4.0f, .solid = true,
+        .vx = { 12, 18, 18, 12 }, .vy = { 6, 6, 12, 12 } };
+    a.poly[1] = (ScenePoly){ .nverts = 3, .height = 0.4f, .solid = false, .cost = 6.0f,
+        .vx = { 20, 26, 23 }, .vy = { 4, 4, 9 } };
 
     int ok = scene_save(TMP, &a) == 0;
     Scene b;
     ok = ok && scene_load(TMP, &b) == 0;
-    ok = ok && b.gw == a.gw && b.gh == a.gh && fabsf(b.cell - a.cell) < 1e-6f;
-    if (ok) {
-        for (int i = 0; i < 60 * 40; i++) {
-            if (a.wall[i] != b.wall[i] || a.goal[i] != b.goal[i] ||
-                a.spawn[i] != b.spawn[i] || a.pack[i] != b.pack[i]) { ok = 0; break; }
-        }
-    }
-    ok = ok && b.n_set == 2 && strcmp(b.set[0].name, "k_density") == 0 &&
+    ok = ok && b.gw == 60 && b.gh == 40 && fabsf(b.cell - 0.5f) < 1e-6f;
+    ok = ok && b.n_set == 2 && b.n_goal == 1 && b.n_spawn == 1 &&
+         b.n_pack == 1 && b.n_cost == 1 && b.n_poly == 2;
+    ok = ok && strcmp(b.set[0].name, "k_density") == 0 &&
          fabsf(b.set[0].value - 3.0f) < 1e-6f;
-    ok = ok && b.n_cost == 1 && b.cost[0].x1 == 30 &&
-         fabsf(b.cost[0].w - 2.5f) < 1e-6f;
-    printf("roundtrip: %dx%d set=%d cost=%d | %s\n",
-           b.gw, b.gh, b.n_set, b.n_cost, ok ? "ok" : "BAD");
-    scene_free(&a);
-    scene_free(&b);
+    ok = ok && fabsf(b.cost[0].weight - 2.5f) < 1e-6f && b.cost[0].x == 5;
+    ok = ok && b.poly[0].solid && b.poly[0].nverts == 4 &&
+         fabsf(b.poly[0].height - 4.0f) < 1e-6f &&
+         fabsf(b.poly[0].vx[1] - 18.0f) < 1e-6f;
+    ok = ok && !b.poly[1].solid && fabsf(b.poly[1].cost - 6.0f) < 1e-6f &&
+         b.poly[1].nverts == 3;
+    printf("roundtrip: %dx%d set=%d poly=%d goal=%d | %s\n",
+           b.gw, b.gh, b.n_set, b.n_poly, b.n_goal, ok ? "ok" : "BAD");
+    scene_free(&a); scene_free(&b);
     return ok;
 }
 
 static int parse_and_instantiate(void) {
     FILE *f = fopen(TMP, "w");
     if (!f) return 0;
-    fputs("# hand-written test scene\n"
+    fputs("# hand-written vector test scene\n"
           "cell 1.0\n"
-          "set k_density 0\n"
+          "world 10 6\n"
           "set v_max 2.0\n"
-          "cost 2 2 4 4 5.0\n"
-          "map\n"
-          "##########\n"
-          "#...PP..G#\n"
-          "#S..PP\n"                     /* short row: padded with floor */
-          "##########\n", f);
+          "goal 8 1 1 2\n"
+          "spawn 1 2 1 1\n"
+          "cost 2 2 2 2 5.0\n"
+          "pack 4 1 2 2\n"
+          "poly 4.0 solid  3 0 5 0 5 1 3 1\n",   /* wall band: cells (3,0),(4,0) */
+          f);
     fclose(f);
 
     Scene sc;
     int ok = scene_load(TMP, &sc) == 0;
-    ok = ok && sc.gw == 10 && sc.gh == 4 && fabsf(sc.cell - 1.0f) < 1e-6f;
+    ok = ok && sc.gw == 10 && sc.gh == 6 && fabsf(sc.cell - 1.0f) < 1e-6f;
+    ok = ok && sc.n_spawn == 1 && fabsf(sc.spawn[0].x - 1.0f) < 1e-6f;
     SimP *s = ok ? scene_instantiate(&sc, 256) : NULL;
     ok = ok && s != NULL;
     if (ok) {
         ok = ok && fabsf(simp_params(s)->v_max - 2.0f) < 1e-6f;
-        ok = ok && simp_is_wall(s, 0, 0) && simp_is_wall(s, 9, 3) &&
-             !simp_is_wall(s, 1, 1) && !simp_is_wall(s, 9, 2);  /* padding */
-        ok = ok && simp_user_cost(s)[2 * 10 + 3] > 4.9f;
-        ok = ok && simp_count(s) > 0;            /* packs spawned something */
+        ok = ok && simp_is_wall(s, 3, 0) && simp_is_wall(s, 4, 0) &&
+             !simp_is_wall(s, 0, 0) && !simp_is_wall(s, 6, 0);   /* poly raster */
+        ok = ok && simp_user_cost(s)[2 * 10 + 2] > 4.9f;          /* cost rect */
+        ok = ok && simp_count(s) > 0;                            /* packs spawned */
         const uint8_t *fl = simp_flags_arr(s);
         for (int i = 0; i < simp_count(s); i++)
-            if (!(fl[i] & SIMP_DORMANT)) ok = 0; /* all of them dormant */
-        ok = ok && sc.spawn[2 * 10 + 1];         /* S cell reported back */
-        printf("parse: %dx%d packs=%d agents | %s\n",
+            if (!(fl[i] & SIMP_DORMANT)) ok = 0;                  /* all dormant */
+        printf("parse: %dx%d walls+cost+packs=%d | %s\n",
                sc.gw, sc.gh, simp_count(s), ok ? "ok" : "BAD");
         simp_destroy(s);
     } else {

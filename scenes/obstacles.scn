@@ -1,0 +1,21 @@
+# horde scene (vector, meters) — obstacle demo for vat_horde
+# spawn band at the bottom, goal at the top, a broken wall of buildings with
+# two gaps, plus a free-standing diamond block to show the crowd flowing around.
+cell 0.5
+world 100 70
+set k_density 2.5
+set k_jam 6
+
+spawn 2 1 96 4
+goal 44 66 12 3
+
+# broken barrier at y~33..37: three buildings, two 10 m gaps (at x 30..40, 62..72)
+poly 6.0 solid   0 33  30 33  30 37   0 37
+poly 6.0 solid  40 33  62 33  62 37  40 37
+poly 6.0 solid  72 33 100 33 100 37  72 37
+
+# free-standing diamond (convex) the horde must split around, before the wall
+poly 5.0 solid  50 14  60 22  50 30  40 22
+
+# a low muddy patch (passable but costly): triangle, height ~0.3 m
+poly 0.3 cost 5.0  14 18  26 18  20 27
