@@ -44,6 +44,10 @@ test_scene: test_scene.c scene.c scene.h sim_particles.c sim_particles.h
 test_siege: test_siege.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_siege.c sim_particles.c $(LDLIBS)
 
+# headless CPU benchmark del core (zero deps: niente SDL/GL/asset). Portatile.
+bench_sim: bench_sim.c sim_particles.c scene.c sim_particles.h scene.h
+	$(CC) $(CFLAGS) -o $@ bench_sim.c sim_particles.c scene.c $(LDLIBS)
+
 sandbox: sandbox_particles.c sim_particles.c sim_particles.h scene.c scene.h \
          sprite_layer.c sprite_layer.h
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) -o $@ sandbox_particles.c sim_particles.c scene.c sprite_layer.c $(SDL_LIBS) $(LDLIBS)

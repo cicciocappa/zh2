@@ -109,8 +109,21 @@ poi scala, poi gioco.
 
 ## M4 — Scala (target 50–100k a 60 Hz su CPU)
 
-- [ ] Profilare prima di ottimizzare (perf baseline attuale: ~3.5 ms/step a 13k,
-      single-thread).
+- [x] Profilare prima di ottimizzare. Tool: `bench_sim` (zero deps, niente
+      SDL/GL/asset — `make bench_sim`, `./bench_sim scenes/stress.scn N w m`).
+      Baseline CPU PULITO single-thread (ms/step), lineare ~0.2-0.4 ms/1000:
+        N      Ryzen7-3750H(local)   i7-14700(workstation)
+        5k       1.97                  0.92
+        10k      3.14                  1.61
+        20k      5.69                  3.37
+        35k     11.5                   6.81
+        50k     15.96                10.23
+      → 50k sta nei 16.6 ms a 60 Hz single-thread su ENTRAMBE le CPU. I `max`
+      per-step = ricalcoli Dijkstra del flow. ATTENZIONE: il `core_sim` misurato
+      dentro `vat_horde` sul minipc è gonfiato ~2.5× dalla contesa GPU↔CPU
+      dell'APU (Vega integrata); usare `bench_sim` per i numeri CPU veri.
+      Il vero margine M4 serve per >50k e per liberare la CPU dal lavoro di
+      gioco, non perché 20-50k non ci stiano.
 - [ ] **Multithreading PBD a tile colorati**: partizionare la griglia di collisione
       in tile a scacchiera (4 colori in 2D), processare in parallelo i tile dello
       stesso colore, barriera tra colori. Zero lock. Steering/integrazione/recovery
