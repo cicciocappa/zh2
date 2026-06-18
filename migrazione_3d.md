@@ -185,7 +185,7 @@ L'orda reale del core resa in 3D VAT. Tre file nuovi:
   dall'handle, cosmetico) → varietà d'altezza gratis dentro un tipo di corpo.
   Nota: scala UNIFORME (anche larghezza), la collisione resta sul raggio del core.
 
-### Multi-modello (uomo/donna/obeso/bambino) — DA FARE quando i modelli esistono
+### Multi-modello (uomo/donna/obeso/bambino) — FATTO
 
 Tipi di corpo = MESH diverse (un bambino non è un adulto scalato): ogni tipo è un
 asset VAT a sé (`zombie_man`, `zombie_woman`, `zombie_child`...), bakato con
@@ -194,9 +194,24 @@ PER tipo (mesh/texture/VAT diversi → non condivisibili in una sola call); il
 `vat_layer` assegna il tipo per-slot (seed o da `simp_spawn_desc`) e raggruppa le
 istanze per tipo. ~5 draw call totali. L'altezza dentro un tipo resta il jitter.
 
+**Implementato** (`vat_layer` + `vat_horde`): `vat_layer_create_multi(metas, N,
+max)` carica N meta; il body di ogni agente è assegnato per-slot via
+`hash(handle)%N` (cosmetico, stabile per la vita — come tinta/outfit). Chiave che
+semplifica tutto: gli **indici di clip sono identici fra varianti** (stesso ORDER
+di `bake_zombie.sh`), cambiano solo frame-range/stride/scale/texW per mesh → un
+solo `clipA[slot]` vale per ogni meta, basta indicizzare il meta del body
+dell'agente quando si avanza la fase (stride del bambino ≠ adulto).
+`vat_layer_fill_variant(vl,s,v,buf,max)` emette i SOLI agenti del body `v`; il
+renderer fa un draw per variante con la sua mesh/VAT-texture/diffuse (instance VBO
+condiviso, ri-riempito prima di ogni draw). Verificato: 6 body (man, man_obese,
+fem, fem_obese, child, fem_skirt), ~2200 agenti, 6 draw call, taglie distinte a
+video. La skirt senza diffuse rende flat-shaded (texture placeholder, OK). Per
+legare il body al tipo di gioco (obeso=tank) basta sostituire il seed hash con
+`simp_spawn_desc` → mappa tipo, niente altro da cambiare.
+
 ### Prossimi passi
 
-1. Multi-modello (sopra) quando i 5 modelli sono pronti.
+1. ~~Multi-modello (sopra) quando i 5 modelli sono pronti.~~ FATTO.
 2. Stress a 10–20k (alzare MAXA; misurare ms/frame), z-sort/depth già attivo.
 2. Eventi di gioco nella FSM: ATTACK sul sensore d'assedio (`SIEGE_DESIGN`),
    SCREAM per gli screamer; volo (SIMP_FLYING) già mappato su y=altitudine.

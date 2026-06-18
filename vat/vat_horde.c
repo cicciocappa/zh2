@@ -1,7 +1,8 @@
-// vat_horde — l'orda reale del core sim_particles resa in 3D VAT
-// (migrazione_3d.md, "agganciare al core"). Scena chokepoint: spawn dal basso,
-// muro con varchi, goal in cima. Il render layer vat_layer guida heading/FSM/
-// fase/outfit per slot; il renderer disegna instanced.
+// vat_horde — l'orda reale del core sim_particles resa in 3D VAT, MULTI-MODELLO
+// (migrazione_3d.md §Multi-modello). Scena chokepoint: spawn dal basso, muro con
+// varchi, goal in cima. Il render layer vat_layer guida heading/FSM/fase/outfit e
+// assegna il BODY per slot (man/fem/obeso/bambino/skirt, hash cosmetico); il
+// renderer fa una glDrawElementsInstanced per variante (mesh/VAT/texture diversi).
 //
 //   ./vat_horde
 // Controlli: frecce=pan  +/-=zoom  C=camera  T=texture  SPACE=pausa  ESC=esci
@@ -18,6 +19,17 @@
 #define MAXA 8000
 static float inst[MAXA*12];
 
+// I body type disponibili (asset bakati in vat/assets/). Texture placeholder: la
+// skirt non ha ancora il _diffuse.png -> rende flat-shaded (tintata), corretto.
+static const char *PREFIX[] = {
+    "vat/assets/zombie_man", "vat/assets/zombie_man_obese",
+    "vat/assets/zombie_fem", "vat/assets/zombie_fem_obese",
+    "vat/assets/zombie_child", "vat/assets/zombie_fem_skirt",
+};
+#define NVAR ((int)(sizeof(PREFIX)/sizeof(PREFIX[0])))
+
+typedef struct { GLuint vao, texP, texN, texD; int ni, hasTex; const VatMeta *M; } Asset;
+
 static void build_scene(SimP *s){
     int wy = (int)(GH*0.60f);                 // muro orizzontale
     for(int x=0;x<GW;x++) simp_set_wall(s,x,wy,true);
@@ -27,16 +39,14 @@ static void build_scene(SimP *s){
 }
 
 int main(void){
-    const char *prefix="vat/assets/zombie";
-    char pos[256],norm[256],mesh[256],diff[256],meta[256];
-    snprintf(pos,256,"%s_pos.raw",prefix);snprintf(norm,256,"%s_norm.raw",prefix);
-    snprintf(mesh,256,"%s_mesh.bin",prefix);snprintf(diff,256,"%s_diffuse.png",prefix);
-    snprintf(meta,256,"%s_meta.txt",prefix);
+    char metas[NVAR][256];
+    const char *metap[NVAR];
+    for(int v=0;v<NVAR;v++){ snprintf(metas[v],256,"%s_meta.txt",PREFIX[v]); metap[v]=metas[v]; }
 
-    VatLayer *vl=vat_layer_create(meta,MAXA);
-    const VatMeta *M=vat_layer_meta(vl);
-    if(M->nclips<=0){fprintf(stderr,"meta vuoto\n");return 1;}
-    printf("clips=%d tex %dx%d rows/frame=%d\n",M->nclips,M->texW,M->texH,M->rowsPerFrame);
+    VatLayer *vl=vat_layer_create_multi(metap,NVAR,MAXA);
+    for(int v=0;v<NVAR;v++){ const VatMeta *M=vat_layer_meta_variant(vl,v);
+        if(M->nclips<=0){fprintf(stderr,"meta vuoto: %s\n",PREFIX[v]);return 1;} }
+    printf("varianti=%d\n",NVAR);
 
     SimP *s=simp_create(GW,GH,CELL,MAXA);
     build_scene(s);
@@ -54,26 +64,45 @@ int main(void){
     if(!ctx||!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress)){fprintf(stderr,"GL init fail\n");return 1;}
     printf("GL %s\n",glGetString(GL_VERSION));
 
-    FILE*mf=fopen(mesh,"rb"); int nv,ni; if(fread(&nv,4,1,mf)){}if(fread(&ni,4,1,mf)){}
-    float*verts=malloc(nv*3*4),*uvs=malloc(nv*2*4); unsigned short*idx=malloc(ni*2);
-    if(fread(verts,4,nv*3,mf)){}if(fread(uvs,4,nv*2,mf)){}if(fread(idx,2,ni,mf)){}fclose(mf);
-
     GLuint prog=vg_shader("vat/vat.vs","vat/vat.fs");
-    GLuint texP=vg_tex_raw(pos,M->texW,M->texH),texN=vg_tex_raw(norm,M->texW,M->texH),texD=vg_tex_png(diff);
-    int useTex=texD!=0;
-    GLuint vao,bp,bu,eb,bi; glGenVertexArrays(1,&vao);glBindVertexArray(vao);
-    glGenBuffers(1,&bp);glBindBuffer(GL_ARRAY_BUFFER,bp);glBufferData(GL_ARRAY_BUFFER,nv*3*4,verts,GL_STATIC_DRAW);
-    glVertexAttribPointer(0,3,GL_FLOAT,0,0,0);glEnableVertexAttribArray(0);
-    glGenBuffers(1,&bu);glBindBuffer(GL_ARRAY_BUFFER,bu);glBufferData(GL_ARRAY_BUFFER,nv*2*4,uvs,GL_STATIC_DRAW);
-    glVertexAttribPointer(1,2,GL_FLOAT,0,0,0);glEnableVertexAttribArray(1);
-    glGenBuffers(1,&eb);glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,eb);glBufferData(GL_ELEMENT_ARRAY_BUFFER,ni*2,idx,GL_STATIC_DRAW);
-    glGenBuffers(1,&bi);glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferData(GL_ARRAY_BUFFER,sizeof(inst),NULL,GL_DYNAMIC_DRAW);
-    for(int i=0;i<3;i++){glEnableVertexAttribArray(2+i);
-        glVertexAttribPointer(2+i,4,GL_FLOAT,0,12*sizeof(float),(void*)(i*4*sizeof(float)));glVertexAttribDivisor(2+i,1);}
-    glBindVertexArray(0); glEnable(GL_DEPTH_TEST);
+    // instance buffer condiviso: ri-riempito per variante prima di ogni draw.
+    GLuint bi; glGenBuffers(1,&bi);glBindBuffer(GL_ARRAY_BUFFER,bi);
+    glBufferData(GL_ARRAY_BUFFER,sizeof(inst),NULL,GL_DYNAMIC_DRAW);
+
+    // carica un Asset (VAO+mesh+texture VAT) per variante.
+    Asset A[NVAR];
+    for(int v=0;v<NVAR;v++){
+        const VatMeta *M=vat_layer_meta_variant(vl,v); A[v].M=M;
+        char pos[256],norm[256],mesh[256],diff[256];
+        snprintf(pos,256,"%s_pos.raw",PREFIX[v]);snprintf(norm,256,"%s_norm.raw",PREFIX[v]);
+        snprintf(mesh,256,"%s_mesh.bin",PREFIX[v]);snprintf(diff,256,"%s_diffuse.png",PREFIX[v]);
+
+        FILE*mf=fopen(mesh,"rb"); if(!mf){fprintf(stderr,"no mesh %s\n",mesh);return 1;}
+        int nv,ni; if(fread(&nv,4,1,mf)){}if(fread(&ni,4,1,mf)){}
+        float*verts=malloc(nv*3*4),*uvs=malloc(nv*2*4); unsigned short*idx=malloc(ni*2);
+        if(fread(verts,4,nv*3,mf)){}if(fread(uvs,4,nv*2,mf)){}if(fread(idx,2,ni,mf)){}fclose(mf);
+        A[v].ni=ni;
+        A[v].texP=vg_tex_raw(pos,M->texW,M->texH);
+        A[v].texN=vg_tex_raw(norm,M->texW,M->texH);
+        A[v].texD=vg_tex_png(diff); A[v].hasTex=A[v].texD!=0;
+
+        GLuint vao,bp,bu,eb; glGenVertexArrays(1,&vao);glBindVertexArray(vao);
+        glGenBuffers(1,&bp);glBindBuffer(GL_ARRAY_BUFFER,bp);glBufferData(GL_ARRAY_BUFFER,nv*3*4,verts,GL_STATIC_DRAW);
+        glVertexAttribPointer(0,3,GL_FLOAT,0,0,0);glEnableVertexAttribArray(0);
+        glGenBuffers(1,&bu);glBindBuffer(GL_ARRAY_BUFFER,bu);glBufferData(GL_ARRAY_BUFFER,nv*2*4,uvs,GL_STATIC_DRAW);
+        glVertexAttribPointer(1,2,GL_FLOAT,0,0,0);glEnableVertexAttribArray(1);
+        glGenBuffers(1,&eb);glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,eb);glBufferData(GL_ELEMENT_ARRAY_BUFFER,ni*2,idx,GL_STATIC_DRAW);
+        // attributi istanza dal buffer condiviso bi (stesso layout per tutte le mesh)
+        glBindBuffer(GL_ARRAY_BUFFER,bi);
+        for(int i=0;i<3;i++){glEnableVertexAttribArray(2+i);
+            glVertexAttribPointer(2+i,4,GL_FLOAT,0,12*sizeof(float),(void*)(i*4*sizeof(float)));glVertexAttribDivisor(2+i,1);}
+        glBindVertexArray(0); A[v].vao=vao;
+        free(verts);free(uvs);free(idx);
+    }
+    glEnable(GL_DEPTH_TEST);
     GLint uVP=glGetUniformLocation(prog,"uVP"),uTS=glGetUniformLocation(prog,"texSize"),uRPF=glGetUniformLocation(prog,"rowsPerFrame"),uHas=glGetUniformLocation(prog,"uHasTex");
 
-    float cx=GW*CELL*0.5f, cz=22.0f, hh=15.0f, az=0.7f, el=0.40f; int cam_free=0,paused=0;
+    float cx=GW*CELL*0.5f, cz=22.0f, hh=15.0f, az=0.7f, el=0.40f; int cam_free=0,paused=0,useTex=1;
     { const char*cs=getenv("VAT_HORDE_CAM"); if(cs) sscanf(cs,"%f,%f,%f,%f,%f",&cx,&cz,&hh,&az,&el); }
     SimPAgentDesc runner={0.30f,3.6f,1.0f};
     unsigned rng=1234;
@@ -97,8 +126,6 @@ int main(void){
             }
             simp_step(s,dt); vat_layer_update(vl,s,dt);
         }
-        int count=vat_layer_fill(vl,s,inst,MAXA);
-        glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferSubData(GL_ARRAY_BUFFER,0,count*12*sizeof(float),inst);
 
         float asp=(float)SW/SH; mat4 proj,view,vp; float ctr[3]={cx,0.9f,cz},up[3]={0,1,0};
         float eye[3]={cx+hh*cosf(el)*sinf(az),0.9f+hh*sinf(el),cz+hh*cosf(el)*cosf(az)};
@@ -108,17 +135,30 @@ int main(void){
 
         glViewport(0,0,SW,SH);glClearColor(0.12f,0.13f,0.16f,1);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
         glUseProgram(prog);glUniformMatrix4fv(uVP,1,GL_FALSE,vp);
-        glUniform2f(uTS,(float)M->texW,(float)M->texH);glUniform1f(uRPF,(float)M->rowsPerFrame);glUniform1i(uHas,useTex);
-        glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,texP);glUniform1i(glGetUniformLocation(prog,"texPos"),0);
-        glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,texN);glUniform1i(glGetUniformLocation(prog,"texNorm"),1);
-        glActiveTexture(GL_TEXTURE2);glBindTexture(GL_TEXTURE_2D,texD);glUniform1i(glGetUniformLocation(prog,"texDiff"),2);
-        glBindVertexArray(vao);glDrawElementsInstanced(GL_TRIANGLES,ni,GL_UNSIGNED_SHORT,0,count);glBindVertexArray(0);
+        glUniform1i(glGetUniformLocation(prog,"texPos"),0);
+        glUniform1i(glGetUniformLocation(prog,"texNorm"),1);
+        glUniform1i(glGetUniformLocation(prog,"texDiff"),2);
+
+        int total=0;
+        for(int v=0;v<NVAR;v++){
+            int count=vat_layer_fill_variant(vl,s,v,inst,MAXA);
+            if(!count) continue; total+=count;
+            const VatMeta *M=A[v].M;
+            glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferSubData(GL_ARRAY_BUFFER,0,count*12*sizeof(float),inst);
+            glUniform2f(uTS,(float)M->texW,(float)M->texH);glUniform1f(uRPF,(float)M->rowsPerFrame);
+            glUniform1i(uHas,useTex&&A[v].hasTex);
+            glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,A[v].texP);
+            glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,A[v].texN);
+            glActiveTexture(GL_TEXTURE2);glBindTexture(GL_TEXTURE_2D,A[v].texD);
+            glBindVertexArray(A[v].vao);glDrawElementsInstanced(GL_TRIANGLES,A[v].ni,GL_UNSIGNED_SHORT,0,count);
+        }
+        glBindVertexArray(0);
 
         frame++;
         if(shot && !shot_done && frame>=shot_frames){ glFinish();
             unsigned char*px=malloc(SW*SH*3); glReadPixels(0,0,SW,SH,GL_RGB,GL_UNSIGNED_BYTE,px);
             vg_save_bmp("vat_horde_shot.bmp",SW,SH,px); free(px);
-            printf("frame %d: %d agenti, screenshot -> vat_horde_shot.bmp\n",frame,count);
+            printf("frame %d: %d agenti (%d varianti), screenshot -> vat_horde_shot.bmp\n",frame,total,NVAR);
             shot_done=1; running=0; }
         SDL_GL_SwapWindow(win);
     }

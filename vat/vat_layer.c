@@ -14,8 +14,8 @@ static const char *st_prefix[ST_N] = {"idle","walk","run","attack","scream"};
 #define HEADING_OFFSET 0.0f  /* allinea il forward del modello (Mixamo +Y) a +v */
 
 struct VatLayer {
-    VatMeta m;
-    int group_idx[ST_N][16], group_n[ST_N];
+    VatMeta m[VAT_MAX_VARIANTS]; int nvar;   /* un asset VAT per body type */
+    int group_idx[ST_N][16], group_n[ST_N];  /* clip layout identico fra varianti */
     int max;
     SimPHandle *seen;
     float *hx, *hy, *spd, *phaseA, *phaseB, *blendF, *hmul;
@@ -25,27 +25,31 @@ struct VatLayer {
 
 static unsigned hashu(unsigned a){ a^=a>>16; a*=2654435761u; a^=a>>13; a*=2246822519u; a^=a>>16; return a; }
 
-static void load_meta(VatLayer *vl, const char *path){
+static void load_meta(VatMeta *m, const char *path){
     FILE *f=fopen(path,"rb"); if(!f){fprintf(stderr,"vat_layer: no meta %s\n",path);return;}
     char line[256];
     while(fgets(line,sizeof line,f)){
-        if(!strncmp(line,"clip=",5) && vl->m.nclips<VAT_MAX_CLIPS){ VatClip *c=&vl->m.clip[vl->m.nclips];
+        if(!strncmp(line,"clip=",5) && m->nclips<VAT_MAX_CLIPS){ VatClip *c=&m->clip[m->nclips];
             if(sscanf(line,"clip=%31s startFrame=%d numFrames=%d duration_s=%f stride_m=%f",
-                      c->name,&c->startFrame,&c->numFrames,&c->duration,&c->stride)>=3) vl->m.nclips++;
+                      c->name,&c->startFrame,&c->numFrames,&c->duration,&c->stride)>=3) m->nclips++;
         } else { char *eq=strchr(line,'='); if(eq){*eq=0; char*k=line,*v=eq+1;
-            if(!strcmp(k,"texW"))vl->m.texW=atoi(v); else if(!strcmp(k,"texH"))vl->m.texH=atoi(v);
-            else if(!strcmp(k,"rowsPerFrame"))vl->m.rowsPerFrame=atoi(v); else if(!strcmp(k,"fps"))vl->m.fps=atof(v);
-            else if(!strcmp(k,"scale"))vl->m.scale=atof(v); else if(!strcmp(k,"totalFrames"))vl->m.total=atoi(v);} }
+            if(!strcmp(k,"texW"))m->texW=atoi(v); else if(!strcmp(k,"texH"))m->texH=atoi(v);
+            else if(!strcmp(k,"rowsPerFrame"))m->rowsPerFrame=atoi(v); else if(!strcmp(k,"fps"))m->fps=atof(v);
+            else if(!strcmp(k,"scale"))m->scale=atof(v); else if(!strcmp(k,"totalFrames"))m->total=atoi(v);} }
     }
     fclose(f);
 }
 
-VatLayer *vat_layer_create(const char *meta_path, int max_slots){
+VatLayer *vat_layer_create_multi(const char *const *meta_paths, int nvariants, int max_slots){
     VatLayer *vl=calloc(1,sizeof *vl); vl->max=max_slots;
-    load_meta(vl,meta_path);
+    if(nvariants<1)nvariants=1; if(nvariants>VAT_MAX_VARIANTS)nvariants=VAT_MAX_VARIANTS;
+    vl->nvar=nvariants;
+    for(int v=0;v<nvariants;v++) load_meta(&vl->m[v], meta_paths[v]);
+    /* I gruppi FSM (quali clip sono idle/walk/run) vengono dalla variante 0:
+       il layout di clip è identico fra tutti gli asset (stesso ORDER di bake). */
     for(int s=0;s<ST_N;s++)vl->group_n[s]=0;
-    for(int i=0;i<vl->m.nclips;i++) for(int s=0;s<ST_N;s++)
-        if(!strncmp(vl->m.clip[i].name,st_prefix[s],strlen(st_prefix[s]))){
+    for(int i=0;i<vl->m[0].nclips;i++) for(int s=0;s<ST_N;s++)
+        if(!strncmp(vl->m[0].clip[i].name,st_prefix[s],strlen(st_prefix[s]))){
             if(vl->group_n[s]<16)vl->group_idx[s][vl->group_n[s]++]=i;
             break; }
     int n=max_slots;
@@ -57,14 +61,20 @@ VatLayer *vat_layer_create(const char *meta_path, int max_slots){
     vl->outfit=calloc(n,1); vl->var=calloc(n,1); vl->tr=calloc(n,1); vl->tg=calloc(n,1); vl->tb=calloc(n,1);
     return vl;
 }
+VatLayer *vat_layer_create(const char *meta_path, int max_slots){
+    return vat_layer_create_multi(&meta_path, 1, max_slots);
+}
 void vat_layer_destroy(VatLayer *vl){ if(!vl)return;
     free(vl->seen);free(vl->hx);free(vl->hy);free(vl->spd);free(vl->phaseA);free(vl->phaseB);
     free(vl->blendF);free(vl->hmul);free(vl->clipA);free(vl->clipB);free(vl->state);free(vl->target);
     free(vl->blending);free(vl->outfit);free(vl->var);free(vl->tr);free(vl->tg);free(vl->tb);free(vl); }
-const VatMeta *vat_layer_meta(const VatLayer *vl){ return &vl->m; }
+int vat_layer_nvariants(const VatLayer *vl){ return vl->nvar; }
+const VatMeta *vat_layer_meta_variant(const VatLayer *vl, int variant){
+    if(variant<0||variant>=vl->nvar)variant=0; return &vl->m[variant]; }
+const VatMeta *vat_layer_meta(const VatLayer *vl){ return &vl->m[0]; }
 
 static int pick_variant(VatLayer *vl,int slot,int st){
-    int n=vl->group_n[st]; if(n<=0) return (vl->m.nclips?0:0);
+    int n=vl->group_n[st]; if(n<=0) return 0;
     return vl->group_idx[st][ hashu(slot*131u+st*977u) % (unsigned)n ]; }
 
 /* stato voluto dalla velocità, con isteresi */
@@ -88,6 +98,7 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
             vl->seen[slot]=h; vl->hx[slot]=sinf(ang)*0.01f; vl->hy[slot]=cosf(ang)*0.01f;
             vl->spd[slot]=1.0f; vl->state[slot]=ST_WALK; vl->blending[slot]=0;
             vl->clipA[slot]=pick_variant(vl,slot,ST_WALK); vl->phaseA[slot]=(float)((r>>16)&0xff)/256.0f;
+            vl->var[slot]=(unsigned char)(hashu(h+333u)%(unsigned)vl->nvar); /* body model, cosmetico */
             vl->outfit[slot]=(unsigned char)(hashu(h+777u)%16u);
             vl->hmul[slot]=0.90f+(hashu(h+555u)%1000)/1000.0f*0.22f; /* altezza ±, cosmetico */
             static const unsigned char PAL[8][3]={{255,255,255},{215,255,215},{255,225,210},{225,225,240},
@@ -111,13 +122,16 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
             vl->blending[slot]=1; vl->target[slot]=want;
             vl->clipB[slot]=pick_variant(vl,slot,want); vl->phaseB[slot]=0; vl->blendF[slot]=0; }
 
-        /* avanza fase (distanza per locomozione, tempo per il resto) */
+        /* avanza fase (distanza per locomozione, tempo per il resto) — stride/durata
+           dal meta del BODY di questo agente (variano per taglia: il bambino ha
+           stride diverso dall'adulto). */
+        const VatMeta *M=&vl->m[vl->var[slot]];
         float dist=sp*dt;
-        VatClip *ca=&vl->m.clip[vl->clipA[slot]];
+        const VatClip *ca=&M->clip[vl->clipA[slot]];
         vl->phaseA[slot]+= ca->stride>0.1f ? dist/ca->stride : dt/(ca->duration>0?ca->duration:1.0f);
         vl->phaseA[slot]-=floorf(vl->phaseA[slot]);
         if(vl->blending[slot]){
-            VatClip *cb=&vl->m.clip[vl->clipB[slot]];
+            const VatClip *cb=&M->clip[vl->clipB[slot]];
             vl->phaseB[slot]+= cb->stride>0.1f ? dist/cb->stride : dt/(cb->duration>0?cb->duration:1.0f);
             vl->phaseB[slot]-=floorf(vl->phaseB[slot]);
             vl->blendF[slot]+=dt/BLEND_DUR;
@@ -127,24 +141,44 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
     }
 }
 
+/* Emette una istanza (12 float) usando il meta `M` passato (= body dell'agente).
+   I frame gA/gB sono indici nella VAT texture di QUELLA variante. */
+static void emit_instance(VatLayer *vl, int slot, const VatMeta *M,
+                          float x, float y, float z, float r, float *o){
+    const VatClip *ca=&M->clip[vl->clipA[slot]];
+    float gA,gB,mix;
+    if(vl->blending[slot]){ const VatClip *cb=&M->clip[vl->clipB[slot]];
+        float la=floorf(vl->phaseA[slot]*ca->numFrames), lb=floorf(vl->phaseB[slot]*cb->numFrames);
+        gA=ca->startFrame+fmodf(la,(float)ca->numFrames); gB=cb->startFrame+fmodf(lb,(float)cb->numFrames);
+        mix=vl->blendF[slot]>1?1:vl->blendF[slot];
+    } else { float local=vl->phaseA[slot]*ca->numFrames; float fa=floorf(local),fb=fa+1; if(fb>=ca->numFrames)fb=0;
+        gA=ca->startFrame+fa; gB=ca->startFrame+fb; mix=local-fa; }
+    float head=atan2f(vl->hx[slot],vl->hy[slot])+HEADING_OFFSET;
+    o[0]=x; o[1]=z; o[2]=y; o[3]=head;
+    o[4]=(r/0.30f)*vl->hmul[slot]; o[5]=gA; o[6]=gB; o[7]=mix; o[8]=(float)vl->outfit[slot];
+    o[9]=vl->tr[slot]/255.0f; o[10]=vl->tg[slot]/255.0f; o[11]=vl->tb[slot]/255.0f;
+}
+
+int vat_layer_fill_variant(VatLayer *vl, const SimP *s, int variant, float *buf, int max_inst){
+    if(variant<0||variant>=vl->nvar) return 0;
+    const VatMeta *M=&vl->m[variant];
+    const float *px=simp_px(s),*py=simp_py(s),*rad=simp_radius_arr(s),*za=simp_z_arr(s);
+    int n=simp_count(s), c=0;
+    for(int i=0;i<n && c<max_inst;i++){
+        int slot=simp_slot_of(s,i); if(slot<0||slot>=vl->max) continue;
+        if(vl->var[slot]!=variant) continue;
+        emit_instance(vl,slot,M,px[i],py[i],za?za[i]:0.0f,rad[i],buf+c*12);
+        c++;
+    }
+    return c;
+}
+
 int vat_layer_fill(VatLayer *vl, const SimP *s, float *buf, int max_inst){
     const float *px=simp_px(s),*py=simp_py(s),*rad=simp_radius_arr(s),*za=simp_z_arr(s);
     int n=simp_count(s), c=0;
     for(int i=0;i<n && c<max_inst;i++){
         int slot=simp_slot_of(s,i); if(slot<0||slot>=vl->max) continue;
-        VatClip *ca=&vl->m.clip[vl->clipA[slot]];
-        float gA,gB,mix;
-        if(vl->blending[slot]){ VatClip *cb=&vl->m.clip[vl->clipB[slot]];
-            float la=floorf(vl->phaseA[slot]*ca->numFrames), lb=floorf(vl->phaseB[slot]*cb->numFrames);
-            gA=ca->startFrame+fmodf(la,(float)ca->numFrames); gB=cb->startFrame+fmodf(lb,(float)cb->numFrames);
-            mix=vl->blendF[slot]>1?1:vl->blendF[slot];
-        } else { float local=vl->phaseA[slot]*ca->numFrames; float fa=floorf(local),fb=fa+1; if(fb>=ca->numFrames)fb=0;
-            gA=ca->startFrame+fa; gB=ca->startFrame+fb; mix=local-fa; }
-        float head=atan2f(vl->hx[slot],vl->hy[slot])+HEADING_OFFSET;
-        float *o=buf+c*12;
-        o[0]=px[i]; o[1]=za?za[i]:0.0f; o[2]=py[i]; o[3]=head;
-        o[4]=(rad[i]/0.30f)*vl->hmul[slot]; o[5]=gA; o[6]=gB; o[7]=mix; o[8]=(float)vl->outfit[slot];
-        o[9]=vl->tr[slot]/255.0f; o[10]=vl->tg[slot]/255.0f; o[11]=vl->tb[slot]/255.0f;
+        emit_instance(vl,slot,&vl->m[vl->var[slot]],px[i],py[i],za?za[i]:0.0f,rad[i],buf+c*12);
         c++;
     }
     return c;
