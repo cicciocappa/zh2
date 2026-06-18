@@ -300,8 +300,11 @@ Il progetto ha DUE modelli di simulazione complementari:
 - SoA rigoroso nei loop caldi; nessuna allocazione dentro `simp_step`.
 - Determinismo: RNG xorshift interni (sim-level + per-agente), niente `rand()`
   nel core. Stesso ordine di chiamate ⇒ stesso risultato.
-- **Indici agente NON stabili** (rimozione swap-and-pop). Per riferimenti
-  persistenti (targeting torrette) serve un layer di handle (in TODO).
+- **Indici agente NON stabili** (rimozione swap-and-pop E riordino periodico
+  per località di cache, M4: `reorder_agents` permuta gli indici ~ogni 60 step
+  anche SENZA kill). Per riferimenti persistenti (targeting torrette, dati
+  per-agente HP/tipo) usare gli handle / indicizzare per SLOT, mai per indice
+  denso tra uno step e l'altro. Manopola `SIMP_REORDER` (0 = off).
 - Fixed timestep (1/60); il renderer interpola tra tick.
 - Ogni passo dello step è pensato per diventare un dispatch di compute shader
   (counting sort con atomics, PBD a tile colorati): non introdurre stato che

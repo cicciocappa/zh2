@@ -76,8 +76,33 @@ intrinsecamente seriale (label-setting). Soluzione in due parti:
   thr. **Risultato 50k/8core (i7→Ryzen-3750H): max 15.5→9.4 ms, avg invariato
   6.6 ms** (lo spike non domina più il frame peggiore). 11/11 test PASS.
 
+## Riordino per località di cache (FATTO)
+
+`rebuild_grid` è ~0.63 ms/chiamata (×2/step) ed è MEMORY-bound: count 0.23 +
+scatter 0.30 ms (scritture sparse in `corder`), prefix 0.08, memset 0.02. La
+griglia di collisione è SPARSA (ccell≈0.72 m → nc≈77k celle per ~46k agenti,
+0.6/cella).
+
+**Istogrammi per-thread: scartati.** Solo il count si parallelizza in modo
+deterministico (somma di interi via atomics). Lo scatter no, senza ricostruire
+gli offset per-chunk (O(nc·C)). Su griglia sparsa l'array istogramma C×nc è
+~2.4 MB (C=8): azzerarlo + rileggerlo in ricombinazione costa ~0.5 ms di sola
+banda, ≥ del count+scatter (0.53 ms) che parallelizzerebbe. Bandwidth-bound a
+vuoto: net neutro/negativo.
+
+**Riordino periodico (`reorder_agents`).** La vera causa è la località: dopo il
+churn di spawn/kill (swap-and-pop) l'ordine degli indici si scorrela dallo
+spazio → scatter di `corder` e letture vicini `px[corder[b]]` nel PBD vanno a
+caso in memoria. Ogni `REORDER_PERIOD` (60) step un counting sort seriale per
+cella permuta tutti gli array SoA in ordine spaziale e ricostruisce la slot map.
+Deterministico (seriale, indipendente dai thread); cambia l'ordine PBD
+intra-cella (checksum shift) ma resta identico cross-thread. Costo amortizzato
+trascurabile. **Misura (`bench_sim`, 50k/8thr): layout SCRAMBLED (= stato reale)
+avg 6.78→6.41 ms (~5%); prefill ordinato neutro.** Manopola `SIMP_REORDER`;
+`BENCH_SCRAMBLE=1` simula il caso scorrelato. NB: rende gli indici instabili
+ANCHE senza kill — il contratto già lo vieta (dati persistenti per slot/handle);
+`test_dormant` correlava per indice ed è stato corretto a correlare per slot.
+
 ## Prossimi passi
-1. rebuild_grid parallelo (istogrammi per-thread) se il profiling lo chiede:
-   il counting sort seriale O(N) è ora il prossimo candidato del frame medio.
-2. SIMD su steering/integrate/recovery (verificare prima l'autovettorizzazione).
-3. Riordino periodico degli agenti per località di cache (~ogni 60 step).
+1. SIMD su steering/integrate/recovery (verificare prima l'autovettorizzazione).
+2. wall_projection: saltare il sample SDF se la cella nav è lontana dai muri.

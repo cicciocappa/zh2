@@ -48,15 +48,19 @@ int main(void) {
     printf("pack placed: %d agents, overlapping pairs: %d\n", n0, overlaps);
     int ok_place = (n0 >= 100) && (overlaps == 0);
 
-    /* 2) dormant pack must hold position (goal attracts, sleepers ignore it) */
-    float *sx = (float *)malloc((size_t)n0 * sizeof(float));
-    float *sy = (float *)malloc((size_t)n0 * sizeof(float));
-    for (int i = 0; i < n0; i++) { sx[i] = px[i]; sy[i] = py[i]; }
+    /* 2) dormant pack must hold position (goal attracts, sleepers ignore it).
+     * Indexed by SLOT, not dense index: the M4 cache-locality reorder permutes
+     * indices between steps, so a position must be correlated to its agent by
+     * the stable slot (the documented contract — indices are never stable). */
+    float *sx = (float *)malloc(8000 * sizeof(float));
+    float *sy = (float *)malloc(8000 * sizeof(float));
+    for (int i = 0; i < n0; i++) { int sl = simp_slot_of(s, i); sx[sl] = px[i]; sy[sl] = py[i]; }
     int drained = 0;
     for (int t = 0; t < 300; t++) drained += simp_step(s, DT);
     float maxd = 0.0f;
     for (int i = 0; i < simp_count(s); i++) {
-        float dx = px[i] - sx[i], dy = py[i] - sy[i];
+        int sl = simp_slot_of(s, i);
+        float dx = px[i] - sx[sl], dy = py[i] - sy[sl];
         float d = sqrtf(dx * dx + dy * dy);
         if (d > maxd) maxd = d;
     }

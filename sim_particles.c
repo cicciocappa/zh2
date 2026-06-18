@@ -126,6 +126,17 @@ struct SimP {
     int   grid_ghosts;     /* corpse ghosts binned at the last rebuild */
     bool  grid_stale;      /* set by kill/corpse_add: indices unreliable */
 
+    /* M4: periodic cache-locality reorder. The collision grid is sparse and the
+     * sim is memory-bound (scattered corder writes, neighbour px/py reads in the
+     * PBD). Every REORDER_PERIOD steps the SoA is permuted into grid-cell order
+     * so agents close in space are close in memory. Serial + deterministic; it
+     * changes the within-cell PBD order (checksum shifts, like the tile change)
+     * but stays identical across thread counts. */
+    int  *reorder_perm;    /* cap : perm[new index] = old index */
+    void *reorder_tmp;     /* cap * 4B : scratch for one array permute */
+    int   reorder_ctr;     /* steps since last reorder */
+    int   reorder_period;  /* steps between reorders; <=0 disables (SIMP_REORDER) */
+
     SimPParams params;
     uint32_t rng;          /* sim-level RNG (spawn jitter) */
     float diag_overlap_sum;
@@ -181,6 +192,11 @@ static HNode heap_pop(Heap *h) {
 /* M4: a throttled phi recompute is drained in ~this many per-step budgets to
  * cap the worst-frame cost. Bigger = finishes sooner but taller spike. */
 #define NAV_BUDGET_DIV 6
+
+/* M4: steps between cache-locality reorders of the agent SoA (see reorder_agents).
+ * Agents drift ~2 collision cells over this window, so locality stays decent
+ * between reorders while the amortized cost is negligible. */
+#define REORDER_PERIOD 60
 
 /* Seed a fresh phi build: reset phi, rebuild the per-destination edge multiplier
  * (M3.5 user cost + M3.6 density), push the goals onto the heap. The heap is left
@@ -499,6 +515,9 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
      * frame eats the whole Dijkstra; well under flow_period (~30 steps) so a
      * build always finishes before the next throttle tick */
     s->nav_budget = (int)(n / NAV_BUDGET_DIV); if (s->nav_budget < 1) s->nav_budget = 1;
+    s->reorder_ctr = 0;
+    s->reorder_period = REORDER_PERIOD;
+    { const char *e = getenv("SIMP_REORDER"); if (e) s->reorder_period = atoi(e); }
 
     s->cap = max_agents;
     /* px/py/rad/invm/seed carry CORPSE_CAP extra slots: corpse ghosts are
@@ -555,6 +574,8 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->ccount = (int *)calloc((size_t)s->cgw * s->cgh + 1, sizeof(int));
     s->cstart = (int *)calloc((size_t)s->cgw * s->cgh + 1, sizeof(int));
     s->corder = (int *)malloc(capg * sizeof(int));
+    s->reorder_perm = (int *)malloc((size_t)max_agents * sizeof(int));
+    s->reorder_tmp  = malloc((size_t)max_agents * sizeof(float)); /* 4B covers every per-agent array */
     s->grid_total = 0;
     s->grid_ghosts = 0;
     s->grid_stale = false;
@@ -589,6 +610,7 @@ void simp_destroy(SimP *s) {
     free(s->slot_to_index); free(s->index_to_slot);
     free(s->slot_gen); free(s->slot_free);
     free(s->ccount); free(s->cstart); free(s->corder);
+    free(s->reorder_perm); free(s->reorder_tmp);
     simpool_destroy(s->pool);
     free(s->diag_sum_w); free(s->diag_n_w);
     free(s);
@@ -991,6 +1013,62 @@ const float *simp_corpse_rad(const SimP *s) { return s->crad; }
 
 /* --------------------------------------------------------------- stepping */
 
+/* Permute the count-byte-per-element array `arr` by perm (newpos -> oldindex)
+ * via the shared scratch, then copy back. Only the first `n` slots move. */
+static void permute_arr(void *arr, size_t esz, const int *perm, int n, void *tmp) {
+    char *a = (char *)arr, *t = (char *)tmp;
+    for (int i = 0; i < n; i++) memcpy(t + (size_t)i * esz, a + (size_t)perm[i] * esz, esz);
+    memcpy(a, t, (size_t)n * esz);
+}
+
+/* M4: reorder the live agents into collision-cell order for cache locality.
+ * A plain serial counting sort over all `count` agents (flyers included, by
+ * their xy cell) builds perm; every per-agent SoA array is permuted to match and
+ * the handle map is rebuilt. The grid is left invalid on purpose: the caller
+ * rebuilds it right after. Deterministic (serial), independent of thread count. */
+static void reorder_agents(SimP *s) {
+    const int n = s->count;
+    if (n < 2) return;
+    const int nc = s->cgw * s->cgh;
+    int *cnt = s->ccount;          /* reused; rebuild_grid refills it next */
+    memset(cnt, 0, (size_t)(nc + 1) * sizeof(int));
+    for (int i = 0; i < n; i++) {
+        int cx = clampi((int)(s->px[i] * s->inv_ccell), 0, s->cgw - 1);
+        int cy = clampi((int)(s->py[i] * s->inv_ccell), 0, s->cgh - 1);
+        cnt[cy * s->cgw + cx]++;
+    }
+    int acc = 0;
+    for (int c = 0; c < nc; c++) { s->cstart[c] = acc; acc += cnt[c]; }
+    memcpy(cnt, s->cstart, (size_t)nc * sizeof(int));   /* cursor */
+    int *perm = s->reorder_perm;
+    for (int i = 0; i < n; i++) {                        /* stable by i */
+        int cx = clampi((int)(s->px[i] * s->inv_ccell), 0, s->cgw - 1);
+        int cy = clampi((int)(s->py[i] * s->inv_ccell), 0, s->cgh - 1);
+        perm[cnt[cy * s->cgw + cx]++] = i;
+    }
+    void *tmp = s->reorder_tmp;
+    permute_arr(s->px, sizeof(float), perm, n, tmp);
+    permute_arr(s->py, sizeof(float), perm, n, tmp);
+    permute_arr(s->qx, sizeof(float), perm, n, tmp);
+    permute_arr(s->qy, sizeof(float), perm, n, tmp);
+    permute_arr(s->vx, sizeof(float), perm, n, tmp);
+    permute_arr(s->vy, sizeof(float), perm, n, tmp);
+    permute_arr(s->rad, sizeof(float), perm, n, tmp);
+    permute_arr(s->vpref, sizeof(float), perm, n, tmp);
+    permute_arr(s->invm, sizeof(float), perm, n, tmp);
+    permute_arr(s->z, sizeof(float), perm, n, tmp);
+    permute_arr(s->vz, sizeof(float), perm, n, tmp);
+    permute_arr(s->seed, sizeof(uint32_t), perm, n, tmp);
+    permute_arr(s->aflags, sizeof(uint8_t), perm, n, tmp);
+    permute_arr(s->wall_pressure, sizeof(float), perm, n, tmp);
+    permute_arr(s->wall_cell, sizeof(int), perm, n, tmp);
+    /* handle map: permute index->slot, then rebuild slot->index from it
+     * (slot_gen / slot_free are slot-indexed, untouched) */
+    permute_arr(s->index_to_slot, sizeof(int), perm, n, tmp);
+    for (int i = 0; i < n; i++) s->slot_to_index[s->index_to_slot[i]] = i;
+    s->grid_stale = true;
+}
+
 static void rebuild_grid(SimP *s) {
     const int nc = s->cgw * s->cgh;
     /* corpse ghosts: copy the pool past the live agents as invm=0 discs so
@@ -1356,6 +1434,13 @@ int simp_step(SimP *s, float dt) {
         }
     }
     if (s->corpse_count == 0) s->corpse_rmax = 0.0f;
+
+    /* 5c) periodic cache-locality reorder (M4): permute the SoA into cell order
+     * so the rebuild below and the next steps' PBD touch memory sequentially.
+     * Done just before the rebuild so it commits the new index layout. */
+    if (s->reorder_period > 0 && ++s->reorder_ctr >= s->reorder_period) {
+        s->reorder_ctr = 0; reorder_agents(s);
+    }
 
     /* 6) rebuild the grid on final positions: the mid-step grid is stale by
      * the PBD/wall corrections (and by the drain), so spatial queries and

@@ -27,6 +27,37 @@ static int prefill_lattice(SimP *s, const Scene *sc, int target) {
     float pitch = sqrtf(W * H / (float)target); if (pitch < 0.62f) pitch = 0.62f;
     SimPAgentDesc runner = { 0.30f, 3.6f, 1.0f };
     unsigned rng = 99; int n = 0;
+    /* BENCH_SCRAMBLE=1: spawn the lattice points in random order so the agent
+     * index order is uncorrelated with space — the realistic state after a game's
+     * worth of spawner/kill churn (swap-and-pop), where reorder_agents earns its
+     * keep. Default keeps the in-order lattice (best-case locality). */
+    int scramble = 0; { const char *e = getenv("BENCH_SCRAMBLE"); if (e) scramble = atoi(e); }
+    int ncols = (int)(W / pitch) + 1, nrows = (int)(H / pitch) + 1;
+    long npts = (long)ncols * nrows;
+    if (scramble) {
+        float *xs = malloc((size_t)npts * sizeof(float));
+        float *ys = malloc((size_t)npts * sizeof(float));
+        long m = 0;
+        for (float y = pitch * 0.5f; y < H; y += pitch)
+            for (float x = pitch * 0.5f; x < W; x += pitch) { xs[m] = x; ys[m] = y; m++; }
+        for (long i = m - 1; i > 0; i--) {           /* Fisher-Yates */
+            rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+            long j = rng % (unsigned long)(i + 1);
+            float tx = xs[i]; xs[i] = xs[j]; xs[j] = tx;
+            float ty = ys[i]; ys[i] = ys[j]; ys[j] = ty;
+        }
+        for (long k = 0; k < m && n < target; k++) {
+            rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+            float jx = xs[k] + ((rng % 1000) / 1000.0f - 0.5f) * pitch * 0.4f;
+            float jy = ys[k] + (((rng >> 10) % 1000) / 1000.0f - 0.5f) * pitch * 0.4f;
+            if (simp_free_at(s, jx, jy, 0.34f)) {
+                if ((rng >> 20) % 5 == 0) simp_spawn_desc(s, jx, jy, &runner); else simp_spawn(s, jx, jy);
+                n++;
+            }
+        }
+        free(xs); free(ys);
+        return n;
+    }
     for (float y = pitch * 0.5f; y < H && n < target; y += pitch)
         for (float x = pitch * 0.5f; x < W && n < target; x += pitch) {
             rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;

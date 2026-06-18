@@ -144,8 +144,23 @@ poi scala, poi gioco.
       15.5→9.4 ms (avg invariato 6.6); 11/11 test PASS, drain 81.5%.
 - [ ] SIMD sui loop di steering e integrazione (SoA già pronto); verificare che
       l'autovettorizzazione faccia già il lavoro prima di scrivere intrinsics.
-- [ ] Riordino periodico degli agenti in memoria secondo l'ordine della griglia
+- [x] Riordino periodico degli agenti in memoria secondo l'ordine della griglia
       (ogni ~60 step) per località di cache.
+      FATTO: `reorder_agents` — counting sort seriale per cella di collisione
+      costruisce una permutazione, permuta tutti gli array SoA per-agente e
+      ricostruisce la slot map (`index_to_slot` permutato → `slot_to_index`;
+      `slot_gen`/`slot_free` per-slot intatti; `landed` sono handle → intatti).
+      Deterministico (seriale), cambia l'ordine PBD intra-cella (checksum shift,
+      come il tile-coloring) ma IDENTICO cross-thread (verificato 1/4/8/16).
+      Manopola `SIMP_REORDER` (default `REORDER_PERIOD`=60, <=0 disabilita).
+      NB: gli istogrammi per-thread per `rebuild_grid` (prima idea) sono stati
+      SCARTATI: griglia sparsa (nc≈77k > total≈46k), l'array C×nc da azzerare+
+      rileggere costa più banda del count/scatter che parallelizzerebbe. Il
+      reorder attacca la vera causa (memory-bound) e velocizza rebuild+PBD
+      insieme. Misura (`bench_sim`, 50k/8thr): su layout SCRAMBLED (indici
+      scorrelati dallo spazio = stato reale dopo churn spawn/kill) avg
+      6.78→6.41 ms (~5%); su prefill ordinato è neutro. `BENCH_SCRAMBLE=1`
+      aggiunto al bench per misurare il caso realistico.
 - [ ] Ottimizzare `wall_projection`: saltare il sample SDF se la cella nav è
       lontana dai muri (flag per cella "sdf > r_max + margine").
 
