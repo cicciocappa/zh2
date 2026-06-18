@@ -1,6 +1,7 @@
 /* sim_particles.c — implementation. See sim_particles.h for the model. */
 
 #include "sim_particles.h"
+#include "sim_threads.h"        /* M4: pthreads pool (header-only) */
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -118,6 +119,12 @@ struct SimP {
     uint32_t rng;          /* sim-level RNG (spawn jitter) */
     float diag_overlap_sum;
     int   diag_overlap_n;
+
+    /* M4: thread pool + per-worker scratch (reduced deterministically) */
+    SimPool *pool;
+    int      nthreads;
+    double  *diag_sum_w;   /* nthreads : overlap sum partials */
+    long    *diag_n_w;     /* nthreads : overlap count partials */
 };
 
 /* ---------------------------------------------------- navigation: dijkstra */
@@ -495,6 +502,15 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
 
     s->rng = 0x9E3779B9u;
     s->nav_dirty = true;
+
+    /* M4: thread pool. Default = online CPUs (env SIMP_THREADS overrides);
+     * results are identical for any thread count (colored tiles = disjoint
+     * writes), so this is purely a speed knob. */
+    s->nthreads = simpool_default_threads();
+    s->pool = simpool_create(s->nthreads);
+    s->nthreads = simpool_nthreads(s->pool);
+    s->diag_sum_w = (double *)calloc((size_t)s->nthreads, sizeof(double));
+    s->diag_n_w   = (long *)calloc((size_t)s->nthreads, sizeof(long));
     return s;
 }
 
@@ -514,8 +530,24 @@ void simp_destroy(SimP *s) {
     free(s->slot_to_index); free(s->index_to_slot);
     free(s->slot_gen); free(s->slot_free);
     free(s->ccount); free(s->cstart); free(s->corder);
+    simpool_destroy(s->pool);
+    free(s->diag_sum_w); free(s->diag_n_w);
     free(s);
 }
+
+/* Override the worker-thread count (>=1). Rebuilds the pool; results are
+ * unchanged (deterministic across thread counts), only the speed differs. */
+void simp_set_threads(SimP *s, int nthreads) {
+    if (nthreads < 1) nthreads = 1;
+    if (nthreads == s->nthreads) return;
+    simpool_destroy(s->pool);
+    s->nthreads = nthreads;
+    s->pool = simpool_create(nthreads);
+    s->nthreads = simpool_nthreads(s->pool);
+    s->diag_sum_w = (double *)realloc(s->diag_sum_w, (size_t)s->nthreads * sizeof(double));
+    s->diag_n_w   = (long *)realloc(s->diag_n_w, (size_t)s->nthreads * sizeof(long));
+}
+int simp_threads(const SimP *s) { return s->nthreads; }
 
 SimPParams *simp_params(SimP *s) { return &s->params; }
 
@@ -936,62 +968,106 @@ static void rebuild_grid(SimP *s) {
     s->grid_stale = false;
 }
 
-static void pbd_iteration(SimP *s) {
+/* Per-step constants shared with the parallel jobs (arg = &StepCtx). */
+typedef struct {
+    SimP *s;
+    float dt, amax_dt, damp, inv_dt, vc, wall_h;
+    int   wall_record;          /* wall job: sample the siege sensor */
+    /* PBD colored-tile dispatch (set per color before each parallel_for) */
+    int   tile, color_ncx, color_ox, color_oy;
+} StepCtx;
+
+#define PBD_TILE 4              /* collision-cell tile side; >=2 keeps same-color
+                                  tiles' write footprints disjoint (lock-free) */
+
+/* Gauss-Seidel resolution for one collision cell: agent vs own-cell tail +
+ * 4 forward neighbours (E, SW, S, SE), every pair once. Writes px/py of the
+ * home agent and of the neighbour agents it pushes. Diagnostics into locals. */
+static inline void pbd_cell(SimP *s, int cx, int cy, double *dsum, long *dn) {
     const int cgw = s->cgw, cgh = s->cgh;
-    /* Gauss-Seidel over cells; for each agent, look at its own cell and the
-     * 4 forward neighbours (E, SW, S, SE) so every pair is visited once. */
     static const int NX[5] = { 0, 1, -1, 0, 1 };
     static const int NY[5] = { 0, 0,  1, 1, 1 };
-    for (int cy = 0; cy < cgh; cy++) {
-        for (int cx = 0; cx < cgw; cx++) {
-            int c = cy * cgw + cx;
-            int beg = s->cstart[c], end = s->cstart[c + 1];
-            for (int a = beg; a < end; a++) {
-                int i = s->corder[a];
-                float pix = s->px[i], piy = s->py[i];
-                float ri = s->rad[i], wi = s->invm[i];
-                for (int k = 0; k < 5; k++) {
-                    int nx = cx + NX[k], ny = cy + NY[k];
-                    if (nx < 0 || ny < 0 || nx >= cgw || ny >= cgh) continue;
-                    int nc2 = ny * cgw + nx;
-                    int b0 = (k == 0) ? a + 1 : s->cstart[nc2];
-                    int b1 = s->cstart[nc2 + 1];
-                    for (int b = b0; b < b1; b++) {
-                        int j = s->corder[b];
-                        float dx = s->px[j] - pix, dy = s->py[j] - piy;
-                        float rsum = ri + s->rad[j];
-                        float d2 = dx * dx + dy * dy;
-                        if (d2 >= rsum * rsum) continue;
-                        float wj = s->invm[j];
-                        if (wi + wj <= 0.0f) continue;  /* corpse vs corpse */
-                        float d = sqrtf(d2);
-                        float nxv, nyv;
-                        if (d > 1e-5f) { nxv = dx / d; nyv = dy / d; }
-                        else {
-                            uint32_t *st = &s->seed[i];
-                            nxv = rng_fsym(st); nyv = rng_fsym(st);
-                            float l = sqrtf(nxv*nxv + nyv*nyv) + 1e-6f;
-                            nxv /= l; nyv /= l; d = 0.0f;
-                        }
-                        float overlap = rsum - d;
-                        /* robustness: never resolve more than 30% of the
-                         * combined radius per pair per iteration; deep
-                         * overlaps relax over a few steps instead of
-                         * exploding into huge recovered velocities */
-                        float capd = 0.30f * rsum;
-                        if (overlap > capd) overlap = capd;
-                        float inv = 1.0f / (wi + wj);
-                        float ci = overlap * wi * inv;
-                        float cj = overlap * wj * inv;
-                        pix -= nxv * ci; piy -= nyv * ci;
-                        s->px[j] += nxv * cj; s->py[j] += nyv * cj;
-                        s->diag_overlap_sum += overlap;
-                        s->diag_overlap_n++;
-                    }
+    int c = cy * cgw + cx;
+    int beg = s->cstart[c], end = s->cstart[c + 1];
+    for (int a = beg; a < end; a++) {
+        int i = s->corder[a];
+        float pix = s->px[i], piy = s->py[i];
+        float ri = s->rad[i], wi = s->invm[i];
+        for (int k = 0; k < 5; k++) {
+            int nx = cx + NX[k], ny = cy + NY[k];
+            if (nx < 0 || ny < 0 || nx >= cgw || ny >= cgh) continue;
+            int nc2 = ny * cgw + nx;
+            int b0 = (k == 0) ? a + 1 : s->cstart[nc2];
+            int b1 = s->cstart[nc2 + 1];
+            for (int b = b0; b < b1; b++) {
+                int j = s->corder[b];
+                float dx = s->px[j] - pix, dy = s->py[j] - piy;
+                float rsum = ri + s->rad[j];
+                float d2 = dx * dx + dy * dy;
+                if (d2 >= rsum * rsum) continue;
+                float wj = s->invm[j];
+                if (wi + wj <= 0.0f) continue;  /* corpse vs corpse */
+                float d = sqrtf(d2);
+                float nxv, nyv;
+                if (d > 1e-5f) { nxv = dx / d; nyv = dy / d; }
+                else {
+                    uint32_t *st = &s->seed[i];
+                    nxv = rng_fsym(st); nyv = rng_fsym(st);
+                    float l = sqrtf(nxv*nxv + nyv*nyv) + 1e-6f;
+                    nxv /= l; nyv /= l; d = 0.0f;
                 }
-                s->px[i] = pix; s->py[i] = piy;
+                float overlap = rsum - d;
+                /* robustness: never resolve more than 30% of the combined
+                 * radius per pair per iteration; deep overlaps relax over a
+                 * few steps instead of exploding into recovered velocities */
+                float capd = 0.30f * rsum;
+                if (overlap > capd) overlap = capd;
+                float inv = 1.0f / (wi + wj);
+                float ci = overlap * wi * inv;
+                float cj = overlap * wj * inv;
+                pix -= nxv * ci; piy -= nyv * ci;
+                s->px[j] += nxv * cj; s->py[j] += nyv * cj;
+                *dsum += overlap; (*dn)++;
             }
         }
+        s->px[i] = pix; s->py[i] = piy;
+    }
+}
+
+/* One color pass: process the same-color tiles in [begin,end) (their write
+ * footprints are disjoint, so this is lock-free). idx -> (tile_x,tile_y). */
+static void job_pbd_color(void *arg, int worker, int begin, int end) {
+    StepCtx *ctx = arg; SimP *s = ctx->s;
+    const int T = ctx->tile, ncx = ctx->color_ncx, ox = ctx->color_ox, oy = ctx->color_oy;
+    double dsum = 0; long dn = 0;
+    for (int idx = begin; idx < end; idx++) {
+        int txi = ox + 2 * (idx % ncx);
+        int tyi = oy + 2 * (idx / ncx);
+        int hx0 = txi * T, hy0 = tyi * T;
+        int hx1 = hx0 + T; if (hx1 > s->cgw) hx1 = s->cgw;
+        int hy1 = hy0 + T; if (hy1 > s->cgh) hy1 = s->cgh;
+        for (int cy = hy0; cy < hy1; cy++)
+            for (int cx = hx0; cx < hx1; cx++)
+                pbd_cell(s, cx, cy, &dsum, &dn);
+    }
+    s->diag_sum_w[worker] += dsum; s->diag_n_w[worker] += dn;
+}
+
+/* One PBD sweep: 4 color passes (2x2 tile checkerboard), barrier between them
+ * (parallel_for completes = barrier). Same result for any thread count. */
+static void pbd_iteration(SimP *s, StepCtx *ctx) {
+    const int T = PBD_TILE;
+    int tiles_x = (s->cgw + T - 1) / T;
+    int tiles_y = (s->cgh + T - 1) / T;
+    ctx->tile = T;
+    for (int color = 0; color < 4; color++) {
+        int ox = color & 1, oy = (color >> 1) & 1;
+        if (ox >= tiles_x || oy >= tiles_y) continue;
+        int ncx = (tiles_x - ox + 1) / 2;
+        int ncy = (tiles_y - oy + 1) / 2;
+        if (ncx <= 0 || ncy <= 0) continue;
+        ctx->color_ncx = ncx; ctx->color_ox = ox; ctx->color_oy = oy;
+        simpool_parallel_for(s->pool, ncx * ncy, 1, job_pbd_color, ctx);
     }
 }
 
@@ -1001,9 +1077,12 @@ static void pbd_iteration(SimP *s) {
  * one grazing it tangentially has into_wall <= 0 and is left at 0. Measuring
  * here, before the projection cancels the overlap, is the only place push is
  * still meaningful (after the push d >= r). See SIEGE_DESIGN.md. */
-static void wall_projection(SimP *s, bool record) {
-    const float wall_h = s->params.wall_h;
-    for (int i = 0; i < s->count; i++) {
+static void job_wall(void *arg, int worker, int begin, int end) {
+    (void)worker;
+    StepCtx *ctx = arg; SimP *s = ctx->s;
+    const float wall_h = ctx->wall_h;
+    const int record = ctx->wall_record;
+    for (int i = begin; i < end; i++) {
         float r = s->rad[i];
         /* above wall_h walls are overflown; low flyers slam into them */
         if (!((s->aflags[i] & SIMP_FLYING) && s->z[i] > wall_h)) {
@@ -1053,6 +1132,51 @@ static void wall_projection(SimP *s, bool record) {
     }
 }
 
+/* steering toward the flow field + noise, bounded acceleration. Per-agent,
+ * own RNG seed: embarrassingly parallel. Dormant agents brake to rest, flyers
+ * are ballistic (skipped). */
+static void job_steering(void *arg, int worker, int begin, int end) {
+    (void)worker;
+    StepCtx *ctx = arg; SimP *s = ctx->s; const SimPParams *P = &s->params;
+    const float amax_dt = ctx->amax_dt, damp = ctx->damp;
+    for (int i = begin; i < end; i++) {
+        uint8_t fl = s->aflags[i];
+        if (fl & SIMP_FLYING) continue;
+        float fx = 0.0f, fy = 0.0f;
+        if (!(fl & SIMP_DORMANT)) {
+            simp_sample_flow(s, s->px[i], s->py[i], &fx, &fy);
+            if (P->noise_ang > 0.0f && (fx != 0.0f || fy != 0.0f)) {
+                float a = P->noise_ang * rng_fsym(&s->seed[i]);
+                float ca = cosf(a), sa = sinf(a);
+                float rx = fx * ca - fy * sa, ry = fx * sa + fy * ca;
+                fx = rx; fy = ry;
+            }
+        }
+        float dvx = fx * s->vpref[i] - s->vx[i];
+        float dvy = fy * s->vpref[i] - s->vy[i];
+        float dl = sqrtf(dvx * dvx + dvy * dvy);
+        if (dl > amax_dt) { float k = amax_dt / dl; dvx *= k; dvy *= k; }
+        s->vx[i] = (s->vx[i] + dvx) * damp;
+        s->vy[i] = (s->vy[i] + dvy) * damp;
+    }
+}
+
+/* recover effective velocity from positional change (the crowd push becomes
+ * real momentum). Per-agent: embarrassingly parallel. Flyers keep theirs. */
+static void job_recover(void *arg, int worker, int begin, int end) {
+    (void)worker;
+    StepCtx *ctx = arg; SimP *s = ctx->s;
+    const float inv_dt = ctx->inv_dt, vc = ctx->vc;
+    for (int i = begin; i < end; i++) {
+        if (s->aflags[i] & SIMP_FLYING) continue;
+        float nvx = (s->px[i] - s->qx[i]) * inv_dt;
+        float nvy = (s->py[i] - s->qy[i]) * inv_dt;
+        float sp2 = nvx * nvx + nvy * nvy;
+        if (sp2 > vc * vc) { float k = vc / sqrtf(sp2); nvx *= k; nvy *= k; }
+        s->vx[i] = nvx; s->vy[i] = nvy;
+    }
+}
+
 int simp_step(SimP *s, float dt) {
     const SimPParams *P = &s->params;
     /* navigation: terrain edits force a full commit (phi+flow+SDF, reads the
@@ -1079,37 +1203,21 @@ int simp_step(SimP *s, float dt) {
     const float amax_dt = P->a_max * dt;
     const float damp = clampf(1.0f - P->damping * dt, 0.0f, 1.0f);
 
+    StepCtx ctx = { .s = s, .dt = dt, .amax_dt = amax_dt, .damp = damp,
+                    .inv_dt = 1.0f / dt, .vc = P->v_clamp, .wall_h = P->wall_h,
+                    .wall_record = 0, .tile = 0, .color_ncx = 0, .color_ox = 0, .color_oy = 0 };
+
     s->diag_overlap_sum = 0.0f;
     s->diag_overlap_n = 0;
 
     s->landed_n = 0;
 
-    /* 1) steering toward flow field + noise, bounded acceleration.
-     * Dormant agents steer toward zero velocity: they stand still, but a
-     * push (PBD, impulse) still moves them and they brake back to rest.
-     * Flying agents are ballistic: no steering, no damping. */
-    for (int i = 0; i < s->count; i++) {
-        uint8_t fl = s->aflags[i];
-        if (fl & SIMP_FLYING) continue;
-        float fx = 0.0f, fy = 0.0f;
-        if (!(fl & SIMP_DORMANT)) {
-            simp_sample_flow(s, s->px[i], s->py[i], &fx, &fy);
-            if (P->noise_ang > 0.0f && (fx != 0.0f || fy != 0.0f)) {
-                float a = P->noise_ang * rng_fsym(&s->seed[i]);
-                float ca = cosf(a), sa = sinf(a);
-                float rx = fx * ca - fy * sa, ry = fx * sa + fy * ca;
-                fx = rx; fy = ry;
-            }
-        }
-        float dvx = fx * s->vpref[i] - s->vx[i];
-        float dvy = fy * s->vpref[i] - s->vy[i];
-        float dl = sqrtf(dvx * dvx + dvy * dvy);
-        if (dl > amax_dt) { float k = amax_dt / dl; dvx *= k; dvy *= k; }
-        s->vx[i] = (s->vx[i] + dvx) * damp;
-        s->vy[i] = (s->vy[i] + dvy) * damp;
-    }
+    /* 1) steering toward flow field + noise, bounded acceleration (parallel:
+     * per-agent, own RNG seed). Dormant agents brake to rest; flyers ballistic. */
+    simpool_parallel_for(s->pool, s->count, 2048, job_steering, &ctx);
 
-    /* 2) integrate (save pre-projection position); fly the fake z axis */
+    /* 2) integrate (save pre-projection position); fly the fake z axis.
+     * Serial: cheap, and touchdown appends to landed[] (shared cursor). */
     for (int i = 0; i < s->count; i++) {
         s->qx[i] = s->px[i]; s->qy[i] = s->py[i];
         s->px[i] += s->vx[i] * dt;
@@ -1131,35 +1239,30 @@ int simp_step(SimP *s, float dt) {
         }
     }
 
-    /* 3) constraints: agent-agent (PBD) + walls, iterated. The siege sensor
-     * (SIEGE_DESIGN.md) is reset, then filled on the FINAL wall projection. */
+    /* 3) constraints: agent-agent (PBD, parallel colored tiles) + walls
+     * (parallel per-agent), iterated. The siege sensor (SIEGE_DESIGN.md) is
+     * reset, then filled on the FINAL wall projection. */
     for (int i = 0; i < s->count; i++) {
         s->wall_pressure[i] = 0.0f;
         s->wall_cell[i] = -1;
     }
     rebuild_grid(s);
+    for (int w = 0; w < s->nthreads; w++) { s->diag_sum_w[w] = 0.0; s->diag_n_w[w] = 0; }
     for (int it = 0; it < P->pbd_iters; it++) {
-        pbd_iteration(s);
-        wall_projection(s, it == P->pbd_iters - 1);
+        pbd_iteration(s, &ctx);
+        ctx.wall_record = (it == P->pbd_iters - 1);
+        simpool_parallel_for(s->pool, s->count, 2048, job_wall, &ctx);
+    }
+    /* reduce per-worker overlap diagnostics in fixed order (deterministic) */
+    for (int w = 0; w < s->nthreads; w++) {
+        s->diag_overlap_sum += (float)s->diag_sum_w[w];
+        s->diag_overlap_n   += (int)s->diag_n_w[w];
     }
 
-    /* 4) recover effective velocity from positional change. Flyers keep
-     * their integrated velocity (they take no projections; clamping would
-     * cut hard launches short). */
-    const float inv_dt = 1.0f / dt;
-    const float vc = P->v_clamp;
-    for (int i = 0; i < s->count; i++) {
-        if (s->aflags[i] & SIMP_FLYING) continue;
-        float nvx = (s->px[i] - s->qx[i]) * inv_dt;
-        float nvy = (s->py[i] - s->qy[i]) * inv_dt;
-        float sp2 = nvx * nvx + nvy * nvy;
-        if (sp2 > vc * vc) {
-            float k = vc / sqrtf(sp2);
-            nvx *= k; nvy *= k;
-        }
-        s->vx[i] = nvx;
-        s->vy[i] = nvy;
-    }
+    /* 4) recover effective velocity from positional change (parallel). Flyers
+     * keep their integrated velocity (no projections; clamping would cut hard
+     * launches short — job_recover skips them). */
+    simpool_parallel_for(s->pool, s->count, 2048, job_recover, &ctx);
 
     /* 5) drain agents standing on goal cells (iterate backward: swap-and-pop).
      * Dormant agents are exempt: a sleeper shoved across a goal cell is not

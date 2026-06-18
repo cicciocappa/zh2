@@ -140,6 +140,12 @@ void  simp_destroy(SimP *s);
 
 SimPParams *simp_params(SimP *s);          /* live-tweakable               */
 
+/* Worker-thread count for simp_step (M4). Default = online CPUs, or the
+ * SIMP_THREADS env var. Results are IDENTICAL for any count (colored-tile PBD
+ * writes disjoint data) — purely a speed knob. simp_set_threads(s,1) = serial. */
+void  simp_set_threads(SimP *s, int nthreads);
+int   simp_threads(const SimP *s);
+
 /* ---- terrain & goals (nav grid coordinates) ----------------------------- */
 
 void  simp_set_wall(SimP *s, int cx, int cy, bool solid);

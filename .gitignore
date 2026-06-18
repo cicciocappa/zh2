@@ -12,6 +12,7 @@ test_density_route
 test_jam
 test_scene
 test_siege
+bench_sim
 *.o
 frames/
 scene_saved.txt

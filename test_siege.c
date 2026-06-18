@@ -43,10 +43,13 @@
 #define ATTACK_PERIOD 0.8f      /* s between hits while pressing       */
 #define ATTACK_DAMAGE 5.0f      /* HP per hit                          */
 #define STRUCT_HP     2000.0f   /* destructible band starting HP       */
-#define ATTACK_MIN_P  0.004f    /* min wall_pressure to count as a real attack:
+#define ATTACK_MIN_P  0.006f    /* min wall_pressure to count as a real attack:
                                  * a tangential brush leaks a near-zero pressure
                                  * (into_wall ~ 0), and without a floor even that
-                                 * would slowly chip a wall. Gate it out. */
+                                 * would slowly chip a wall. Gate it out. (M4: the
+                                 * colored-tile PBD sweep nudged the tangent leak
+                                 * 0.0037->0.0043, still 8x below the head-on
+                                 * 0.0316; floor lifted from 0.004 for margin.) */
 
 /* ============================ A) SELECTIVITY ============================== */
 /* A horizontal wall at cy=WR with the agents just SOUTH of it (larger y),

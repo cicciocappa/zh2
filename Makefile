@@ -1,6 +1,6 @@
 # sim_particles — granular horde core (M1+M2)
 CC      ?= gcc
-CFLAGS  ?= -O2 -Wall -Wextra -std=c11
+CFLAGS  ?= -O2 -Wall -Wextra -std=c11 -pthread
 LDLIBS   = -lm
 
 # SDL3 built from source lives in ~/.local (its .pc already carries the rpath)
@@ -84,6 +84,6 @@ test: all
 clean:
 	rm -rf test_particles test_impulse test_dormant test_handles test_query \
 	       test_corpses test_types test_density_route test_jam test_scene \
-	       test_siege sandbox sprite_view frames
+	       test_siege bench_sim sandbox sprite_view frames
 
 .PHONY: all test clean

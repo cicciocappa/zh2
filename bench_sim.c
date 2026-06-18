@@ -63,9 +63,15 @@ int main(int argc, char **argv) {
         total += e; if (e < mn) mn = e; if (e > mx) mx = e;
     }
     double avg = total / measure;
-    printf("bench_sim %s: N=%d placed=%d | core_sim avg %.3f ms (min %.3f, max %.3f) "
-           "| %.3f ms/1000 | %.0f steps/s\n",
-           path, target, placed, avg, mn, mx, avg / placed * 1000.0, 1000.0 / avg);
+    /* position checksum: identical across thread counts proves the colored-tile
+     * PBD is deterministic (sum is order-independent over the final positions) */
+    const float *px = simp_px(s), *py = simp_py(s);
+    double csum = 0; int cn = simp_count(s);
+    for (int i = 0; i < cn; i++) csum += (double)px[i] * 1.0009 + (double)py[i] * 1.0003;
+    printf("bench_sim %s: N=%d placed=%d thr=%d | core_sim avg %.3f ms (min %.3f, max %.3f) "
+           "| %.3f ms/1000 | %.0f steps/s | live=%d checksum=%.6f\n",
+           path, target, placed, simp_threads(s), avg, mn, mx,
+           avg / placed * 1000.0, 1000.0 / avg, cn, csum);
     simp_destroy(s); scene_free(&sc);
     return 0;
 }

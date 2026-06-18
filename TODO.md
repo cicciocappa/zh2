@@ -124,10 +124,16 @@ poi scala, poi gioco.
       dell'APU (Vega integrata); usare `bench_sim` per i numeri CPU veri.
       Il vero margine M4 serve per >50k e per liberare la CPU dal lavoro di
       gioco, non perché 20-50k non ci stiano.
-- [ ] **Multithreading PBD a tile colorati**: partizionare la griglia di collisione
-      in tile a scacchiera (4 colori in 2D), processare in parallelo i tile dello
-      stesso colore, barriera tra colori. Zero lock. Steering/integrazione/recovery
-      sono embarrassingly parallel.
+- [x] **Multithreading PBD a tile colorati** (vedi `M4_DESIGN.md`). Thread pool
+      pthreads header-only (`sim_threads.h`), parallel_for a cursore atomico.
+      Parallelizzati: steering, PBD (tile 2×2 a 4 colori, `PBD_TILE=4`),
+      wall_projection, velocity recovery. Seriali: integrate, rebuild_grid, nav,
+      drain. DETERMINISTICO a qualunque thread count (checksum identico su
+      1..28 thr). `SIMP_THREADS`/`simp_set_threads`. Risultati 50k: i7-14700
+      4.2× (10.3→2.5 ms, ginocchio ~16 thr); Ryzen-3750H 1.46× (APU
+      bandwidth-bound). Unico ritocco test: floor `test_siege` 0.004→0.006.
+- [ ] **Spike nav (Dijkstra) ora è il frame peggiore** (`max` ~7-8 ms non scala
+      coi thread): ricalcolo incrementale / async su worker / flow parallelo.
 - [ ] SIMD sui loop di steering e integrazione (SoA già pronto); verificare che
       l'autovettorizzazione faccia già il lavoro prima di scrivere intrinsics.
 - [ ] Riordino periodico degli agenti in memoria secondo l'ordine della griglia
