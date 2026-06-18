@@ -166,6 +166,32 @@ export-FBX (Bug 1/2/3 qui sopra) è stata in parte un detour — per le VARIANTI
 passa più da Mixamo, quindi i settaggi di export contano solo per riggare un modello
 NUOVO da zero (lì resta valido `vat/export_mixamo_fbx.py`).
 
+## Quarta via — variante GIA' RIGGATA nel .blend (niente Mixamo, niente transfer)
+
+Quando il rig vive gia' nel file di modeling (mesh + armatura `mixamorig` riggate a
+mano in Blender) non serve ne' l'auto-rig Mixamo ne' un transfer di pesi: si esporta
+direttamente mesh **e** armatura in FBX e si baka. E' il caso piu' semplice — usato per
+`fem_version_skirt` (la gonna aggiunge geometria → topologia diversa da base e fem, ma
+il rig era gia' nel blend).
+
+1. **`vat/export_rigged_fbx.py`** — esporta mesh+armatura del .blend aperto in FBX, con
+   gli assi della pipeline (`axis_up='Y'`, `axis_forward='-Z'`, `bake_anim=False`). A
+   differenza di `export_mixamo_fbx.py` (sola mesh, per l'upload all'auto-rig) qui il rig
+   c'e' gia' e va portato fuori intatto. Uso:
+   `blender --background blend/<modello>.blend --python vat/export_rigged_fbx.py --
+   blend/<modello>_rigged.fbx`
+2. **`vat/bake_zombie.sh blend/<modello>_rigged.fbx vat/assets/<nome>`** → le 13 clip.
+
+**Texture:** il baker NON esporta il diffuse (`<prefix>_diffuse.png`, caricato da
+`vat_view`/`vat_layer` per UV). Al momento le texture dei modelli sono PLACEHOLDER
+(`blend/texmap.png`, 256×256), quindi non si versiona nessun `_diffuse.png` per le
+varianti: si copiera' la texture definitiva quando ci sara'. Senza diffuse il viewer va
+in flat shading (`no png ... (flat shading)`), il deform/baking resta corretto.
+
+**Stato:** `vat/assets/zombie_fem_skirt_*` bakato il 18/6 via questa via → stride walk
+1.3337, scale 0.01114 (come la fem), 13 clip, in piedi e deforma corretto con la gonna
+visibile (verificato `vat_view` shot). Ultima variante zombie.
+
 ## Manopole aggiunte al baker durante il debug
 
 `vat/bake_vat.py` ha ora `--rotx/--roty/--rotz <gradi>` (rotazione del modello via
