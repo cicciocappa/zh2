@@ -25,7 +25,8 @@ end)`: l'indice worker serve solo per accumulare diagnostiche in slot per-worker
 | **PBD (Gauss-Seidel)** | ✅ parallel | **tile colorate**, vedi sotto |
 | wall_projection | ✅ parallel | per-agente, sensore d'assedio scrive solo il proprio slot |
 | velocity recovery | ✅ parallel | per-agente |
-| nav (Dijkstra phi/flow) | seriale | spike ogni `flow_period`; **prossimo collo di bottiglia** |
+| nav: density blur + flow | ✅ parallel | per-cella (lo scatter dell'istogramma resta seriale) |
+| nav: Dijkstra (phi) | seriale **a budget** | drenato su ~6 step, vedi sotto |
 | drain / corpse decay | seriale | swap-and-pop |
 
 ## PBD a tile colorate (il cuore)
@@ -51,9 +52,32 @@ i7-14700 (28 thr): 10.3 ms (1t) → 3.6 (8t) → 2.5 (28t) = **4.2×**, ginocchi
 ~16 thr. Ryzen 7 3750H (4c/8t, APU): 1.46× (banda di memoria + APU). Il `max`
 per-step (~7-8 ms) non scala: è il ricalcolo nav seriale.
 
+## Nav spike: Dijkstra incrementale a budget (FATTO)
+
+Lo spike nav (~7.6 ms ogni `flow_period`) si scomponeva: `density_update` 1.3 ms,
+`recompute_phi` (Dijkstra) 4.6 ms, `recompute_flow` 1.7 ms. Solo il Dijkstra è
+intrinsecamente seriale (label-setting). Soluzione in due parti:
+
+- **density blur + flow paralleli** (`job_density_blur`, `job_flow_dir/smooth`):
+  per-cella, scritture disgiunte → deterministici a qualunque thread count. Lo
+  scatter dell'istogramma resta seriale (cheap; un scatter parallelo vorrebbe
+  atomics/bin per-thread per restare deterministico). Il `peak` per `rho_active`
+  è una riduzione seriale.
+- **Dijkstra a budget** (`nav_phi_begin` + `nav_phi_drain(budget)`): l'heap è
+  persistente tra step (`nav_heap_n`), si drenano `nav_budget = gw·gh/6` pop per
+  step. phi viene costruito IN-PLACE su più step — ma niente nei loop caldi legge
+  phi (solo `recompute_flow`, a heap vuoto), quindi gli agenti continuano a
+  leggere il flow COMMITTATO finché il build non finisce e si committa il nuovo
+  flow. Inputs congelati (rho_s/cost_mult al `begin`), schedule a budget fisso +
+  heap seriale → il risultato NON dipende da thread/timing: **phi bit-identico**
+  al monolitico, solo committato ~6 step dopo (latenza << `flow_period` 30 step).
+  Una terrain edit (`nav_dirty`) abortisce il build in corso e fa il commit
+  sincrono pieno. Determinismo verificato: checksum `bench_sim` identico su 1/4/8
+  thr. **Risultato 50k/8core (i7→Ryzen-3750H): max 15.5→9.4 ms, avg invariato
+  6.6 ms** (lo spike non domina più il frame peggiore). 11/11 test PASS.
+
 ## Prossimi passi
-1. **Nav spike**: il Dijkstra seriale è ora il frame peggiore. Opzioni:
-   ricalcolo incrementale, async su un worker, o parallelizzazione del flow.
-2. rebuild_grid parallelo (istogrammi per-thread) se il profiling lo chiede.
-3. SIMD su steering/integrate/recovery (verificare prima l'autovettorizzazione).
-4. Riordino periodico degli agenti per località di cache (~ogni 60 step).
+1. rebuild_grid parallelo (istogrammi per-thread) se il profiling lo chiede:
+   il counting sort seriale O(N) è ora il prossimo candidato del frame medio.
+2. SIMD su steering/integrate/recovery (verificare prima l'autovettorizzazione).
+3. Riordino periodico degli agenti per località di cache (~ogni 60 step).

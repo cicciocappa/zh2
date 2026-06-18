@@ -43,7 +43,13 @@ Il progetto ha DUE modelli di simulazione complementari:
      murati non cambiano. phi/flow si ricalcolano su throttle
      (`flow_period`, default 0.5 s) quando densità o costi cambiano; le
      modifiche al terreno forzano il commit completo subito. Scratch nav
-     preallocati: niente malloc in `simp_step`.
+     preallocati: niente malloc in `simp_step`. M4: il Dijkstra throttled è
+     DRENATO A BUDGET su ~6 step (`nav_phi_begin`/`nav_phi_drain`, heap
+     persistente, `NAV_BUDGET_DIV`) per non spikare un singolo frame — phi
+     costruito in-place mentre gli agenti leggono il flow COMMITTATO, commit
+     del nuovo flow solo a heap vuoto; deterministico (budget fisso + heap
+     seriale, phi bit-identico al monolitico). density blur e flow sono
+     parallelizzati col pool (per-cella).
    - **Steering**: verso il flow a velocità preferita per-agente, accelerazione
      limitata (`a_max`), rumore angolare per-step (`noise_ang`) + jitter di velocità
      e raggio per-agente (anti-lockstep).

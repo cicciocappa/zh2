@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <limits.h>
 
 /* ------------------------------------------------------------------ utils */
 
@@ -67,6 +68,16 @@ struct SimP {
     /* preallocated nav scratch (recomputes run inside simp_step: no malloc) */
     void    *heap_nodes;   /* HNode[gw*gh*8] for the Dijkstra */
     float   *flow_tx, *flow_ty;
+
+    /* M4: incremental Dijkstra. The throttled phi recompute is the worst frame
+     * (serial, doesn't scale with threads), so it is drained in fixed-size
+     * budgets across consecutive steps instead of all at once. phi is built into
+     * its own buffer while agents keep reading the COMMITTED flow; when the heap
+     * empties, flow is recomputed and committed. The schedule (fixed budget,
+     * serial heap) is independent of thread count, so determinism holds. */
+    int      nav_phase;    /* 0 = idle, 1 = a phi build is draining */
+    int      nav_heap_n;   /* persistent heap size between budget chunks */
+    int      nav_budget;   /* heap pops drained per step (gw*gh / NAV_BUDGET_DIV) */
 
     /* agents (SoA) */
     int   count, cap;
@@ -167,7 +178,14 @@ static HNode heap_pop(Heap *h) {
  * WALL_ENTER (phi is in cell units; the whole grid is a few hundred cells). */
 #define WALL_ENTER 5000.0f
 
-static void recompute_phi(SimP *s) {
+/* M4: a throttled phi recompute is drained in ~this many per-step budgets to
+ * cap the worst-frame cost. Bigger = finishes sooner but taller spike. */
+#define NAV_BUDGET_DIV 6
+
+/* Seed a fresh phi build: reset phi, rebuild the per-destination edge multiplier
+ * (M3.5 user cost + M3.6 density), push the goals onto the heap. The heap is left
+ * persistent in s->heap_nodes (size in s->nav_heap_n) for nav_phi_drain. */
+static void nav_phi_begin(SimP *s) {
     const int n = s->gw * s->gh;
     for (int i = 0; i < n; i++) s->phi[i] = PHI_INF;
 
@@ -196,13 +214,22 @@ static void recompute_phi(SimP *s) {
     Heap h; h.a = (HNode *)s->heap_nodes; h.n = 0;
     for (int i = 0; i < n; i++)
         if (s->goal[i] && !s->solid[i]) { s->phi[i] = 0.0f; heap_push(&h, 0.0f, i); }
+    s->nav_heap_n = h.n;
+}
 
+/* Drain up to `budget` heap pops of the in-progress phi build (Dijkstra). Stops
+ * early if the heap empties (build complete). Resumes from the persistent heap on
+ * the next call: the result is bit-identical to draining it all at once, only
+ * spread across steps. budget = INT_MAX runs it to completion in one call. */
+static void nav_phi_drain(SimP *s, int budget) {
     static const int   DX[8] = { 1,-1, 0, 0, 1, 1,-1,-1 };
     static const int   DY[8] = { 0, 0, 1,-1, 1,-1, 1,-1 };
     static const float DC[8] = { 1,1,1,1, 1.41421356f,1.41421356f,1.41421356f,1.41421356f };
 
-    while (h.n > 0) {
-        HNode nd = heap_pop(&h);
+    Heap h; h.a = (HNode *)s->heap_nodes; h.n = s->nav_heap_n;
+    int popped = 0;
+    while (h.n > 0 && popped < budget) {
+        HNode nd = heap_pop(&h); popped++;
         if (nd.c > s->phi[nd.i]) continue;          /* stale entry */
         int cx = nd.i % s->gw, cy = nd.i / s->gw;
         for (int k = 0; k < 8; k++) {
@@ -217,65 +244,99 @@ static void recompute_phi(SimP *s) {
             if (nc < s->phi[j]) { s->phi[j] = nc; heap_push(&h, nc, j); }
         }
     }
+    s->nav_heap_n = h.n;
+}
+
+/* full synchronous phi (terrain edits must take effect immediately) */
+static void recompute_phi(SimP *s) {
+    nav_phi_begin(s);
+    nav_phi_drain(s, INT_MAX);
+}
+
+/* direction = toward the lowest-phi reachable neighbour (M4: per-cell parallel) */
+static void job_flow_dir(void *arg, int worker, int begin, int end) {
+    (void)worker;
+    SimP *s = arg; const int gw = s->gw, gh = s->gh;
+    for (int i = begin; i < end; i++) {
+        int cx = i % gw, cy = i / gw;
+        s->flow_x[i] = 0.0f; s->flow_y[i] = 0.0f;
+        if (s->solid[i] || s->phi[i] >= PHI_INF) continue;
+        float best = s->phi[i];
+        float bx = 0.0f, by = 0.0f;
+        for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            int nx = cx + dx, ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+            int j = ny * gw + nx;
+            /* wall neighbours stay in the running: their phi is lower than
+             * ours only when our own phi went THROUGH that wall (sealed
+             * pocket), in which case the flow points INTO the wall and the
+             * horde presses against it (siege). On open routes wall phi is
+             * higher by >= WALL_ENTER, so it never wins. */
+            if (dx && dy && !s->solid[j] &&
+                (s->solid[cy * gw + nx] || s->solid[ny * gw + cx])) continue;
+            if (s->phi[j] < best) { best = s->phi[j]; bx = (float)dx; by = (float)dy; }
+        }
+        float len = sqrtf(bx * bx + by * by);
+        if (len > 0.0f) { s->flow_x[i] = bx / len; s->flow_y[i] = by / len; }
+    }
+}
+
+/* one smoothing pass (skip walls), then renormalize, into flow_tx/flow_ty */
+static void job_flow_smooth(void *arg, int worker, int begin, int end) {
+    (void)worker;
+    SimP *s = arg; const int gw = s->gw, gh = s->gh;
+    float *tx = s->flow_tx, *ty = s->flow_ty;
+    for (int i = begin; i < end; i++) {
+        int cx = i % gw, cy = i / gw;
+        if (s->solid[i]) { tx[i] = ty[i] = 0.0f; continue; }
+        float ax = 0.0f, ay = 0.0f; int n = 0;
+        for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+            int nx = cx + dx, ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+            int j = ny * gw + nx;
+            if (s->solid[j]) continue;
+            ax += s->flow_x[j]; ay += s->flow_y[j]; n++;
+        }
+        if (n) { ax /= (float)n; ay /= (float)n; }
+        float len = sqrtf(ax * ax + ay * ay);
+        if (len > 1e-6f) { tx[i] = ax / len; ty[i] = ay / len; }
+        else             { tx[i] = s->flow_x[i]; ty[i] = s->flow_y[i]; }
+    }
 }
 
 static void recompute_flow(SimP *s) {
-    const int gw = s->gw, gh = s->gh;
-    /* direction = toward the lowest-phi reachable neighbour */
-    for (int cy = 0; cy < gh; cy++) {
-        for (int cx = 0; cx < gw; cx++) {
-            int i = cy * gw + cx;
-            s->flow_x[i] = 0.0f; s->flow_y[i] = 0.0f;
-            if (s->solid[i] || s->phi[i] >= PHI_INF) continue;
-            float best = s->phi[i];
-            float bx = 0.0f, by = 0.0f;
-            for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
-                if (!dx && !dy) continue;
-                int nx = cx + dx, ny = cy + dy;
-                if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
-                int j = ny * gw + nx;
-                /* wall neighbours stay in the running: their phi is lower than
-                 * ours only when our own phi went THROUGH that wall (sealed
-                 * pocket), in which case the flow points INTO the wall and the
-                 * horde presses against it (siege). On open routes wall phi is
-                 * higher by >= WALL_ENTER, so it never wins. */
-                if (dx && dy && !s->solid[j] &&
-                    (s->solid[cy * gw + nx] || s->solid[ny * gw + cx])) continue;
-                if (s->phi[j] < best) { best = s->phi[j]; bx = (float)dx; by = (float)dy; }
-            }
-            float len = sqrtf(bx * bx + by * by);
-            if (len > 0.0f) { s->flow_x[i] = bx / len; s->flow_y[i] = by / len; }
-        }
-    }
-    /* one smoothing pass (skip walls), then renormalize */
-    float *tx = s->flow_tx;
-    float *ty = s->flow_ty;
-    for (int cy = 0; cy < gh; cy++) {
-        for (int cx = 0; cx < gw; cx++) {
-            int i = cy * gw + cx;
-            if (s->solid[i]) { tx[i] = ty[i] = 0.0f; continue; }
-            float ax = 0.0f, ay = 0.0f; int n = 0;
-            for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
-                int nx = cx + dx, ny = cy + dy;
-                if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
-                int j = ny * gw + nx;
-                if (s->solid[j]) continue;
-                ax += s->flow_x[j]; ay += s->flow_y[j]; n++;
-            }
-            if (n) { ax /= (float)n; ay /= (float)n; }
-            float len = sqrtf(ax * ax + ay * ay);
-            if (len > 1e-6f) { tx[i] = ax / len; ty[i] = ay / len; }
-            else             { tx[i] = s->flow_x[i]; ty[i] = s->flow_y[i]; }
-        }
-    }
-    memcpy(s->flow_x, tx, sizeof(float) * (size_t)gw * gh);
-    memcpy(s->flow_y, ty, sizeof(float) * (size_t)gw * gh);
+    const int n = s->gw * s->gh;
+    /* two passes (smooth reads what dir wrote): the parallel_for return is the
+     * barrier between them. Both per-cell, deterministic for any thread count. */
+    simpool_parallel_for(s->pool, n, 4096, job_flow_dir, s);
+    simpool_parallel_for(s->pool, n, 4096, job_flow_smooth, s);
+    memcpy(s->flow_x, s->flow_tx, sizeof(float) * (size_t)n);
+    memcpy(s->flow_y, s->flow_ty, sizeof(float) * (size_t)n);
 }
 
 /* M3.6: refresh the smoothed density field from current agent positions.
  * Fresh histogram (grounded agents + corpse weight), 3x3 blur folded into a
  * temporal EMA: rho_s tracks the crowd with ~2 recompute periods of lag,
  * which is exactly what stops the flow from flickering between routes. */
+/* per-cell 3x3 blur of rho_raw/jam_raw folded into the rho_s/jam_s EMA (M4) */
+static void job_density_blur(void *arg, int worker, int begin, int end) {
+    (void)worker;
+    SimP *s = arg; const int gw = s->gw, gh = s->gh;
+    for (int i = begin; i < end; i++) {
+        int cx = i % gw, cy = i / gw;
+        float acc = 0.0f, jacc = 0.0f; int cnt = 0;
+        for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+            int nx = cx + dx, ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+            acc  += s->rho_raw[ny * gw + nx];
+            jacc += s->jam_raw[ny * gw + nx]; cnt++;
+        }
+        s->rho_s[i] = s->rho_s[i] * (1.0f - RHO_EMA) + (acc / (float)cnt) * RHO_EMA;
+        s->jam_s[i] = s->jam_s[i] * (1.0f - RHO_EMA) + (jacc / (float)cnt) * RHO_EMA;
+    }
+}
+
 static void density_update(SimP *s) {
     const int gw = s->gw, gh = s->gh, n = gw * gh;
     memset(s->rho_raw, 0, (size_t)n * sizeof(float));
@@ -300,22 +361,15 @@ static void density_update(SimP *s) {
         s->rho_raw[cy * gw + cx] += CORPSE_RHO;
         s->jam_raw[cy * gw + cx] += CORPSE_RHO;
     }
+    /* 3x3 blur folded into the EMA, per cell (M4: parallel). The histogram
+     * scatter above stays serial (cheap, and a parallel scatter would need
+     * atomics/per-thread bins to stay deterministic). */
+    simpool_parallel_for(s->pool, n, 4096, job_density_blur, s);
+
+    /* peak feeds rho_active only; a plain serial reduction keeps it deterministic
+     * (40k reads, negligible next to the blur it follows) */
     float peak = 0.0f;
-    for (int cy = 0; cy < gh; cy++) {
-        for (int cx = 0; cx < gw; cx++) {
-            float acc = 0.0f, jacc = 0.0f; int cnt = 0;
-            for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
-                int nx = cx + dx, ny = cy + dy;
-                if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
-                acc  += s->rho_raw[ny * gw + nx];
-                jacc += s->jam_raw[ny * gw + nx]; cnt++;
-            }
-            int i = cy * gw + cx;
-            s->rho_s[i] = s->rho_s[i] * (1.0f - RHO_EMA) + (acc / (float)cnt) * RHO_EMA;
-            s->jam_s[i] = s->jam_s[i] * (1.0f - RHO_EMA) + (jacc / (float)cnt) * RHO_EMA;
-            if (s->rho_s[i] > peak) peak = s->rho_s[i];
-        }
-    }
+    for (int i = 0; i < n; i++) if (s->rho_s[i] > peak) peak = s->rho_s[i];
     /* keeps the throttled recompute alive until an emptied map decays out
      * (jam_raw <= rho_raw cell-wise, so the rho peak covers both fields) */
     s->rho_active = peak > 0.01f;
@@ -440,6 +494,11 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->cost_dirty = false;
     s->rho_active = false;
     s->flow_timer = 0.0f;
+    s->nav_phase = 0;
+    /* spread the throttled phi build over ~NAV_BUDGET_DIV steps so no single
+     * frame eats the whole Dijkstra; well under flow_period (~30 steps) so a
+     * build always finishes before the next throttle tick */
+    s->nav_budget = (int)(n / NAV_BUDGET_DIV); if (s->nav_budget < 1) s->nav_budget = 1;
 
     s->cap = max_agents;
     /* px/py/rad/invm/seed carry CORPSE_CAP extra slots: corpse ghosts are
@@ -1181,11 +1240,21 @@ int simp_step(SimP *s, float dt) {
     const SimPParams *P = &s->params;
     /* navigation: terrain edits force a full commit (phi+flow+SDF, reads the
      * current rho_s/cost_user); otherwise phi+flow alone are refreshed on a
-     * throttle whenever density matters or user costs changed (M3.6) */
+     * throttle whenever density matters or user costs changed (M3.6).
+     * M4: the throttled phi is drained incrementally over several steps (a fixed
+     * budget per step) so it never spikes a single frame; flow is committed only
+     * when the heap empties, agents read the previous flow until then. */
     if (s->nav_dirty) {
+        s->nav_phase = 0;                /* drop any in-progress incremental build */
         nav_commit(s);
         s->flow_timer = 0.0f;
         s->cost_dirty = false;
+    } else if (s->nav_phase == 1) {      /* a phi build is in progress: keep draining */
+        nav_phi_drain(s, s->nav_budget);
+        if (s->nav_heap_n == 0) {        /* heap empty: build done, commit the flow */
+            recompute_flow(s);
+            s->nav_phase = 0;
+        }
     } else if (P->flow_period > 0.0f) {
         s->flow_timer += dt;
         if (s->flow_timer >= P->flow_period) {
@@ -1194,9 +1263,11 @@ int simp_step(SimP *s, float dt) {
                 (s->count > 0 || s->corpse_count > 0 || s->rho_active);
             if (density_on || s->cost_dirty) {
                 density_update(s);
-                recompute_phi(s);
-                recompute_flow(s);
+                nav_phi_begin(s);          /* seed the heap (frozen inputs) */
+                nav_phi_drain(s, s->nav_budget);
                 s->cost_dirty = false;
+                if (s->nav_heap_n == 0) recompute_flow(s);  /* drained in one go */
+                else                    s->nav_phase = 1;    /* finish over next steps */
             }
         }
     }

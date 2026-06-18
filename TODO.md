@@ -132,8 +132,16 @@ poi scala, poi gioco.
       1..28 thr). `SIMP_THREADS`/`simp_set_threads`. Risultati 50k: i7-14700
       4.2× (10.3→2.5 ms, ginocchio ~16 thr); Ryzen-3750H 1.46× (APU
       bandwidth-bound). Unico ritocco test: floor `test_siege` 0.004→0.006.
-- [ ] **Spike nav (Dijkstra) ora è il frame peggiore** (`max` ~7-8 ms non scala
+- [x] **Spike nav (Dijkstra) ora è il frame peggiore** (`max` ~7-8 ms non scala
       coi thread): ricalcolo incrementale / async su worker / flow parallelo.
+      FATTO: (a) `density_update` (blur) e `recompute_flow` parallelizzati col
+      pool (per-cella, deterministici); (b) il Dijkstra throttled è DRENATO A
+      BUDGET su ~6 step (`nav_phi_begin`/`nav_phi_drain`, heap persistente,
+      `NAV_BUDGET_DIV`): phi costruito in un buffer mentre gli agenti leggono il
+      flow COMMITTATO, commit del flow solo a heap vuoto. Schedule a budget fisso
+      + heap seriale ⇒ DETERMINISTICO a qualunque thread count (checksum
+      bench_sim identico su 1/4/8 thr). 50k/8core i7→ Ryzen-3750H: max
+      15.5→9.4 ms (avg invariato 6.6); 11/11 test PASS, drain 81.5%.
 - [ ] SIMD sui loop di steering e integrazione (SoA già pronto); verificare che
       l'autovettorizzazione faccia già il lavoro prima di scrivere intrinsics.
 - [ ] Riordino periodico degli agenti in memoria secondo l'ordine della griglia
