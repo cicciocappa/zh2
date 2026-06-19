@@ -144,9 +144,13 @@ static void apply_damage(DefGame *g, SimPHandle h, const DefTurret *t) {
 
 /* ---- turret update ---- */
 
+#define TRACER_TTL 0.05f
+
 static void turret_update(DefGame *g, DefTurret *t, float dt) {
     SimP *s = g->s;
     const float *px = simp_px(s), *py = simp_py(s);
+    t->fired = 0;
+    if (t->tracer_ttl > 0.0f) t->tracer_ttl -= dt;
 
     /* acquire: nearest live agent inside range AND arc */
     float cx = (t->arc_min + t->arc_max) * 0.5f;
@@ -183,10 +187,13 @@ static void turret_update(DefGame *g, DefTurret *t, float dt) {
     if (t->fire_timer < t->fire_period) return;
     t->fire_timer -= t->fire_period;
     g->shots++;
+    t->fired = 1;
+    t->tracer_ttl = TRACER_TTL;
 
     int max_out = t->piercing ? MAXPIERCE : 1;
     int nh = simp_query_ray(s, t->x, t->y, cosf(t->ang), sinf(t->ang),
                             t->range, g->raybuf, g->rayt, max_out, 0);
+    t->last_t = (nh > 0) ? g->rayt[0] : t->range;
     if (nh <= 0) return;
     int count = t->piercing ? nh : 1;
     /* convert ALL hits to handles before any kill (M3.4 index trap) */

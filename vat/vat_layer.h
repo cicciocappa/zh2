@@ -46,6 +46,11 @@ void vat_layer_set_random_count(VatLayer *vl, int n);
  * PRIMA che vat_layer_update veda l'agente; consumata al primo update (lo slot
  * riusato torna libero). slot = simp_slot_of(s, indice_spawnato). */
 void vat_layer_pin_variant(VatLayer *vl, int slot, int variant);
+/* Cambia il body model di uno slot VIVO (es. zombie ferito → mesh crawler).
+ * No-op se è già quella variante; altrimenti ri-sceglie una clip valida per il
+ * layout del nuovo body. A differenza di pin_variant agisce su un agente già
+ * visto (mid-life). */
+void vat_layer_set_variant(VatLayer *vl, int slot, int variant);
 
 /* Avanza heading/FSM/fase. Stesso dt di simp_step (salta se in pausa). */
 void vat_layer_update(VatLayer *vl, const SimP *s, float dt);

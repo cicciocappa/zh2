@@ -93,6 +93,12 @@ void vat_layer_pin_variant(VatLayer *vl,int slot,int variant){
     vl->pin[slot]=variant+1; }
 void vat_layer_set_random_count(VatLayer *vl,int n){
     if(n<1)n=1; if(n>vl->nvar)n=vl->nvar; vl->nrandom=n; }
+void vat_layer_set_variant(VatLayer *vl,int slot,int variant){
+    if(slot<0||slot>=vl->max||variant<0||variant>=vl->nvar) return;
+    if(vl->var[slot]==(unsigned char)variant) return;   /* keep animating */
+    vl->var[slot]=(unsigned char)variant;
+    vl->state[slot]=ST_WALK; vl->blending[slot]=0;
+    vl->clipA[slot]=pick_clip(vl,variant,slot,ST_WALK); }
 
 /* stato voluto dalla velocità, con isteresi */
 static int want_state(int cur,float spd){

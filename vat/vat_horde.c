@@ -14,6 +14,7 @@
 #include "vat_layer.h"
 #include "sim_particles.h"
 #include "scene.h"
+#include "defense.h"
 
 #define MAXA 60000
 static float inst[MAXA*12];
@@ -30,31 +31,42 @@ static const char *PREFIX[] = {
 #define CRAWLER_VAR (NVAR-1)               /* indice del body crawler */
 #define NCOSMETIC   (NVAR-1)               /* le altre = body random cosmetici */
 
-/* crawler: striscia lento; il body viene pinnato a CRAWLER_VAR allo spawn */
-static const SimPAgentDesc CRAWLER = {0.30f, 0.6f, 1.0f};
+// --- spawn dei nemici come TIPI DI GIOCO (defense.c): la distribuzione decide
+// il body (HP/massa/velocità via la tabella EnemyDef), e il body sceglie la
+// mesh VAT cosmetica. I crawler NON si spawnano: emergono dai colpi (ferita
+// maimed_legs), che li ripinna a CRAWLER_VAR a runtime (vat_layer_set_variant).
+static DefBody roll_body(unsigned r){
+    unsigned k=r%100u;
+    if(k<40)return BT_MAN;   if(k<65)return BT_WOMAN;
+    if(k<80)return BT_OBESE; if(k<95)return BT_CHILD;  return BT_TANK; /* 5% */
+}
+static int body_variant(DefBody b, unsigned r){
+    switch(b){ case BT_MAN:return 0; case BT_OBESE:return (r&1)?1:3;
+        case BT_WOMAN:return (r&1)?2:5; case BT_CHILD:return 4;
+        case BT_TANK:return 1; default:return 0; }     /* tank = obeso scalato */
+}
+static void spawn_enemy(DefGame *g, SimP *s, VatLayer *vl, float x, float y, unsigned r){
+    DefBody b=roll_body(r);
+    SimPHandle h=def_spawn(g,x,y,b);
+    if(h==SIMP_HANDLE_INVALID)return;
+    int i=simp_index_of(s,h); int slot=simp_slot_of(s,i);
+    vat_layer_pin_variant(vl,slot,body_variant(b,r>>7));
+}
 
 // Benchmark prefill: popola il campo a `target` agenti su un lattice jitterato
 // (passo = sqrt(area/target), clampato per non sovrapporre) → niente transitorio
 // PBD da spawn denso. Ritorna quanti effettivamente piazzati (free_at salta muri
-// e celle piene). ~80% walker, 20% runner.
-static int prefill_lattice(SimP *s, VatLayer *vl, const Scene *sc, int target){
+// e celle piene).
+static int prefill_lattice(SimP *s, DefGame *g, VatLayer *vl, const Scene *sc, int target){
     float W=sc->world_w, H=sc->world_h;
     float pitch=sqrtf(W*H/(float)target); if(pitch<0.62f)pitch=0.62f;
-    SimPAgentDesc runner={0.30f,3.6f,1.0f};
     unsigned rng=99; int n=0;
     for(float y=pitch*0.5f; y<H && n<target; y+=pitch)
         for(float x=pitch*0.5f; x<W && n<target; x+=pitch){
             rng^=rng<<13;rng^=rng>>17;rng^=rng<<5;
             float jx=x+((rng%1000)/1000.0f-0.5f)*pitch*0.4f;
             float jy=y+(((rng>>10)%1000)/1000.0f-0.5f)*pitch*0.4f;
-            if(simp_free_at(s,jx,jy,0.34f)){
-                unsigned roll=(rng>>20)%100;
-                if(roll<15){ int i=simp_spawn_desc(s,jx,jy,&CRAWLER);
-                             if(i>=0) vat_layer_pin_variant(vl,simp_slot_of(s,i),CRAWLER_VAR); }
-                else if(roll<35) simp_spawn_desc(s,jx,jy,&runner);
-                else simp_spawn(s,jx,jy);
-                n++;
-            }
+            if(simp_free_at(s,jx,jy,0.34f)){ spawn_enemy(g,s,vl,jx,jy,rng>>16); n++; }
         }
     return n;
 }
@@ -111,6 +123,31 @@ static float *build_obstacle_mesh(const Scene *sc, int *out_nverts) {
     return buf;
 }
 
+// --- mesh statica delle torrette: un pilastrino per torretta (arancio = leggera,
+// rosso = pesante). Stesso layout 9-float del flat shader (pos, normal, color).
+static float *build_turret_mesh(DefGame *g, int *out_nv){
+    int nt=def_turret_count(g); int nv=nt*30;
+    float *buf=malloc((size_t)nv*9*sizeof(float)); int c=0;
+    for(int id=0;id<nt;id++){ DefTurret *t=def_turret(g,id);
+        float cx=t->x, cz=t->y, hw=0.32f, h=1.6f;
+        float cr=0.95f, cg=t->heavy?0.20f:0.55f, cb=0.10f;
+        float x0=cx-hw,x1=cx+hw,z0=cz-hw,z1=cz+hw;
+#define VT(PX,PY,PZ,NX,NY,NZ) do{float*o=buf+c*9;o[0]=PX;o[1]=PY;o[2]=PZ;\
+        o[3]=NX;o[4]=NY;o[5]=NZ;o[6]=cr;o[7]=cg;o[8]=cb;c++;}while(0)
+#define QT(ax,ay,az,bx,by,bz,px2,py2,pz2,dx,dy,dz,nx,ny,nz) do{ \
+        VT(ax,ay,az,nx,ny,nz);VT(bx,by,bz,nx,ny,nz);VT(px2,py2,pz2,nx,ny,nz); \
+        VT(ax,ay,az,nx,ny,nz);VT(px2,py2,pz2,nx,ny,nz);VT(dx,dy,dz,nx,ny,nz);}while(0)
+        QT(x0,h,z0, x1,h,z0, x1,h,z1, x0,h,z1, 0,1,0);    // top
+        QT(x1,0,z0, x1,0,z1, x1,h,z1, x1,h,z0, 1,0,0);    // +X
+        QT(x0,0,z1, x0,0,z0, x0,h,z0, x0,h,z1, -1,0,0);   // -X
+        QT(x0,0,z1, x1,0,z1, x1,h,z1, x0,h,z1, 0,0,1);    // +Z
+        QT(x1,0,z0, x0,0,z0, x0,h,z0, x1,h,z0, 0,0,-1);   // -Z
+#undef VT
+#undef QT
+    }
+    *out_nv=c; return buf;
+}
+
 int main(int argc, char **argv){
     const char *scene_path = argc > 1 ? argv[1] : "scenes/obstacles.scn";
     Scene sc;
@@ -139,7 +176,36 @@ int main(int argc, char **argv){
 
     SimP *s = scene_instantiate(&sc, MAXA);
     if(!s){ fprintf(stderr,"scene_instantiate fail\n"); return 1; }
-    if(fillN){ int got=prefill_lattice(s,vl,&sc,fillN);
+
+    // gameplay difensivo (M5): torrette in anello attorno alla base (centroide
+    // dei goal, fallback centro mondo), affacciate verso l'esterno.
+    DefGame *g = def_create(s, MAXA);
+    float bcx=sc.world_w*0.5f, bcy=sc.world_h*0.5f;
+    if(sc.n_goal>0){ float sx=0,sy=0; for(int k=0;k<sc.n_goal;k++){
+            sx+=sc.goal[k].x+sc.goal[k].w*0.5f; sy+=sc.goal[k].y+sc.goal[k].h*0.5f; }
+        bcx=sx/sc.n_goal; bcy=sy/sc.n_goal; }
+#define NT 10
+    float mn = sc.world_w<sc.world_h?sc.world_w:sc.world_h;
+    float TR_R = 0.22f*mn;
+    int placed=0;
+    for(int i=0;i<NT;i++){ float th=(float)i*(6.2831853f/(float)NT);
+        float tx=bcx+TR_R*cosf(th), ty=bcy+TR_R*sinf(th);
+        /* salta le posizioni fuori dal mondo (base sul bordo → mezzo anello
+           cadrebbe fuori): restano le torrette che guardano l'orda in arrivo */
+        if(tx<1.0f||tx>sc.world_w-1.0f||ty<1.0f||ty>sc.world_h-1.0f) continue;
+        DefTurret t={0};
+        t.x=tx; t.y=ty; t.ang=th;
+        /* arco ampio = auto-target sul più vicino (ingaggio garantito per questo
+           primo aggancio; l'arco direzionale stretto è tuning gameplay futuro) */
+        float ha=3.15f; t.arc_min=th-ha; t.arc_max=th+ha;
+        t.sweep_dir=1; t.sweep_speed=3.0f; t.range=55.0f;
+        t.heavy=(i%4==2); t.piercing=(i%4==0);
+        t.fire_period=t.heavy?0.5f:0.10f; t.damage=t.heavy?0.0f:55.0f;
+        def_add_turret(g,&t); placed++; }
+    printf("torrette: %d piazzate (anello r=%.1f m attorno alla base (%.1f,%.1f))\n",
+           placed,(double)TR_R,(double)bcx,(double)bcy);
+
+    if(fillN){ int got=prefill_lattice(s,g,vl,&sc,fillN);
         printf("prefill: target %d -> %d agenti piazzati\n", fillN, got); }
 
     const char *shot=getenv("VAT_HORDE_SHOT");
@@ -172,6 +238,23 @@ int main(int argc, char **argv){
     glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
     glBindVertexArray(0); free(obMesh);
     printf("ostacoli: %d triangoli\n",obNV/3);
+
+    // torrette (statico) + tracer di fuoco (dinamico), stesso flat shader.
+    int turNV=0; float *turMesh=build_turret_mesh(g,&turNV);
+    GLuint turVao,turVbo; glGenVertexArrays(1,&turVao);glBindVertexArray(turVao);
+    glGenBuffers(1,&turVbo);glBindBuffer(GL_ARRAY_BUFFER,turVbo);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)turNV*9*sizeof(float),turMesh,GL_STATIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
+    glBindVertexArray(0); free(turMesh);
+    GLuint trVao,trVbo; glGenVertexArrays(1,&trVao);glBindVertexArray(trVao);
+    glGenBuffers(1,&trVbo);glBindBuffer(GL_ARRAY_BUFFER,trVbo);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)NT*2*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
+    glBindVertexArray(0);
 
     // carica un Asset (VAO+mesh+texture VAT) per variante.
     Asset A[NVAR];
@@ -208,9 +291,13 @@ int main(int argc, char **argv){
 
     float cx=sc.world_w*0.5f, cz=sc.world_h*0.30f, hh=15.0f, az=0.7f, el=0.40f; int cam_free=0,paused=0,useTex=1;
     { const char*cs=getenv("VAT_HORDE_CAM"); if(cs) sscanf(cs,"%f,%f,%f,%f,%f",&cx,&cz,&hh,&az,&el); }
-    SimPAgentDesc runner={0.30f,3.6f,1.0f};
     unsigned rng=1234;
     Uint64 pf=SDL_GetPerformanceFrequency();
+    // timestep FISSO disaccoppiato dal framerate: accumulo il tempo reale e lo
+    // consumo in passi da 1/60 → la sim avanza alla stessa velocità a 60 o 144 Hz
+    // (il vsync governa i frame, non i passi di simulazione).
+    const float FIXED_DT=1.0f/60.0f;
+    Uint64 prev=SDL_GetPerformanceCounter(); double acc_t=0.0;
     double acc_sim=0,acc_lay=0,acc_ren=0; int acc_n=0;
     double bsim=0,blay=0,bren=0; int bn=0;     // finestra di misura benchmark
     int running=1,frame=0,shot_done=0;
@@ -221,32 +308,40 @@ int main(int argc, char **argv){
                 case SDLK_SPACE:paused=!paused;break;
                 case SDLK_LEFT:az-=0.06f;break; case SDLK_RIGHT:az+=0.06f;break; case SDLK_UP:el+=0.04f;break; case SDLK_DOWN:el-=0.04f;break;
                 case SDLK_EQUALS:case SDLK_PLUS:hh*=0.9f;break; case SDLK_MINUS:hh*=1.1f;break; } }
-        float dt=1.0f/60.0f;
         double sim_ms=0, lay_ms=0;
+        // tempo del frame: reale (interattivo) o fisso 1/60 (headless shot/bench →
+        // 1 passo/frame, deterministico e indipendente dal tempo a parete).
+        Uint64 nowc=SDL_GetPerformanceCounter();
+        double frame_t=(double)(nowc-prev)/(double)pf; prev=nowc;
+        if(shot || bench_meas) frame_t=FIXED_DT;
+        if(frame_t>0.25) frame_t=0.25;                 // anti spiral-of-death
         if(!paused){
-            // spawn dalle rect di spawn (burst-free via free_at), ~80% walker 20% runner.
-            // In benchmark (fillN) il campo è già pieno: niente spawn per-frame.
-            for(int k=0;!fillN && k<60 && simp_count(s)<MAXA;k++){
-                rng^=rng<<13;rng^=rng>>17;rng^=rng<<5;
-                const SceneRect *r=&sc.spawn[(rng>>3)%sc.n_spawn];
-                float x=r->x+(rng%10000)/10000.0f*r->w;
-                float y=r->y+((rng>>8)%10000)/10000.0f*r->h;
-                if(simp_free_at(s,x,y,0.34f)){
-                    unsigned roll=(rng>>20)%100;
-                    if(roll<15){ int i=simp_spawn_desc(s,x,y,&CRAWLER);
-                                 if(i>=0) vat_layer_pin_variant(vl,simp_slot_of(s,i),CRAWLER_VAR); }
-                    else if(roll<35) simp_spawn_desc(s,x,y,&runner);
-                    else simp_spawn(s,x,y);
+            acc_t+=frame_t;
+            while(acc_t>=FIXED_DT){
+                // spawn dalle rect (burst-free via free_at). In benchmark (fillN)
+                // il campo è già pieno: niente spawn per-passo.
+                for(int k=0;!fillN && k<30 && simp_count(s)<MAXA;k++){
+                    rng^=rng<<13;rng^=rng>>17;rng^=rng<<5;
+                    const SceneRect *r=&sc.spawn[(rng>>3)%sc.n_spawn];
+                    float x=r->x+(rng%10000)/10000.0f*r->w;
+                    float y=r->y+((rng>>8)%10000)/10000.0f*r->h;
+                    if(simp_free_at(s,x,y,0.34f)) spawn_enemy(g,s,vl,x,y,rng>>16);
                 }
+                Uint64 t0=SDL_GetPerformanceCounter();
+                simp_step(s,FIXED_DT);
+                Uint64 t1=SDL_GetPerformanceCounter();
+                def_update(g,FIXED_DT);
+                // i feriti maimed_legs passano alla mesh crawler (a runtime)
+                { const uint8_t *wnd=def_wound(g); int nn=simp_count(s);
+                  for(int i=0;i<nn;i++){ int slot=simp_slot_of(s,i);
+                      if(wnd[slot]==DW_CRAWLING) vat_layer_set_variant(vl,slot,CRAWLER_VAR); } }
+                vat_layer_update(vl,s,FIXED_DT);
+                Uint64 t2=SDL_GetPerformanceCounter();
+                sim_ms+=(double)(t1-t0)*1000.0/pf;
+                lay_ms+=(double)(t2-t1)*1000.0/pf;
+                acc_t-=FIXED_DT;
             }
-            Uint64 t0=SDL_GetPerformanceCounter();
-            simp_step(s,dt);
-            Uint64 t1=SDL_GetPerformanceCounter();
-            vat_layer_update(vl,s,dt);
-            Uint64 t2=SDL_GetPerformanceCounter();
-            sim_ms=(double)(t1-t0)*1000.0/pf;
-            lay_ms=(double)(t2-t1)*1000.0/pf;
-        }
+        } else acc_t=0.0;                              // in pausa: niente debito
 
         float asp=(float)SW/SH; mat4 proj,view,vp; float ctr[3]={cx,0.9f,cz},up[3]={0,1,0};
         float eye[3]={cx+hh*cosf(el)*sinf(az),0.9f+hh*sinf(el),cz+hh*cosf(el)*cosf(az)};
@@ -260,6 +355,20 @@ int main(int argc, char **argv){
         // ostacoli + suolo (statici)
         glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
         glBindVertexArray(obVao);glDrawArrays(GL_TRIANGLES,0,obNV);
+        // torrette (pilastrini statici)
+        glBindVertexArray(turVao);glDrawArrays(GL_TRIANGLES,0,turNV);
+        // tracer di fuoco (linee, una per torretta che ha sparato di recente)
+        { float trbuf[NT*2*9]; int tc=0;
+          for(int id=0;id<def_turret_count(g);id++){ DefTurret *t=def_turret(g,id);
+              if(t->tracer_ttl<=0.0f) continue;
+              float ex=t->x+cosf(t->ang)*t->last_t, ez=t->y+sinf(t->ang)*t->last_t;
+              float *o=trbuf+tc*9; o[0]=t->x;o[1]=0.9f;o[2]=t->y;
+              o[3]=0;o[4]=1;o[5]=0; o[6]=3;o[7]=3;o[8]=0.4f; tc++;
+              o=trbuf+tc*9; o[0]=ex;o[1]=0.9f;o[2]=ez;
+              o[3]=0;o[4]=1;o[5]=0; o[6]=3;o[7]=3;o[8]=0.4f; tc++; }
+          if(tc){ glBindVertexArray(trVao);glBindBuffer(GL_ARRAY_BUFFER,trVbo);
+              glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)tc*9*sizeof(float),trbuf);
+              glLineWidth(2.5f); glDrawArrays(GL_LINES,0,tc); } }
 
         // orda VAT
         glUseProgram(prog);glUniformMatrix4fv(uVP,1,GL_FALSE,vp);
@@ -286,9 +395,9 @@ int main(int argc, char **argv){
 
         // HUD: medie mobili sim/layer/render nel titolo
         acc_sim+=sim_ms; acc_lay+=lay_ms; acc_ren+=ren_ms; acc_n++;
-        if(acc_n>=30){ char title[200]; double S=acc_sim/acc_n,L=acc_lay/acc_n,R=acc_ren/acc_n;
-            snprintf(title,sizeof title,"vat_horde — %d agenti | sim %.2f | layer %.2f | render %.2f ms | %.0f fps-cap",
-                     total,S,L,R,1000.0/(S+L+R));
+        if(acc_n>=30){ char title[256]; double S=acc_sim/acc_n,L=acc_lay/acc_n,R=acc_ren/acc_n;
+            snprintf(title,sizeof title,"vat_horde — %d agenti | torrette kills %d crawler %d | sim %.2f layer %.2f render %.2f ms | %.0f fps-cap",
+                     total,def_kills(g),def_count_wound(g,DW_CRAWLING),S,L,R,1000.0/(S+L+R));
             SDL_SetWindowTitle(win,title); acc_sim=acc_lay=acc_ren=0; acc_n=0; }
 
         // benchmark: accumula nella finestra di misura, poi stampa medie ed esci
@@ -308,11 +417,12 @@ int main(int argc, char **argv){
         if(shot && !shot_done && frame>=shot_frames){ glFinish();
             unsigned char*px=malloc(SW*SH*3); glReadPixels(0,0,SW,SH,GL_RGB,GL_UNSIGNED_BYTE,px);
             vg_save_bmp("vat_horde_shot.bmp",SW,SH,px); free(px);
-            printf("frame %d: %d agenti (%d varianti) | sim %.2f ms render %.2f ms -> vat_horde_shot.bmp\n",
-                   frame,total,NVAR,sim_ms,ren_ms);
+            printf("frame %d: %d agenti | shots %d kills %d, crawler %d, bloody %d, arm %d | sim %.2f render %.2f ms -> vat_horde_shot.bmp\n",
+                   frame,total,def_shots(g),def_kills(g),def_count_wound(g,DW_CRAWLING),
+                   def_count_wound(g,DW_BLOODY),def_count_wound(g,DW_MAIMED_ARM),sim_ms,ren_ms);
             shot_done=1; running=0; }
         SDL_GL_SwapWindow(win);
     }
-    vat_layer_destroy(vl); simp_destroy(s); scene_free(&sc);
+    def_destroy(g); vat_layer_destroy(vl); simp_destroy(s); scene_free(&sc);
     SDL_GL_DestroyContext(ctx);SDL_DestroyWindow(win);SDL_Quit(); return 0;
 }

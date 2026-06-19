@@ -44,6 +44,10 @@ typedef struct {
     float damage;          /* HP per shot (light); ignored by heavy (gibs)  */
     int   heavy;           /* 0 = light, 1 = heavy                          */
     int   piercing;        /* light/heavy upgrade: ray pierces all on line  */
+    /* set by def_update, for rendering (muzzle flash / tracer feedback):   */
+    int   fired;           /* fired on the last update                      */
+    float last_t;          /* hit distance of the last shot (else range)    */
+    float tracer_ttl;      /* > 0 → draw a tracer; decays each update       */
 } DefTurret;
 
 typedef struct DefGame DefGame;
