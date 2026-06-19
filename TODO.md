@@ -201,14 +201,18 @@ statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
       stantio, piercing/non-pierce, LoS). 12/12 suite verde.
 - [x] **`simp_set_vpref`** (core, §5): cambio velocità preferita post-spawn
       (crawl dei maimed_legs, debuff). FATTO: `test_turret.c` D PASS.
-- [ ] **Stato per-slot** (§3): HP/body/wound/heavy-hits + tabella EnemyDef
-      (HP decrescenti obesi→bambini), indicizzato per slot (M3.1).
-- [ ] **Torrette** (§4): sweep + dwell sul bersaglio, fuoco solo-con-bersaglio,
-      leggera (logoramento) vs pesante (gib + `apply_impulse`).
-- [ ] **Ferite a 3 vie** (§5): outfit insanguinato / maimed_arm /
+- [x] **Stato per-slot** (§3): HP/body/wound/heavy-hits + tabella EnemyDef
+      (HP decrescenti obesi→bambini), indicizzato per slot (M3.1). FATTO in
+      `defense.c` (modulo di gioco riusabile, core-agnostico).
+- [x] **Torrette** (§4): sweep + dwell sul bersaglio, fuoco solo-con-bersaglio,
+      leggera (logoramento) vs pesante (gib + `apply_impulse`). FATTO
+      (`DefTurret`, `def_update`); piercing via `simp_query_ray` max_out.
+- [x] **Ferite a 3 vie** (§5): outfit insanguinato / maimed_arm /
       maimed_legs→crawl; i crawler lenti alzano il jam M3.7 → deviano l'orda.
-- [ ] **Morte** (§6): cadavere M3.3 (leggera) / gib senza cadavere (pesante) /
-      biomassa-stub; ordinamento kill (trappola indici M3.4).
+      FATTO: roll seedato per slot (deterministico), crawl via `simp_set_vpref`.
+- [x] **Morte** (§6): cadavere M3.3 (leggera) / gib senza cadavere (pesante) /
+      biomassa-stub; ordinamento kill (trappola indici M3.4). FATTO: hit→handle
+      prima di ogni kill; tank a N colpi pesanti. `test_defense.c` PASS (13/13).
 - [ ] **Base + sconfitta** (§7): il core = struttura assediabile più interna
       (riusa SIEGE per intero), goal centrale, game over a `core_hp <= 0`.
 - [ ] **Spawn director + budget** (§8): ondate dalle rect di scena (no burst

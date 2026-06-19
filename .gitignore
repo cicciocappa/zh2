@@ -13,6 +13,7 @@ test_jam
 test_scene
 test_siege
 test_turret
+test_defense
 bench_sim
 *.o
 frames/

@@ -120,6 +120,16 @@ un muro → 0 hit (LoS); `SIMP_RAY_NOWALL` → buca.
 
 ## 3. Stato di gioco per-slot
 
+> **IMPLEMENTATO** (§3-§6) nel modulo `defense.h` / `defense.c` — layer di gioco
+> riusabile (lo useranno test e sandbox/vat), core-agnostico: parla al core
+> solo via API pubbliche `simp_*`. `test_defense.c` PASS (light mowing con tutti
+> e 3 i tipi di ferita, heavy senza cadavere, tank a 4 colpi, determinismo).
+> Deviazioni/scelte: `DefBody` include il tank (gli screamer e le perturbazioni
+> di costo restano a M5b); il roll della ferita e la prob. di cadavere sono
+> **hash deterministici dello slot** (niente stato RNG, niente `rand()`); per
+> slot: `hp`/`body`/`wound`/`hheat` (colpi pesanti assorbiti dal tank). NON
+> ancora qui: base/sconfitta (§7) e spawn director (§8).
+
 Array paralleli del gioco, **indicizzati per slot** (M3.1: lo slot è stabile per
 tutta la vita dell'agente; gli indici densi no). Allocati a capacità
 `max_agents`.
