@@ -189,6 +189,12 @@ int   simp_spawn_desc(SimP *s, float x, float y, const SimPAgentDesc *d);
 /* Put agent i to sleep (counterpart of the wake functions; no-op while
  * flying). Lets game code place dormant packs of typed agents. */
 void  simp_sleep(SimP *s, int i);
+
+/* Set the preferred speed of a live agent post-spawn (the value spawn_desc set
+ * + jitter). For the maimed-legs crawl transition and speed buffs/debuffs.
+ * Index-based like simp_kill/simp_sleep: convert from a handle for persistence.
+ * No-op for an out-of-range index; takes effect at the next step's steering. */
+void  simp_set_vpref(SimP *s, int i, float v_pref);
 /* Swap-and-pop removal: the last agent takes index i.                      */
 void  simp_kill(SimP *s, int i);
 int   simp_count(const SimP *s);
@@ -223,6 +229,7 @@ int        simp_index_of(const SimP *s, SimPHandle h);
 /* ---- spatial queries (gameplay: turrets, AoE) ----------------------------- */
 
 #define SIMP_QUERY_FLYING 0x1u   /* include airborne agents (forces brute force) */
+#define SIMP_RAY_NOWALL   0x2u   /* simp_query_ray: ignore wall occlusion (LoS) */
 
 /* Fill out[] with the indices of agents whose center lies within r of (x,y);
  * returns how many were written (saturating at max_out). Flying agents are
@@ -238,6 +245,22 @@ int simp_query_circle(const SimP *s, float x, float y, float r,
 /* Index of the closest agent within r_max of (x,y), or -1. Ring scan over
  * the collision grid from the center outward; same staleness rules.        */
 int simp_query_nearest(const SimP *s, float x, float y, float r_max);
+
+/* Hitscan along the segment from (ox,oy) in direction (dx,dy) up to maxdist.
+ * Fills out[]/out_t[] with the INDICES of the agents whose disc the ray
+ * crosses and the ray parameter t (distance) of the entry, ORDERED by t
+ * ascending; returns how many were written. If more than max_out agents are
+ * hit, the NEAREST max_out are returned. (dx,dy) need not be normalized.
+ *   - Non-piercing turret = use out[0] (the first agent hit).
+ *   - Piercing turret     = iterate all returned hits.
+ * The ray is OCCLUDED by walls (line-of-sight): maxdist is truncated at the
+ * first solid nav cell, so a turret cannot shoot through a wall. Pass
+ * SIMP_RAY_NOWALL to ignore occlusion. Flying agents are excluded unless
+ * SIMP_QUERY_FLYING is set (forces brute force); corpses are never hit.
+ * Same staleness rules as the other queries (grid valid after simp_step). */
+int simp_query_ray(const SimP *s, float ox, float oy, float dx, float dy,
+                   float maxdist, int *out, float *out_t, int max_out,
+                   uint32_t flags);
 
 /* ---- behaviour flags ------------------------------------------------------ */
 

@@ -771,6 +771,11 @@ void simp_sleep(SimP *s, int i) {
     s->aflags[i] |= SIMP_DORMANT;
 }
 
+void simp_set_vpref(SimP *s, int i, float v_pref) {
+    if (i < 0 || i >= s->count) return;
+    s->vpref[i] = v_pref < 0.0f ? 0.0f : v_pref;
+}
+
 void simp_kill(SimP *s, int i) {
     int slot = s->index_to_slot[i];
     s->slot_gen[slot]++;                       /* wrap is fine (12 bits used) */
@@ -963,6 +968,130 @@ int simp_query_nearest(const SimP *s, float x, float y, float r_max) {
         }
     }
     return best;
+}
+
+/* Distance along a normalized ray to the first solid nav cell, or maxd if the
+ * ray reaches maxd / leaves the grid without hitting a wall. Amanatides-Woo
+ * DDA over the nav grid (cell, solid[]). Line-of-sight occlusion for hitscan. */
+static float wall_ray_t(const SimP *s, float ox, float oy,
+                        float dx, float dy, float maxd) {
+    int cx = (int)(ox * s->inv_cell), cy = (int)(oy * s->inv_cell);
+    if (cx < 0 || cx >= s->gw || cy < 0 || cy >= s->gh) return maxd;
+    if (s->solid[cy * s->gw + cx]) return 0.0f;             /* muzzle in a wall */
+    int stepx = dx >= 0.0f ? 1 : -1, stepy = dy >= 0.0f ? 1 : -1;
+    float tDX = dx != 0.0f ? s->cell / fabsf(dx) : 1e30f;
+    float tDY = dy != 0.0f ? s->cell / fabsf(dy) : 1e30f;
+    float bx = (dx >= 0.0f ? (cx + 1) : cx) * s->cell;
+    float by = (dy >= 0.0f ? (cy + 1) : cy) * s->cell;
+    float tMX = dx != 0.0f ? (bx - ox) / dx : 1e30f;
+    float tMY = dy != 0.0f ? (by - oy) / dy : 1e30f;
+    for (;;) {
+        float t;
+        if (tMX < tMY) { cx += stepx; t = tMX; tMX += tDX; }
+        else           { cy += stepy; t = tMY; tMY += tDY; }
+        if (t > maxd) return maxd;
+        if (cx < 0 || cx >= s->gw || cy < 0 || cy >= s->gh) return maxd;
+        if (s->solid[cy * s->gw + cx]) return t;
+    }
+}
+
+/* Segment-vs-disc: t of the ray's entry into agent i's disc, clamped to [0,eff];
+ * -1 if the ray (0..eff) misses the disc or it lies entirely behind the origin. */
+static inline float ray_disc_t(const SimP *s, int i, float ox, float oy,
+                               float dx, float dy, float eff) {
+    float ocx = s->px[i] - ox, ocy = s->py[i] - oy;
+    float tca = ocx * dx + ocy * dy;
+    float r = s->rad[i];
+    float d2 = ocx * ocx + ocy * ocy - tca * tca;       /* perp distance^2 */
+    float r2 = r * r;
+    if (d2 > r2) return -1.0f;
+    float thc = sqrtf(r2 - d2);
+    if (tca + thc < 0.0f) return -1.0f;                 /* disc fully behind */
+    float t0 = tca - thc;
+    float thit = t0 > 0.0f ? t0 : 0.0f;                 /* origin inside -> 0 */
+    return thit <= eff ? thit : -1.0f;
+}
+
+/* Insert (i,thit) into the nearest-max_out set kept in out[]/out_t[] (*n live).
+ * Dedups by index; when full, replaces the farthest kept hit if thit is closer.
+ * (Re-presented evicted agents are rejected: their t is >= the current worst.) */
+static inline void ray_consider(int i, float thit, int *out, float *out_t,
+                                int max_out, int *n) {
+    for (int q = 0; q < *n; q++) if (out[q] == i) return;   /* already kept */
+    if (*n < max_out) { out[*n] = i; out_t[*n] = thit; (*n)++; return; }
+    int w = 0;
+    for (int q = 1; q < max_out; q++) if (out_t[q] > out_t[w]) w = q;
+    if (thit < out_t[w]) { out[w] = i; out_t[w] = thit; }
+}
+
+int simp_query_ray(const SimP *s, float ox, float oy, float dx, float dy,
+                   float maxdist, int *out, float *out_t, int max_out,
+                   uint32_t flags) {
+    if (max_out <= 0) return 0;
+    float len = sqrtf(dx * dx + dy * dy);
+    if (len < 1e-8f) return 0;
+    dx /= len; dy /= len;
+
+    float eff = maxdist;
+    if (!(flags & SIMP_RAY_NOWALL)) {
+        float wt = wall_ray_t(s, ox, oy, dx, dy, maxdist);
+        if (wt < eff) eff = wt;
+    }
+    if (eff <= 0.0f) return 0;
+
+    int n = 0;
+    if (grid_current(s) && !(flags & SIMP_QUERY_FLYING)) {
+        /* Amanatides-Woo over the collision grid; each stepped cell is tested
+         * with its 3x3 halo, because an agent is binned by its CENTER cell and
+         * a disc (radius <= grid_rmax <= ccell/2) can cross the ray from a
+         * neighbouring cell. ray_consider dedups the halo overlap. We process
+         * every cell with entry distance <= eff: a hit at t* <= eff has its
+         * centre within one cell of the cell the ray occupies at t* (entry
+         * <= t* <= eff), so its halo covers it. */
+        int cx = clampi((int)(ox * s->inv_ccell), 0, s->cgw - 1);
+        int cy = clampi((int)(oy * s->inv_ccell), 0, s->cgh - 1);
+        int stepx = dx >= 0.0f ? 1 : -1, stepy = dy >= 0.0f ? 1 : -1;
+        float tDX = dx != 0.0f ? s->ccell / fabsf(dx) : 1e30f;
+        float tDY = dy != 0.0f ? s->ccell / fabsf(dy) : 1e30f;
+        float bx = (dx >= 0.0f ? (cx + 1) : cx) * s->ccell;
+        float by = (dy >= 0.0f ? (cy + 1) : cy) * s->ccell;
+        float tMX = dx != 0.0f ? (bx - ox) / dx : 1e30f;
+        float tMY = dy != 0.0f ? (by - oy) / dy : 1e30f;
+        float tcell = 0.0f;
+        for (;;) {
+            if (tcell > eff) break;
+            int hx0 = cx > 0 ? cx - 1 : 0, hx1 = cx < s->cgw - 1 ? cx + 1 : s->cgw - 1;
+            int hy0 = cy > 0 ? cy - 1 : 0, hy1 = cy < s->cgh - 1 ? cy + 1 : s->cgh - 1;
+            for (int hy = hy0; hy <= hy1; hy++) for (int hx = hx0; hx <= hx1; hx++) {
+                int c = hy * s->cgw + hx;
+                for (int k = s->cstart[c]; k < s->cstart[c + 1]; k++) {
+                    int i = s->corder[k];
+                    if (i >= s->count) continue;            /* corpse ghost */
+                    float t = ray_disc_t(s, i, ox, oy, dx, dy, eff);
+                    if (t >= 0.0f) ray_consider(i, t, out, out_t, max_out, &n);
+                }
+            }
+            if (tMX < tMY) { cx += stepx; tcell = tMX; tMX += tDX; }
+            else           { cy += stepy; tcell = tMY; tMY += tDY; }
+            if (cx < 0 || cx >= s->cgw || cy < 0 || cy >= s->cgh) break;
+        }
+    } else {
+        for (int i = 0; i < s->count; i++) {
+            if (!(flags & SIMP_QUERY_FLYING) && (s->aflags[i] & SIMP_FLYING))
+                continue;
+            float t = ray_disc_t(s, i, ox, oy, dx, dy, eff);
+            if (t >= 0.0f) ray_consider(i, t, out, out_t, max_out, &n);
+        }
+    }
+
+    /* order the kept hits by t ascending (insertion sort; n <= max_out small) */
+    for (int a = 1; a < n; a++) {
+        int bi = out[a]; float bt = out_t[a];
+        int q = a - 1;
+        while (q >= 0 && out_t[q] > bt) { out[q+1] = out[q]; out_t[q+1] = out_t[q]; q--; }
+        out[q+1] = bi; out_t[q+1] = bt;
+    }
+    return n;
 }
 
 static inline void impulse_one(SimP *s, int i, float x, float y,

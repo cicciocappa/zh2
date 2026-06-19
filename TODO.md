@@ -188,13 +188,44 @@ poi scala, poi gioco.
       bandwidth/thermal-bound sul PBD e maschera il guadagno; su CPU non
       bandwidth-bound (i7-14700) il ~1.3 ms/step single-thread emerge netto.
 
-## M5 — GPU (solo se serve oltre ~100k o per liberare la CPU)
+## M5 — Gioco difensivo (vedi `M5_DESIGN.md`)
 
-- [ ] Port dei passi a compute shader GL 4.3 (counting sort con atomics, PBD a
-      colori, integrazione). Rendering instanced direttamente dai buffer GPU,
-      zero roundtrip CPU. La struttura attuale mappa 1:1 sui dispatch.
+Fase difesa: torrette, danno, ferite, base. Economia (biomassa/droni) = doc
+separato futuro (M5b). Slice 1 = loop giocabile con budget di piazzamento
+statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
 
-## M6 — Gioco
+- [x] **`simp_query_ray`** (core, M5_DESIGN §2): hitscan + piercing sulla
+      griglia di collisione (DDA Amanatides-Woo + alone 3×3, dedup nearest-
+      max_out), occlusione muri (line-of-sight via DDA nav). FATTO:
+      `test_turret.c` parte 1 PASS (vs brute force O(N), gridded + fallback
+      stantio, piercing/non-pierce, LoS). 12/12 suite verde.
+- [x] **`simp_set_vpref`** (core, §5): cambio velocità preferita post-spawn
+      (crawl dei maimed_legs, debuff). FATTO: `test_turret.c` D PASS.
+- [ ] **Stato per-slot** (§3): HP/body/wound/heavy-hits + tabella EnemyDef
+      (HP decrescenti obesi→bambini), indicizzato per slot (M3.1).
+- [ ] **Torrette** (§4): sweep + dwell sul bersaglio, fuoco solo-con-bersaglio,
+      leggera (logoramento) vs pesante (gib + `apply_impulse`).
+- [ ] **Ferite a 3 vie** (§5): outfit insanguinato / maimed_arm /
+      maimed_legs→crawl; i crawler lenti alzano il jam M3.7 → deviano l'orda.
+- [ ] **Morte** (§6): cadavere M3.3 (leggera) / gib senza cadavere (pesante) /
+      biomassa-stub; ordinamento kill (trappola indici M3.4).
+- [ ] **Base + sconfitta** (§7): il core = struttura assediabile più interna
+      (riusa SIEGE per intero), goal centrale, game over a `core_hp <= 0`.
+- [ ] **Spawn director + budget** (§8): ondate dalle rect di scena (no burst
+      via `simp_free_at`), budget statico di piazzamento.
+
+## M5b — Economia (doc separato, futuro)
+
+- [ ] Biomassa: blob alla morte (pool fisso + TTL, come i cadaveri), raccolta
+      come tasso/raggio attorno ai punti di raccolta (droni NON simulati in v1).
+- [ ] Basi di raccolta avanzate: punti esterni alla base, goal + HP (riusano
+      §7), reddito maggiore ma bersaglio dell'orda → dilemma espandi/difendi.
+      Richiede l'attribuzione multi-goal del drain (questione aperta).
+- [ ] Attacchi speciali (mortaio, bombardamenti) + upgrade torrette, pagati in
+      biomassa. Proiettili delle torrette GRATIS (niente spirale).
+- [ ] Muri/strutture costruite dal giocatore (collisione già SDF: funziona oggi).
+
+## M6 — Rendering & animazione
 
 - [ ] Rendering vero: instanced sprites (vec4 x,y,angolo,frame per istanza),
       variazione tinta/scala per hash dell'indice; valutare VAT per il vicino.
@@ -241,9 +272,11 @@ poi scala, poi gioco.
       delta di heading per frame (max °/s sensato, proposta utente), che
       migliora anche i camminatori — uno zombie non piroetta. Da tarare
       insieme nella stessa sessione.
-- [ ] Torrette: piazzamento (= muri + sorgente di danno), targeting via query
-      spaziali, proiettili/raycast sulla griglia.
-- [ ] Wave/spawner, economia, HP/danno, condizioni di vittoria/sconfitta.
+## M8 — Scala estrema / GPU (solo se serve oltre ~100k o per liberare la CPU)
+
+- [ ] Port dei passi a compute shader GL 4.3 (counting sort con atomics, PBD a
+      colori, integrazione). Rendering instanced direttamente dai buffer GPU,
+      zero roundtrip CPU. La struttura attuale mappa 1:1 sui dispatch.
 - [ ] Integrazione del core continuo come LOD lontano: orde off-screen come campo
       `rho`, condensazione in particelle al bordo della zona attiva (e viceversa).
       Conservazione della massa al passaggio di rappresentazione.
