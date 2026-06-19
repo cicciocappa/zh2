@@ -52,6 +52,13 @@ struct SimP {
     float   *flow_x;       /* normalized direction field (0,0 in walls) */
     float   *flow_y;
     float   *sdf;          /* signed distance to walls (m), >0 = free */
+    /* M4 wall-skip: per nav cell, 1 = a wall is close enough that an agent in
+     * this cell COULD overlap it (min SDF over the 3x3 block <= grid_rmax+cell).
+     * job_wall skips the bilinear SDF sample entirely where this is 0 (open
+     * field): conservative, the bilinear value is a convex combo of 4 cell
+     * centres all inside the 3x3, so the skip never misses a real contact.
+     * Rebuilt on SDF change and when grid_rmax grows. */
+    uint8_t *wall_near;
     bool     nav_dirty;
 
     /* navigation costs (M3.5 + M3.6) */
@@ -391,6 +398,8 @@ static void density_update(SimP *s) {
     s->rho_active = peak > 0.01f;
 }
 
+static void build_wall_near(SimP *s);
+
 /* two-pass chamfer distance transform (3-4 metric scaled to meters) */
 static void recompute_sdf(SimP *s) {
     const int gw = s->gw, gh = s->gh;
@@ -420,6 +429,27 @@ static void recompute_sdf(SimP *s) {
      * cell, so shift by half a cell to approximate distance to the wall face */
     for (int i = 0; i < gw * gh; i++)
         d[i] = s->solid[i] ? -0.5f * s->cell : d[i] - 0.5f * s->cell;
+    build_wall_near(s);
+}
+
+/* M4 wall-skip mask: flag a nav cell when a wall is close enough that an agent
+ * inside it could overlap (min SDF over the 3x3 block <= grid_rmax + cell). The
+ * 3x3 min covers the 2x2 footprint of the bilinear sample for any point in the
+ * cell, so a cleared cell guarantees SDF(agent) > r_max everywhere in it. */
+static void build_wall_near(SimP *s) {
+    const int gw = s->gw, gh = s->gh;
+    const float *d = s->sdf;
+    const float thr = s->grid_rmax + s->cell;   /* one extra cell of slack */
+    for (int cy = 0; cy < gh; cy++) for (int cx = 0; cx < gw; cx++) {
+        float mn = d[cy * gw + cx];
+        for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+            int nx = cx + dx, ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+            float v = d[ny * gw + nx];
+            if (v < mn) mn = v;
+        }
+        s->wall_near[cy * gw + cx] = (mn <= thr) ? 1 : 0;
+    }
 }
 
 static void nav_commit(SimP *s) {
@@ -498,6 +528,7 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->flow_x = (float *)calloc(n, sizeof(float));
     s->flow_y = (float *)calloc(n, sizeof(float));
     s->sdf    = (float *)malloc(n * sizeof(float));
+    s->wall_near = (uint8_t *)malloc(n);
     s->cost_user = (float *)calloc(n, sizeof(float));
     s->rho_raw   = (float *)calloc(n, sizeof(float));
     s->rho_s     = (float *)calloc(n, sizeof(float));
@@ -597,7 +628,7 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
 void simp_destroy(SimP *s) {
     if (!s) return;
     free(s->solid); free(s->goal); free(s->phi);
-    free(s->flow_x); free(s->flow_y); free(s->sdf);
+    free(s->flow_x); free(s->flow_y); free(s->sdf); free(s->wall_near);
     free(s->cost_user); free(s->rho_raw); free(s->rho_s); free(s->cost_mult);
     free(s->jam_raw); free(s->jam_s);
     free(s->heap_nodes); free(s->flow_tx); free(s->flow_ty);
@@ -729,6 +760,7 @@ int simp_spawn_desc(SimP *s, float x, float y, const SimPAgentDesc *d) {
         s->cgw = (int)ceilf(s->world_w * s->inv_ccell) + 1;
         s->cgh = (int)ceilf(s->world_h * s->inv_ccell) + 1;
         s->grid_stale = true;
+        build_wall_near(s);   /* threshold grew: re-flag near-wall cells */
     }
     return i;
 }
@@ -1222,7 +1254,11 @@ static void job_wall(void *arg, int worker, int begin, int end) {
     for (int i = begin; i < end; i++) {
         float r = s->rad[i];
         /* above wall_h walls are overflown; low flyers slam into them */
-        if (!((s->aflags[i] & SIMP_FLYING) && s->z[i] > wall_h)) {
+        int wcx = clampi((int)(s->px[i] * s->inv_cell), 0, s->gw - 1);
+        int wcy = clampi((int)(s->py[i] * s->inv_cell), 0, s->gh - 1);
+        /* M4: skip the bilinear SDF sample where no wall is within reach */
+        if (!((s->aflags[i] & SIMP_FLYING) && s->z[i] > wall_h) &&
+            s->wall_near[wcy * s->gw + wcx]) {
             float d = simp_sample_sdf(s, s->px[i], s->py[i]);
             if (d < r) {
                 float gx, gy;

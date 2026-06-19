@@ -144,6 +144,17 @@ poi scala, poi gioco.
       15.5→9.4 ms (avg invariato 6.6); 11/11 test PASS, drain 81.5%.
 - [ ] SIMD sui loop di steering e integrazione (SoA già pronto); verificare che
       l'autovettorizzazione faccia già il lavoro prima di scrivere intrinsics.
+      VERIFICATO (2026-06-19): gcc 13 NON autovettorizza i job caldi. A -O2 0 loop;
+      a -O3 -march=native ne vettorizza 8 ma sono density/blur/SDF/reorder, NON
+      `job_steering`/`job_recover` (gather bilineare del flow + branch dormant/
+      flying + sqrtf li bloccano). Quindi servirebbe SIMD a mano. MA il profilo
+      (8thr/50k, breakdown per-fase) dice steering 9% GIÀ PARALLELO (~0.66 ms):
+      molto lavoro per <1 ms reale → ROI BASSO, deprioritizzato. Il vero limite
+      di scaling MT sono ora i due `rebuild_grid` SERIALI (~20% combinato); la
+      parallelizzazione è già scartata (sopra), l'unica strada residua è rendere
+      LAZY l'ultimo dei due (la griglia stale ha già fallback brute-force nelle
+      query) — ma il guadagno svanisce se il gioco fa query ogni frame (torrette),
+      valore reale incerto. Prossimo candidato solo se serve margine oltre 50k.
 - [x] Riordino periodico degli agenti in memoria secondo l'ordine della griglia
       (ogni ~60 step) per località di cache.
       FATTO: `reorder_agents` — counting sort seriale per cella di collisione
@@ -161,8 +172,21 @@ poi scala, poi gioco.
       scorrelati dallo spazio = stato reale dopo churn spawn/kill) avg
       6.78→6.41 ms (~5%); su prefill ordinato è neutro. `BENCH_SCRAMBLE=1`
       aggiunto al bench per misurare il caso realistico.
-- [ ] Ottimizzare `wall_projection`: saltare il sample SDF se la cella nav è
+- [x] Ottimizzare `wall_projection`: saltare il sample SDF se la cella nav è
       lontana dai muri (flag per cella "sdf > r_max + margine").
+      FATTO (2026-06-19): maschera `wall_near` (byte per cella nav) = min SDF sul
+      blocco 3×3 ≤ `grid_rmax + cell`. Il 3×3 copre la footprint 2×2 del sample
+      bilineare per qualunque punto della cella → cella spenta ⇒ SDF(agente) >
+      r_max ovunque, lo skip non manca MAI un contatto reale (CONSERVATIVO).
+      `job_wall` calcola la cella nav dell'agente e salta del tutto il sample
+      bilineare dove la maschera è 0 (campo aperto). Costruita a fine
+      `recompute_sdf` (edit muri) e quando `grid_rmax` cresce (spawn più grossi).
+      Determinismo: checksum bench_sim BIT-IDENTICO a 1/8 thr (salta solo calcoli
+      che darebbero d≥r). 11/11 test PASS, drain 81.8%. Misura per-fase (timer
+      temporanei in simp_step, poi rimossi): fase wall 0.78→0.41 ms @8thr (−47%),
+      2.20→0.92 ms @1thr (−58%). Il TOTALE su questa APU (Ryzen-3750H) è
+      bandwidth/thermal-bound sul PBD e maschera il guadagno; su CPU non
+      bandwidth-bound (i7-14700) il ~1.3 ms/step single-thread emerge netto.
 
 ## M5 — GPU (solo se serve oltre ~100k o per liberare la CPU)
 
