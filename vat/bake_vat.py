@@ -103,7 +103,11 @@ def main():
     model_fbx = opt("--model")
     anim_fbx = opt("--anim")
     # opzioni: --model X [--anim Y] <prefix> <clip>   oppure (legacy) <fbx> <prefix> <clip>
-    used = {model_fbx, anim_fbx}
+    # I VALORI delle opzioni non iniziano per "--" (es. la scala "0.011", il rotx
+    # "-90") quindi finiscono in pos: vanno esclusi dai posizionali o sballano
+    # prefix/clip.
+    used = {model_fbx, anim_fbx,
+            opt("--scale"), opt("--rotx"), opt("--roty"), opt("--rotz")}
     rest = [p for p in pos if p not in used]
     if model_fbx is None:
         model_fbx, prefix, clipname = rest[0], rest[1], rest[2]
@@ -228,11 +232,19 @@ def main():
         yminf.append(min(ys)); spanf.append(max(ys)-min(ys))
 
     # --- scala: dalla PRIMA clip (poi riusata da meta), altezza PER-FRAME ---
+    # --scale X forza una scala esplicita invece della normalizzazione altezza:
+    # serve per pose NON erette (es. crawl) dove lo Y-span non e' l'altezza del
+    # personaggio. Riusare la scala di un asset eretto bakato dallo STESSO mesh
+    # (qui maimed_legs deriva da zombie_man: stessi vertici, gambe cancellate)
+    # ne riproduce le proporzioni assolute.
+    forced_scale = opt("--scale")
     meta = read_meta(metap) if append else None
     if meta and "scale" in meta:
         scale = float(meta["scale"])
         if int(meta["rowsPerFrame"]) != rows or int(meta["texW"]) != TEX_W:
             log("ERRORE: mesh/rows incompatibili con l'asset esistente"); sys.exit(1)
+    elif forced_scale is not None:
+        scale = float(forced_scale)
     else:
         scale = TARGET_HEIGHT_M / max(spanf)
 
