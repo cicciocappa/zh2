@@ -4,5 +4,5 @@ rowsPerFrame=2
 fps=30
 scale=0.01097732
 totalFrames=176
-clip=crawl startFrame=0 numFrames=155 duration_s=5.1667 stride_m=0.0000
-clip=running_crawl startFrame=155 numFrames=21 duration_s=0.7000 stride_m=0.0000
+clip=walk startFrame=0 numFrames=155 duration_s=5.1667 stride_m=0.0252
+clip=run startFrame=155 numFrames=21 duration_s=0.7000 stride_m=0.0169

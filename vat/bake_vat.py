@@ -23,7 +23,7 @@ Formato (definito da noi, multi-clip):
   <prefix>_meta.txt : texW,texH,rowsPerFrame,fps,scale,totalFrames + righe "clip=..."
 """
 
-import bpy, bmesh, sys, os, struct, math
+import bpy, bmesh, sys, os, struct, math, re
 from mathutils import Vector, Euler
 
 TEX_W = 256
@@ -75,6 +75,42 @@ def write_meta(path, texW, texH, rpf, fps, scale, total, clips):
             f.write(f"clip={c['name']} startFrame={c['startFrame']} "
                     f"numFrames={c['numFrames']} duration_s={c['duration_s']} "
                     f"stride_m={c['stride_m']}\n")
+
+
+MIXAMO_PREFIX = re.compile(r'mixamorig\d*:')
+
+
+def iter_fcurves(action):
+    """Tutte le F-curve di una Action, sia legacy (action.fcurves) sia slotted
+    (Blender 4.4+: action.layers[].strips[].channelbags[].fcurves)."""
+    seen = set()
+    for fc in getattr(action, "fcurves", []):
+        if id(fc) not in seen: seen.add(id(fc)); yield fc
+    for layer in getattr(action, "layers", []):
+        for strip in layer.strips:
+            for cb in getattr(strip, "channelbags", []):
+                for fc in cb.fcurves:
+                    if id(fc) not in seen: seen.add(id(fc)); yield fc
+
+
+def retarget_action_prefix(arm, action):
+    """Mixamo numera il prefisso dei bone in modo INCOERENTE fra i download
+    (es. 'mixamorig:' nel modello vs 'mixamorig5:' in una clip scaricata a parte).
+    Le F-curve dell'anim puntano allora a bone inesistenti sul rig del modello ->
+    nessuna deformazione, viene bakata la rest pose statica. Qui riscriviamo i
+    data_path dell'action al prefisso del MODELLO (i vertex group della mesh
+    restano quelli, non si tocca lo skin). No-op quando i prefissi coincidono."""
+    mb = MIXAMO_PREFIX.match(arm.pose.bones[0].name) if arm.pose.bones else None
+    if not mb: return
+    model_prefix = mb.group(0)
+    n = 0
+    # materializza: riscrivere fc.data_path muta la collection live e
+    # invaliderebbe un iteratore lazy a metà strada.
+    for fc in list(iter_fcurves(action)):
+        new = MIXAMO_PREFIX.sub(model_prefix, fc.data_path)
+        if new != fc.data_path:
+            fc.data_path = new; n += 1
+    if n: log(f"retarget prefisso bone -> {model_prefix!r} ({n} f-curve riscritte)")
 
 
 def bind_action(arm, action):
@@ -135,6 +171,7 @@ def main():
         log(f"anim {anim_fbx.split('/')[-1]!r} -> action {action.name!r} sul rig del modello")
     else:
         action = bpy.data.actions[0]
+    retarget_action_prefix(arm, action)
     bind_action(arm, action)
 
     # Correzione orientamento: alcuni FBX arrivano con assi sbagliati (es. esportati
