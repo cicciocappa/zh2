@@ -18,11 +18,26 @@
 #define MAXA 60000
 static float inst[MAXA*12];
 
+// I body type disponibili (asset bakati in vat/assets/). Texture placeholder: la
+// skirt non ha ancora il _diffuse.png -> rende flat-shaded (tintata), corretto.
+static const char *PREFIX[] = {
+    "vat/assets/zombie_man", "vat/assets/zombie_man_obese",
+    "vat/assets/zombie_fem", "vat/assets/zombie_fem_obese",
+    "vat/assets/zombie_child", "vat/assets/zombie_fem_skirt",
+    "vat/assets/zombie_maimed_legs",   /* crawler: tipo di gioco, non cosmetico */
+};
+#define NVAR ((int)(sizeof(PREFIX)/sizeof(PREFIX[0])))
+#define CRAWLER_VAR (NVAR-1)               /* indice del body crawler */
+#define NCOSMETIC   (NVAR-1)               /* le altre = body random cosmetici */
+
+/* crawler: striscia lento; il body viene pinnato a CRAWLER_VAR allo spawn */
+static const SimPAgentDesc CRAWLER = {0.30f, 0.6f, 1.0f};
+
 // Benchmark prefill: popola il campo a `target` agenti su un lattice jitterato
 // (passo = sqrt(area/target), clampato per non sovrapporre) → niente transitorio
 // PBD da spawn denso. Ritorna quanti effettivamente piazzati (free_at salta muri
 // e celle piene). ~80% walker, 20% runner.
-static int prefill_lattice(SimP *s, const Scene *sc, int target){
+static int prefill_lattice(SimP *s, VatLayer *vl, const Scene *sc, int target){
     float W=sc->world_w, H=sc->world_h;
     float pitch=sqrtf(W*H/(float)target); if(pitch<0.62f)pitch=0.62f;
     SimPAgentDesc runner={0.30f,3.6f,1.0f};
@@ -33,21 +48,16 @@ static int prefill_lattice(SimP *s, const Scene *sc, int target){
             float jx=x+((rng%1000)/1000.0f-0.5f)*pitch*0.4f;
             float jy=y+(((rng>>10)%1000)/1000.0f-0.5f)*pitch*0.4f;
             if(simp_free_at(s,jx,jy,0.34f)){
-                if((rng>>20)%5==0) simp_spawn_desc(s,jx,jy,&runner); else simp_spawn(s,jx,jy);
+                unsigned roll=(rng>>20)%100;
+                if(roll<15){ int i=simp_spawn_desc(s,jx,jy,&CRAWLER);
+                             if(i>=0) vat_layer_pin_variant(vl,simp_slot_of(s,i),CRAWLER_VAR); }
+                else if(roll<35) simp_spawn_desc(s,jx,jy,&runner);
+                else simp_spawn(s,jx,jy);
                 n++;
             }
         }
     return n;
 }
-
-// I body type disponibili (asset bakati in vat/assets/). Texture placeholder: la
-// skirt non ha ancora il _diffuse.png -> rende flat-shaded (tintata), corretto.
-static const char *PREFIX[] = {
-    "vat/assets/zombie_man", "vat/assets/zombie_man_obese",
-    "vat/assets/zombie_fem", "vat/assets/zombie_fem_obese",
-    "vat/assets/zombie_child", "vat/assets/zombie_fem_skirt",
-};
-#define NVAR ((int)(sizeof(PREFIX)/sizeof(PREFIX[0])))
 
 typedef struct { GLuint vao, texP, texN, texD; int ni, hasTex; const VatMeta *M; } Asset;
 
@@ -124,11 +134,12 @@ int main(int argc, char **argv){
     VatLayer *vl=vat_layer_create_multi(metap,NVAR,MAXA);
     for(int v=0;v<NVAR;v++){ const VatMeta *M=vat_layer_meta_variant(vl,v);
         if(M->nclips<=0){fprintf(stderr,"meta vuoto: %s\n",PREFIX[v]);return 1;} }
-    printf("varianti=%d\n",NVAR);
+    vat_layer_set_random_count(vl,NCOSMETIC);   /* il crawler solo via pin, non a caso */
+    printf("varianti=%d (di cui %d cosmetiche + crawler)\n",NVAR,NCOSMETIC);
 
     SimP *s = scene_instantiate(&sc, MAXA);
     if(!s){ fprintf(stderr,"scene_instantiate fail\n"); return 1; }
-    if(fillN){ int got=prefill_lattice(s,&sc,fillN);
+    if(fillN){ int got=prefill_lattice(s,vl,&sc,fillN);
         printf("prefill: target %d -> %d agenti piazzati\n", fillN, got); }
 
     const char *shot=getenv("VAT_HORDE_SHOT");
@@ -220,7 +231,13 @@ int main(int argc, char **argv){
                 const SceneRect *r=&sc.spawn[(rng>>3)%sc.n_spawn];
                 float x=r->x+(rng%10000)/10000.0f*r->w;
                 float y=r->y+((rng>>8)%10000)/10000.0f*r->h;
-                if(simp_free_at(s,x,y,0.34f)){ if((rng>>20)%5==0) simp_spawn_desc(s,x,y,&runner); else simp_spawn(s,x,y); }
+                if(simp_free_at(s,x,y,0.34f)){
+                    unsigned roll=(rng>>20)%100;
+                    if(roll<15){ int i=simp_spawn_desc(s,x,y,&CRAWLER);
+                                 if(i>=0) vat_layer_pin_variant(vl,simp_slot_of(s,i),CRAWLER_VAR); }
+                    else if(roll<35) simp_spawn_desc(s,x,y,&runner);
+                    else simp_spawn(s,x,y);
+                }
             }
             Uint64 t0=SDL_GetPerformanceCounter();
             simp_step(s,dt);

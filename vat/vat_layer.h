@@ -27,14 +27,25 @@ typedef struct VatLayer VatLayer;
 /* Multi-modello: N asset VAT (man/fem/obeso/bambino...), mesh+texture+VAT
  * diversi → un draw call per variante (migrazione_3d.md §Multi-modello). Il
  * body di ogni agente è assegnato per-slot via hash(handle) (cosmetico, stabile
- * per la vita dell'agente). Gli indici di clip sono gli STESSI tra varianti
- * (stesso ORDER di bake_zombie.sh): cambiano solo frame-range/stride/scale/texW. */
+ * per la vita dell'agente). I gruppi FSM sono PER-VARIANTE (match per prefisso
+ * idle/walk/run): un body può avere un layout di clip diverso (es. il crawler
+ * ha 3 clip walk/run/idle invece dei 13 standard) e la stessa FSM velocità→stato
+ * funziona lo stesso. */
 VatLayer     *vat_layer_create_multi(const char *const *meta_paths, int nvariants, int max_slots);
 VatLayer     *vat_layer_create(const char *meta_path, int max_slots); /* = _multi con 1 variante */
 void          vat_layer_destroy(VatLayer *vl);
 int           vat_layer_nvariants(const VatLayer *vl);
 const VatMeta *vat_layer_meta_variant(const VatLayer *vl, int variant);
 const VatMeta *vat_layer_meta(const VatLayer *vl); /* = variante 0 */
+
+/* Limita l'assegnazione cosmetica casuale alle prime `n` varianti: le restanti
+ * sono body "di gioco" (es. crawler) che si ottengono SOLO con pin_variant, non
+ * a caso. Default = tutte. */
+void vat_layer_set_random_count(VatLayer *vl, int n);
+/* Forza il body di uno slot (es. al momento dello spawn di un tipo). Va chiamata
+ * PRIMA che vat_layer_update veda l'agente; consumata al primo update (lo slot
+ * riusato torna libero). slot = simp_slot_of(s, indice_spawnato). */
+void vat_layer_pin_variant(VatLayer *vl, int slot, int variant);
 
 /* Avanza heading/FSM/fase. Stesso dt di simp_step (salta se in pausa). */
 void vat_layer_update(VatLayer *vl, const SimP *s, float dt);

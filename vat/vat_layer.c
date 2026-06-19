@@ -15,11 +15,16 @@ static const char *st_prefix[ST_N] = {"idle","walk","run","attack","scream"};
 
 struct VatLayer {
     VatMeta m[VAT_MAX_VARIANTS]; int nvar;   /* un asset VAT per body type */
-    int group_idx[ST_N][16], group_n[ST_N];  /* clip layout identico fra varianti */
+    /* gruppi FSM PER-VARIANTE: ogni body puo' avere un layout di clip diverso
+       (es. il crawler ha 3 clip walk/run/idle a startFrame propri, gli zombie
+       normali ne hanno 13). Indicizzati [variante][stato]. */
+    int group_idx[VAT_MAX_VARIANTS][ST_N][16], group_n[VAT_MAX_VARIANTS][ST_N];
+    int nrandom;                             /* varianti 0..nrandom-1 assegnabili a caso (cosmetiche);
+                                                le altre solo via vat_layer_pin_variant (tipi di gioco) */
     int max;
     SimPHandle *seen;
     float *hx, *hy, *spd, *phaseA, *phaseB, *blendF, *hmul;
-    int   *clipA, *clipB;
+    int   *clipA, *clipB, *pin;              /* pin[slot] = variante+1 forzata, 0 = libera */
     unsigned char *state, *target, *blending, *outfit, *var, *tr, *tg, *tb;
 };
 
@@ -45,18 +50,23 @@ VatLayer *vat_layer_create_multi(const char *const *meta_paths, int nvariants, i
     if(nvariants<1)nvariants=1; if(nvariants>VAT_MAX_VARIANTS)nvariants=VAT_MAX_VARIANTS;
     vl->nvar=nvariants;
     for(int v=0;v<nvariants;v++) load_meta(&vl->m[v], meta_paths[v]);
-    /* I gruppi FSM (quali clip sono idle/walk/run) vengono dalla variante 0:
-       il layout di clip è identico fra tutti gli asset (stesso ORDER di bake). */
-    for(int s=0;s<ST_N;s++)vl->group_n[s]=0;
-    for(int i=0;i<vl->m[0].nclips;i++) for(int s=0;s<ST_N;s++)
-        if(!strncmp(vl->m[0].clip[i].name,st_prefix[s],strlen(st_prefix[s]))){
-            if(vl->group_n[s]<16)vl->group_idx[s][vl->group_n[s]++]=i;
-            break; }
+    /* Gruppi FSM PER-VARIANTE: per ogni body, quali clip sono idle/walk/run
+       (match per prefisso del nome). Cosi' un body con layout diverso (il
+       crawler: walk/run/idle invece dei 13 standard) funziona con la stessa
+       FSM velocita'->stato. */
+    for(int v=0;v<nvariants;v++){
+        for(int s=0;s<ST_N;s++)vl->group_n[v][s]=0;
+        for(int i=0;i<vl->m[v].nclips;i++) for(int s=0;s<ST_N;s++)
+            if(!strncmp(vl->m[v].clip[i].name,st_prefix[s],strlen(st_prefix[s]))){
+                if(vl->group_n[v][s]<16)vl->group_idx[v][s][vl->group_n[v][s]++]=i;
+                break; }
+    }
+    vl->nrandom=nvariants;                    /* default: tutte cosmetiche */
     int n=max_slots;
     vl->seen=calloc(n,sizeof(SimPHandle));
     vl->hx=calloc(n,4); vl->hy=calloc(n,4); vl->spd=calloc(n,4);
     vl->phaseA=calloc(n,4); vl->phaseB=calloc(n,4); vl->blendF=calloc(n,4); vl->hmul=calloc(n,4);
-    vl->clipA=calloc(n,sizeof(int)); vl->clipB=calloc(n,sizeof(int));
+    vl->clipA=calloc(n,sizeof(int)); vl->clipB=calloc(n,sizeof(int)); vl->pin=calloc(n,sizeof(int));
     vl->state=calloc(n,1); vl->target=calloc(n,1); vl->blending=calloc(n,1);
     vl->outfit=calloc(n,1); vl->var=calloc(n,1); vl->tr=calloc(n,1); vl->tg=calloc(n,1); vl->tb=calloc(n,1);
     return vl;
@@ -66,16 +76,23 @@ VatLayer *vat_layer_create(const char *meta_path, int max_slots){
 }
 void vat_layer_destroy(VatLayer *vl){ if(!vl)return;
     free(vl->seen);free(vl->hx);free(vl->hy);free(vl->spd);free(vl->phaseA);free(vl->phaseB);
-    free(vl->blendF);free(vl->hmul);free(vl->clipA);free(vl->clipB);free(vl->state);free(vl->target);
+    free(vl->blendF);free(vl->hmul);free(vl->clipA);free(vl->clipB);free(vl->pin);free(vl->state);free(vl->target);
     free(vl->blending);free(vl->outfit);free(vl->var);free(vl->tr);free(vl->tg);free(vl->tb);free(vl); }
 int vat_layer_nvariants(const VatLayer *vl){ return vl->nvar; }
 const VatMeta *vat_layer_meta_variant(const VatLayer *vl, int variant){
     if(variant<0||variant>=vl->nvar)variant=0; return &vl->m[variant]; }
 const VatMeta *vat_layer_meta(const VatLayer *vl){ return &vl->m[0]; }
 
-static int pick_variant(VatLayer *vl,int slot,int st){
-    int n=vl->group_n[st]; if(n<=0) return 0;
-    return vl->group_idx[st][ hashu(slot*131u+st*977u) % (unsigned)n ]; }
+/* sceglie l'indice di CLIP per (body, stato) tra le varianti di quel gruppo */
+static int pick_clip(VatLayer *vl,int body,int slot,int st){
+    int n=vl->group_n[body][st]; if(n<=0) return 0;
+    return vl->group_idx[body][st][ hashu(slot*131u+st*977u) % (unsigned)n ]; }
+
+void vat_layer_pin_variant(VatLayer *vl,int slot,int variant){
+    if(slot<0||slot>=vl->max||variant<0||variant>=vl->nvar) return;
+    vl->pin[slot]=variant+1; }
+void vat_layer_set_random_count(VatLayer *vl,int n){
+    if(n<1)n=1; if(n>vl->nvar)n=vl->nvar; vl->nrandom=n; }
 
 /* stato voluto dalla velocità, con isteresi */
 static int want_state(int cur,float spd){
@@ -97,8 +114,11 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
             unsigned r=hashu(h); float ang=(r&0xffff)*(6.2831853f/65536.0f);
             vl->seen[slot]=h; vl->hx[slot]=sinf(ang)*0.01f; vl->hy[slot]=cosf(ang)*0.01f;
             vl->spd[slot]=1.0f; vl->state[slot]=ST_WALK; vl->blending[slot]=0;
-            vl->clipA[slot]=pick_variant(vl,slot,ST_WALK); vl->phaseA[slot]=(float)((r>>16)&0xff)/256.0f;
-            vl->var[slot]=(unsigned char)(hashu(h+333u)%(unsigned)vl->nvar); /* body model, cosmetico */
+            /* body: pinnato (tipo di gioco, es. crawler) o random fra le cosmetiche */
+            int body = vl->pin[slot] ? vl->pin[slot]-1 : (int)(hashu(h+333u)%(unsigned)vl->nrandom);
+            vl->pin[slot]=0;                          /* consuma: slot riusato torna libero */
+            vl->var[slot]=(unsigned char)body;        /* body model */
+            vl->clipA[slot]=pick_clip(vl,body,slot,ST_WALK); vl->phaseA[slot]=(float)((r>>16)&0xff)/256.0f;
             vl->outfit[slot]=(unsigned char)(hashu(h+777u)%16u);
             vl->hmul[slot]=0.90f+(hashu(h+555u)%1000)/1000.0f*0.22f; /* altezza ±, cosmetico */
             static const unsigned char PAL[8][3]={{255,255,255},{215,255,215},{255,225,210},{225,225,240},
@@ -114,13 +134,14 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
         if(sp>MOVE_MIN && !(fl[i]&SIMP_FLYING)){
             vl->hx[slot]+=alpha*(vx[i]-vl->hx[slot]); vl->hy[slot]+=alpha*(vy[i]-vl->hy[slot]); }
 
-        /* FSM da velocità (dormienti = idle) */
+        /* FSM da velocità (dormienti = idle); gruppi del BODY di questo agente */
+        int body=vl->var[slot];
         int cur=vl->state[slot];
         int want=(fl[i]&SIMP_DORMANT)?ST_IDLE:want_state(cur,vl->spd[slot]);
         int eff=vl->blending[slot]?vl->target[slot]:cur;
-        if(want!=eff && vl->group_n[want]>0){
+        if(want!=eff && vl->group_n[body][want]>0){
             vl->blending[slot]=1; vl->target[slot]=want;
-            vl->clipB[slot]=pick_variant(vl,slot,want); vl->phaseB[slot]=0; vl->blendF[slot]=0; }
+            vl->clipB[slot]=pick_clip(vl,body,slot,want); vl->phaseB[slot]=0; vl->blendF[slot]=0; }
 
         /* avanza fase (distanza per locomozione, tempo per il resto) — stride/durata
            dal meta del BODY di questo agente (variano per taglia: il bambino ha
