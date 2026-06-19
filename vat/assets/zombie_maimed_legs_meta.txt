@@ -1,8 +1,9 @@
 texW=256
-texH=352
+texH=650
 rowsPerFrame=2
 fps=30
 scale=0.01097732
-totalFrames=176
-clip=walk startFrame=0 numFrames=155 duration_s=5.1667 stride_m=0.0252
-clip=run startFrame=155 numFrames=21 duration_s=0.7000 stride_m=0.0169
+totalFrames=325
+clip=walk startFrame=0 numFrames=155 duration_s=5.1667 stride_m=2.3071
+clip=run startFrame=155 numFrames=21 duration_s=0.7000 stride_m=1.5506
+clip=idle startFrame=176 numFrames=149 duration_s=4.9667 stride_m=0.0000

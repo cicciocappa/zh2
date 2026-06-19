@@ -80,37 +80,36 @@ def write_meta(path, texW, texH, rpf, fps, scale, total, clips):
 MIXAMO_PREFIX = re.compile(r'mixamorig\d*:')
 
 
-def iter_fcurves(action):
-    """Tutte le F-curve di una Action, sia legacy (action.fcurves) sia slotted
-    (Blender 4.4+: action.layers[].strips[].channelbags[].fcurves)."""
-    seen = set()
-    for fc in getattr(action, "fcurves", []):
-        if id(fc) not in seen: seen.add(id(fc)); yield fc
-    for layer in getattr(action, "layers", []):
-        for strip in layer.strips:
-            for cb in getattr(strip, "channelbags", []):
-                for fc in cb.fcurves:
-                    if id(fc) not in seen: seen.add(id(fc)); yield fc
-
-
-def retarget_action_prefix(arm, action):
-    """Mixamo numera il prefisso dei bone in modo INCOERENTE fra i download
-    (es. 'mixamorig:' nel modello vs 'mixamorig5:' in una clip scaricata a parte).
-    Le F-curve dell'anim puntano allora a bone inesistenti sul rig del modello ->
-    nessuna deformazione, viene bakata la rest pose statica. Qui riscriviamo i
-    data_path dell'action al prefisso del MODELLO (i vertex group della mesh
-    restano quelli, non si tocca lo skin). No-op quando i prefissi coincidono."""
-    mb = MIXAMO_PREFIX.match(arm.pose.bones[0].name) if arm.pose.bones else None
-    if not mb: return
-    model_prefix = mb.group(0)
+def retarget_to_model(model, src):
+    """Retarget Mixamo -> rig del modello robusto alle DIFFERENZE DI REST POSE.
+    Mixamo esporta certe clip (es. crawl / prone idle) con lo scheletro a riposo
+    in una posa diversa dal T-pose del modello: le braccia a riposo possono
+    stare ~70° fuori. Rinominare i bone NON basta — le rotazioni locali partono
+    da un riposo diverso e gli arti si intrecciano. Qui vincoliamo ogni bone del
+    modello a seguire in WORLD space il bone omonimo del rig SORGENTE (quello su
+    cui l'anim e' stata authored, con la SUA rest pose) e bake-iamo l'azione
+    risultante: la posa per-frame viene riprodotta esattamente, qualunque sia la
+    rest pose (le proporzioni Mixamo coincidono). Il match e' per nome SENZA
+    prefisso, quindi regge anche prefissi diversi (mixamorig: vs mixamorig5:).
+    Ritorna la Action bakata, gia' assegnata al modello."""
+    mb = MIXAMO_PREFIX.match(model.pose.bones[0].name); mpfx = mb.group(0) if mb else ""
+    sb = MIXAMO_PREFIX.match(src.pose.bones[0].name);   spfx = sb.group(0) if sb else ""
+    src.matrix_world = model.matrix_world          # allinea gli spazi WORLD
+    act = src.animation_data.action
+    s, e = int(act.frame_range[0]), int(act.frame_range[1])
     n = 0
-    # materializza: riscrivere fc.data_path muta la collection live e
-    # invaliderebbe un iteratore lazy a metà strada.
-    for fc in list(iter_fcurves(action)):
-        new = MIXAMO_PREFIX.sub(model_prefix, fc.data_path)
-        if new != fc.data_path:
-            fc.data_path = new; n += 1
-    if n: log(f"retarget prefisso bone -> {model_prefix!r} ({n} f-curve riscritte)")
+    for pb in model.pose.bones:
+        sname = spfx + pb.name[len(mpfx):]
+        if sname in src.pose.bones:
+            c = pb.constraints.new('COPY_TRANSFORMS'); c.target = src; c.subtarget = sname
+            c.target_space = 'WORLD'; c.owner_space = 'WORLD'; n += 1
+    if not model.animation_data: model.animation_data_create()
+    for o in bpy.data.objects: o.select_set(False)
+    bpy.context.view_layer.objects.active = model; model.select_set(True)
+    bpy.ops.nla.bake(frame_start=s, frame_end=e, only_selected=False, visual_keying=True,
+                     clear_constraints=True, use_current_action=True, bake_types={'POSE'})
+    log(f"retarget a vincoli: {n} bone seguiti, bake {s}..{e}")
+    return model.animation_data.action
 
 
 def bind_action(arm, action):
@@ -159,20 +158,23 @@ def main():
     arm = next(o for o in bpy.data.objects if o.type == 'ARMATURE')
 
     if anim_fbx:
-        # importa la SOLA animazione (anche senza skin), prende la sua Action e
-        # la applica all'armatura del modello (stesso scheletro mixamorig), poi
-        # cancella gli oggetti importati dall'anim.
-        before_o = set(bpy.data.objects); before_a = set(bpy.data.actions)
+        # importa l'animazione CON la sua armatura (il rig su cui e' stata
+        # authored, con la sua rest pose) e retargeta sul rig del modello via
+        # vincoli + bake (gestisce le differenze di rest pose, vedi
+        # retarget_to_model). Poi cancella gli oggetti importati dall'anim.
+        before_o = set(bpy.data.objects)
         bpy.ops.import_scene.fbx(filepath=anim_fbx)
-        new_a = [a for a in bpy.data.actions if a not in before_a]
-        action = new_a[0] if new_a else bpy.data.actions[0]
+        src = next((o for o in bpy.data.objects
+                    if o not in before_o and o.type == 'ARMATURE'), None)
+        if src is None:
+            log(f"ERRORE: nessuna armatura in {anim_fbx}"); sys.exit(1)
+        action = retarget_to_model(arm, src)
         for o in [o for o in bpy.data.objects if o not in before_o]:
             bpy.data.objects.remove(o, do_unlink=True)
-        log(f"anim {anim_fbx.split('/')[-1]!r} -> action {action.name!r} sul rig del modello")
+        log(f"anim {anim_fbx.split('/')[-1]!r} retargetata sul rig del modello -> {action.name!r}")
     else:
         action = bpy.data.actions[0]
-    retarget_action_prefix(arm, action)
-    bind_action(arm, action)
+        bind_action(arm, action)
 
     # Correzione orientamento: alcuni FBX arrivano con assi sbagliati (es. esportati
     # Y-up -> lo zombie nasce coricato). --rotx/--roty/--rotz (gradi, assi Blender)
