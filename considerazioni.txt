@@ -21,3 +21,20 @@ ad un certo numero di colpi di torretta pesante, poi anche loro muoiono e finisc
 gli zombie uccisi creano "biomassa" nel punto in cui vengono uccisi. il giocatore dispone di una flotta di droni che recuperano questa biomassa e la portano alla base
 con la biomassa il giocatore può produrre proiettili per le torrette e puoi comprare gli upgrade per le torrette.
 
+
+
+torniamo al punto di partenza, cioè il level editor. ti butto giù la mia
+  prima idea: ogni livello ha un terrain, cioè una mesh che ci rappresenta il
+  suolo. è un file obj o glb, che posso aver modellato e texturizzato in
+  blender e che posso utilizzare così com'è a run time per visualizzare il
+  terreno appunto. c'è una fase di preprocessing che ricava una heightmap da
+  questo terreno. l'heightmap sarà utilizzata a runtime per visualizzare gli
+  zombie e le strutture che crea/piazza il giocatore. nessun effetto sulla
+  simulazione e sul gameplay. ci servirà a rappresentare gli zombie che
+  emergono dalla scalinata della metro o che salgono sul marciapiede. ogni
+  livello ha una serie di props: un palazzo, una edicola, un autobus, uno
+  spuntone di roccia, un albero, un semaforo, un segmento di muro o di 
+  recinzione, ecc. ecc. ogni prop ha una mesh, una superficie di base, un peso
+  e un hp associati e un flag che ci dice se è attaccabile e se è soggetta ad
+  attrito. la mesh viene visualizzata a run time, la superficie viene
+  resterizzata per assegnare i pesi alle cella della griglia di simulazione

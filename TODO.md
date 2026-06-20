@@ -49,6 +49,39 @@ poi scala, poi gioco.
       save/load, `test_scene` esteso (roundtrip del formato nuovo) + unit del
       picking. **Fase 2 (gameplay)**: layer `level.c` che deriva DefGame/director
       dalla Scene. **Fase 3**: undo, snap toggle, validazione, playtest in-editor.
+  - [x] **Terreno slice 1 — bake + sampling** (`EDITOR_DESIGN.md §9`): formato
+        `.zhm` (heightmap render-only, header ZHM1 alla `.zspr`), modulo C
+        `terrain.h/.c` (load/save + `terrain_z(x,y)` bilineare clampato, zero
+        deps) e `gfx/terrain_bake.py` (Blender headless: raycast giù sull'AABB
+        → `.zhm`, backfill dai vicini per i miss sui bordi MAX). `test_terrain`
+        PASS (roundtrip, piano esatto, gradino, clamp). Verificato end-to-end:
+        glb con gradino baked in Blender 5.1 → `.zhm` letto da `terrain.c` con
+        quote giuste (rampa + plateau ai bordi).
+  - [x] **Terreno slice 2 — loader glTF + seating** (`EDITOR_DESIGN.md §9`):
+        cgltf (`vat/cgltf_impl.c`, `-w`) + shader `vat/ground.vs/.fs` (texture
+        + key NW). Carica tutte le primitive/nodi con matrice mondo, mapping
+        glTF y-up → mondo `(x,y,-z)` coerente col bake; texture esterna E
+        embedded (`stbi_load_from_memory`). Gli agenti si posano sulla quota
+        (post-process del buffer instance, `vat_layer` resta agnostico),
+        ostacoli/torrette/base sollevati al `terrain_z`; quad-suolo flat
+        saltato col terreno glb. Campo `terrain` nel `.scn` (parse/save +
+        env `VAT_HORDE_TERRAIN`), `test_scene` esteso. Verificato headless:
+        gradino 3 m con sprite/torrette seduti, texture a scacchi mappata,
+        `.zhm` mancante = fallback z=0. Demo `scenes/terrain.scn` +
+        `gfx/terrain_demo_make.py`.
+  - [x] **Ombre + tracer a quota**: tracer di fuoco sollevati al `terrain_z`;
+        **ombre a terra aggiunte** al path VAT (non c'erano) — disco unitario
+        instanziato sotto ogni agente alla quota reale del terreno (blob
+        morbido blended, `vat/shadow.vs/.fs`), ground via `terrain_z` anche
+        sotto chi vola. Verificato su terreno e flat (no z-fight, no regress).
+  - [x] **Volo balistico height-aware**: il render del volo abbraccia il terreno
+        (`za + terrain_z`, ground corrente = niente galleggiamenti); ombra del
+        flyer a TERRA e rimpicciolita con `za` (segnale d'altezza). Sorgente di
+        volo in `vat_horde`: tasto `E` (esplosione+lancio al centro camera) +
+        headless `VAT_HORDE_BLAST="frame,x,y[,str,up]"`. Verificato: pack
+        lanciato a cavallo del gradino, agenti in aria con ombre a terra
+        staccate/ridotte, rientro a quota. MANCA: sorgente terreno
+        urbana/procedurale (§9 fase 2).
 
 ## Subito (prossima sessione)
 

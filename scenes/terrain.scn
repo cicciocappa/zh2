@@ -1,0 +1,24 @@
+# horde scene (vector, meters) — terrain demo for vat_horde (EDITOR_DESIGN §9).
+# Same 100x70 world as obstacles.scn, plus a render-only ground mesh: a gentle
+# slope along +y with a 0.5 m sidewalk step at x>=50. The .zhm (baked alongside)
+# seats sprites/structures on the elevation; the sim stays 2D planar on z=0.
+#
+# The .zhm is a derived (gitignored) bake — regenerate it with:
+#   blender --background --python gfx/terrain_demo_make.py
+#   blender --background --python gfx/terrain_bake.py -- \
+#           --in meshes/terrain_demo.glb --out meshes/terrain_demo.zhm
+# (vat_horde runs fine without it: sprites just stay on z=0.)
+cell 0.5
+world 100 70
+terrain meshes/terrain_demo.glb
+set k_density 2.5
+set k_jam 6
+
+spawn 2 1 96 4
+goal 44 66 12 3
+
+# a couple of buildings to show they seat on the terrain too
+poly 6.0 solid   0 33  30 33  30 37   0 37
+poly 6.0 solid  40 33  62 33  62 37  40 37
+poly 6.0 solid  72 33 100 33 100 37  72 37
+poly 5.0 solid  50 14  60 22  50 30  40 22

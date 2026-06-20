@@ -14,6 +14,8 @@
  *
  *     cell  0.5                       # nav/collision cell size (default 0.5)
  *     world 100 70                    # world extent W x H (meters) -> grid
+ *     terrain meshes/level1.glb       # render-only ground mesh (+ .zhm baked
+ *                                     #   alongside); EDITOR_DESIGN §9, no sim effect
  *     set   k_density 2.5             # any SimPParams field, repeatable
  *     goal  48 66 6 3                 # rect x y w h  (goal region)
  *     spawn 2  1 96 5                 # rect x y w h  (caller-side emitter)
@@ -50,6 +52,7 @@ typedef struct {
     float cell;                 /* meters per cell */
     float world_w, world_h;     /* world extent in meters */
     int   gw, gh;               /* derived: round(world/cell) */
+    char  terrain[128];         /* render-only ground mesh path ("" = none) */
     struct { char name[24]; float value; } set[SCENE_MAX_SET];
     int   n_set;
     ScenePoly poly[SCENE_MAX_POLY];   int n_poly;

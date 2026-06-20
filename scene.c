@@ -90,6 +90,11 @@ int scene_load(const char *path, Scene *sc) {
             char *w = strtok_r(NULL, " \t", &save), *h = strtok_r(NULL, " \t", &save);
             if (!w || !h) err = -2;
             else { sc->world_w = (float)atof(w); sc->world_h = (float)atof(h); }
+        } else if (!strcmp(key, "terrain")) {
+            char *v = strtok_r(NULL, " \t", &save);
+            if (!v) err = -2;
+            else { strncpy(sc->terrain, v, sizeof sc->terrain - 1);
+                   sc->terrain[sizeof sc->terrain - 1] = '\0'; }
         } else if (!strcmp(key, "set")) {
             char *n = strtok_r(NULL, " \t", &save), *v = strtok_r(NULL, " \t", &save);
             if (n && v && param_find(n) && sc->n_set < SCENE_MAX_SET) {
@@ -151,6 +156,7 @@ int scene_save(const char *path, const Scene *sc) {
     fprintf(f, "# horde scene (vector, meters)\n");
     fprintf(f, "cell %g\n", (double)sc->cell);
     fprintf(f, "world %g %g\n", (double)sc->world_w, (double)sc->world_h);
+    if (sc->terrain[0]) fprintf(f, "terrain %s\n", sc->terrain);
     for (int k = 0; k < sc->n_set; k++)
         fprintf(f, "set %s %g\n", sc->set[k].name, (double)sc->set[k].value);
     for (int k = 0; k < sc->n_goal; k++)

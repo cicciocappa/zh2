@@ -19,6 +19,7 @@ static int roundtrip(void) {
     Scene a;
     memset(&a, 0, sizeof a);
     a.cell = 0.5f; a.world_w = 30.0f; a.world_h = 20.0f;
+    strcpy(a.terrain, "meshes/level1.glb");
     a.n_set = 2;
     strcpy(a.set[0].name, "k_density"); a.set[0].value = 3.0f;
     strcpy(a.set[1].name, "pbd_iters"); a.set[1].value = 5.0f;
@@ -46,6 +47,7 @@ static int roundtrip(void) {
          fabsf(b.poly[0].vx[1] - 18.0f) < 1e-6f;
     ok = ok && !b.poly[1].solid && fabsf(b.poly[1].cost - 6.0f) < 1e-6f &&
          b.poly[1].nverts == 3;
+    ok = ok && strcmp(b.terrain, "meshes/level1.glb") == 0;
     printf("roundtrip: %dx%d set=%d poly=%d goal=%d | %s\n",
            b.gw, b.gh, b.n_set, b.n_poly, b.n_goal, ok ? "ok" : "BAD");
     scene_free(&a); scene_free(&b);

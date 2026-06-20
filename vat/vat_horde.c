@@ -6,18 +6,23 @@
 // glDrawElementsInstanced per variante.
 //
 //   ./vat_horde [scena.scn]            (default: scenes/obstacles.scn)
-// Controlli: frecce=pan  +/-=zoom  C=camera  T=texture  SPACE=pausa  ESC=esci
+// Controlli: frecce=pan  +/-=zoom  C=camera  T=texture  SPACE=pausa  E=esplosione
+//            (lancio in volo al centro camera)  ESC=esci
 // Headless:  VAT_HORDE_SHOT="<frames>" ./vat_horde  -> simula N step, screenshot
 //            vat_horde_shot.bmp, esce. VAT_HORDE_CAM="cx,cz,hh,az,el".
+//            VAT_HORDE_BLAST="frame,x,y[,str,up]" -> esplosione+lancio a quel frame.
 #include <SDL3/SDL.h>
 #include "vat_gl.h"
 #include "vat_layer.h"
 #include "sim_particles.h"
 #include "scene.h"
 #include "defense.h"
+#include "cgltf.h"
+#include "terrain.h"
 
 #define MAXA 60000
 static float inst[MAXA*12];
+static float shad[MAXA*4];     // ground shadow instances: xyz center + radius
 
 // I body type disponibili (asset bakati in vat/assets/). Texture placeholder: la
 // skirt non ha ancora il _diffuse.png -> rende flat-shaded (tintata), corretto.
@@ -82,27 +87,136 @@ static int prefill_lattice(SimP *s, DefGame *g, VatLayer *vl, const Scene *sc, i
 
 typedef struct { GLuint vao, texP, texN, texD; int ni, hasTex; const VatMeta *M; } Asset;
 
+// --- terreno render-only (EDITOR_DESIGN §9): mesh .glb del suolo (cgltf) +
+// heightmap .zhm per posare sprite/strutture sulla quota. Zero effetto sim.
+static Terrain gTer; static int gTerOn = 0;
+static float ter_z(float x, float y){ return gTerOn ? terrain_z(&gTer, x, y) : 0.0f; }
+
+typedef struct { GLuint vao, vbo, ebo, tex; int nidx, hasTex; } Ground;
+
+// carica la base-color texture del primo materiale (uri su file o embedded nel
+// buffer view del .glb) come GL texture.
+static GLuint ground_load_tex(cgltf_data *data, cgltf_primitive *prim, const char *dir){
+    if(!prim->material || !prim->material->has_pbr_metallic_roughness) return 0;
+    cgltf_texture *t = prim->material->pbr_metallic_roughness.base_color_texture.texture;
+    if(!t || !t->image) return 0;
+    cgltf_image *img = t->image;
+    if(img->uri && strncmp(img->uri,"data:",5)!=0){            // external file
+        char path[512]; snprintf(path,sizeof path,"%s%s",dir,img->uri);
+        return vg_tex_png(path);
+    }
+    if(img->buffer_view){                                       // embedded image
+        cgltf_buffer_view *bv = img->buffer_view;
+        const unsigned char *base = (const unsigned char*)bv->buffer->data;
+        int w,h,n; unsigned char *d = stbi_load_from_memory(base+bv->offset,(int)bv->size,&w,&h,&n,0);
+        if(!d){ printf("ground: embedded image decode fail\n"); return 0; }
+        GLuint tex; glGenTextures(1,&tex); glBindTexture(GL_TEXTURE_2D,tex);
+        GLenum fmt=(n==4)?GL_RGBA:GL_RGB;
+        glTexImage2D(GL_TEXTURE_2D,0,fmt,w,h,0,fmt,GL_UNSIGNED_BYTE,d); glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_REPEAT);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR_MIPMAP_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+        stbi_image_free(d); printf("ground: embedded texture %dx%d\n",w,h);
+        return tex;
+    }
+    return 0;
+}
+
+// carica la mesh del suolo da .glb: accumula TUTTE le primitive di TUTTI i nodi
+// con la matrice mondo del nodo. glTF è Y-up: mappa al nostro mondo (x, y, -z),
+// coerente col bake (terrain_bake.py legge gli assi di Blender). 8 float/vertice
+// (pos.xyz, normal.xyz, uv.xy). Ritorna 0 su successo.
+static int load_ground_glb(const char *path, Ground *G){
+    memset(G,0,sizeof *G);
+    cgltf_options opt={0}; cgltf_data *data=NULL;
+    if(cgltf_parse_file(&opt,path,&data)!=cgltf_result_success){ fprintf(stderr,"ground: parse fail %s\n",path); return -1; }
+    if(cgltf_load_buffers(&opt,data,path)!=cgltf_result_success){ fprintf(stderr,"ground: load buffers fail\n"); cgltf_free(data); return -1; }
+
+    // dir del glb (per le texture esterne relative)
+    char dir[512]; snprintf(dir,sizeof dir,"%s",path);
+    char *slash=strrchr(dir,'/'); if(slash) slash[1]='\0'; else dir[0]='\0';
+
+    // pass 1: conta vertici/indici totali (solo nodi con mesh)
+    size_t totV=0, totI=0;
+    for(size_t n=0;n<data->nodes_count;n++){ cgltf_node *nd=&data->nodes[n]; if(!nd->mesh) continue;
+        for(size_t p=0;p<nd->mesh->primitives_count;p++){ cgltf_primitive *pr=&nd->mesh->primitives[p];
+            if(pr->type!=cgltf_primitive_type_triangles||!pr->indices) continue;
+            cgltf_accessor *pos=NULL; for(size_t a=0;a<pr->attributes_count;a++) if(pr->attributes[a].type==cgltf_attribute_type_position) pos=pr->attributes[a].data;
+            if(!pos) continue; totV+=pos->count; totI+=pr->indices->count; } }
+    if(totV==0||totI==0){ fprintf(stderr,"ground: no triangles in %s\n",path); cgltf_free(data); return -1; }
+
+    float *verts=malloc(totV*8*sizeof(float)); unsigned *idx=malloc(totI*sizeof(unsigned));
+    GLuint tex=0;
+    size_t vbase=0, ibase=0;
+    for(size_t n=0;n<data->nodes_count;n++){ cgltf_node *nd=&data->nodes[n]; if(!nd->mesh) continue;
+        float M[16]; cgltf_node_transform_world(nd,M);
+        for(size_t p=0;p<nd->mesh->primitives_count;p++){ cgltf_primitive *pr=&nd->mesh->primitives[p];
+            if(pr->type!=cgltf_primitive_type_triangles||!pr->indices) continue;
+            cgltf_accessor *pos=NULL,*nrm=NULL,*uv=NULL;
+            for(size_t a=0;a<pr->attributes_count;a++){ cgltf_attribute *at=&pr->attributes[a];
+                if(at->type==cgltf_attribute_type_position) pos=at->data;
+                else if(at->type==cgltf_attribute_type_normal) nrm=at->data;
+                else if(at->type==cgltf_attribute_type_texcoord && at->index==0) uv=at->data; }
+            if(!pos) continue;
+            if(!tex) tex=ground_load_tex(data,pr,dir);
+            for(size_t v=0;v<pos->count;v++){
+                float P[3]={0,0,0},N[3]={0,1,0},T[2]={0,0};
+                cgltf_accessor_read_float(pos,v,P,3);
+                if(nrm) cgltf_accessor_read_float(nrm,v,N,3);
+                if(uv)  cgltf_accessor_read_float(uv,v,T,2);
+                // node world transform (column-major), then glTF y-up -> world (x,y,-z)
+                float wx=M[0]*P[0]+M[4]*P[1]+M[8]*P[2]+M[12];
+                float wy=M[1]*P[0]+M[5]*P[1]+M[9]*P[2]+M[13];
+                float wz=M[2]*P[0]+M[6]*P[1]+M[10]*P[2]+M[14];
+                float nx=M[0]*N[0]+M[4]*N[1]+M[8]*N[2];
+                float ny=M[1]*N[0]+M[5]*N[1]+M[9]*N[2];
+                float nz=M[2]*N[0]+M[6]*N[1]+M[10]*N[2];
+                float *o=verts+(vbase+v)*8;
+                o[0]=wx; o[1]=wy; o[2]=-wz; o[3]=nx; o[4]=ny; o[5]=-nz; o[6]=T[0]; o[7]=T[1];
+            }
+            for(size_t k=0;k<pr->indices->count;k++)
+                idx[ibase+k]=(unsigned)(vbase+cgltf_accessor_read_index(pr->indices,k));
+            vbase+=pos->count; ibase+=pr->indices->count;
+        } }
+    cgltf_free(data);
+
+    glGenVertexArrays(1,&G->vao); glBindVertexArray(G->vao);
+    glGenBuffers(1,&G->vbo); glBindBuffer(GL_ARRAY_BUFFER,G->vbo);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)vbase*8*sizeof(float),verts,GL_STATIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,0,8*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1,3,GL_FLOAT,0,8*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2,2,GL_FLOAT,0,8*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
+    glGenBuffers(1,&G->ebo); glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,G->ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,(GLsizeiptr)ibase*sizeof(unsigned),idx,GL_STATIC_DRAW);
+    glBindVertexArray(0);
+    G->nidx=(int)ibase; G->tex=tex; G->hasTex=(tex!=0);
+    free(verts); free(idx);
+    printf("ground: %s  %zu verts %zu tris  tex=%d\n",path,vbase,ibase/3,G->hasTex);
+    return 0;
+}
+
 // --- mesh statica degli ostacoli: ogni poligono estruso (top + pareti) + suolo.
 // 9 float/vertice: pos.xyz, normal.xyz, color.rgb. World = (sim_x, altezza, sim_y).
-static float *build_obstacle_mesh(const Scene *sc, int *out_nverts) {
-    int nv = 6;                                  // ground quad
+static float *build_obstacle_mesh(const Scene *sc, int with_ground, int *out_nverts) {
+    int nv = with_ground ? 6 : 0;                // ground quad (skipped if terrain mesh)
     for (int k = 0; k < sc->n_poly; k++) { int n = sc->poly[k].nverts; nv += (n - 2) * 3 + n * 6; }
     float *buf = malloc((size_t)nv * 9 * sizeof(float));
     int c = 0;
 #define PUSH(PX,PY,PZ,NX,NY,NZ,R,G,B) do{ float*o=buf+c*9; \
     o[0]=(PX);o[1]=(PY);o[2]=(PZ); o[3]=(NX);o[4]=(NY);o[5]=(NZ); o[6]=(R);o[7]=(G);o[8]=(B); c++; }while(0)
-    // suolo (leggermente sotto 0 per non z-fightare con le basi)
-    float W = sc->world_w, H = sc->world_h, gy = -0.02f;
-    PUSH(0,gy,0, 0,1,0, 0.16f,0.18f,0.15f); PUSH(W,gy,0, 0,1,0, 0.16f,0.18f,0.15f); PUSH(W,gy,H, 0,1,0, 0.16f,0.18f,0.15f);
-    PUSH(0,gy,0, 0,1,0, 0.16f,0.18f,0.15f); PUSH(W,gy,H, 0,1,0, 0.16f,0.18f,0.15f); PUSH(0,gy,H, 0,1,0, 0.16f,0.18f,0.15f);
+    if (with_ground) {  // suolo flat (leggermente sotto 0); col terreno glb lo salta
+        float W = sc->world_w, H = sc->world_h, gy = -0.02f;
+        PUSH(0,gy,0, 0,1,0, 0.16f,0.18f,0.15f); PUSH(W,gy,0, 0,1,0, 0.16f,0.18f,0.15f); PUSH(W,gy,H, 0,1,0, 0.16f,0.18f,0.15f);
+        PUSH(0,gy,0, 0,1,0, 0.16f,0.18f,0.15f); PUSH(W,gy,H, 0,1,0, 0.16f,0.18f,0.15f); PUSH(0,gy,H, 0,1,0, 0.16f,0.18f,0.15f);
+    }
 
     for (int k = 0; k < sc->n_poly; k++) {
         const ScenePoly *p = &sc->poly[k];
-        int n = p->nverts; float h = p->height;
+        int n = p->nverts;
         float cr = p->solid ? 0.56f : 0.46f, cg = p->solid ? 0.56f : 0.34f, cb = p->solid ? 0.60f : 0.20f;
         float ccx = 0, ccz = 0;
         for (int i = 0; i < n; i++) { ccx += p->vx[i]; ccz += p->vy[i]; }
         ccx /= n; ccz /= n;
+        float zb = ter_z(ccx, ccz), h = zb + p->height;   // seat base/top on terrain
         // top face (triangle fan, convesso)
         for (int i = 1; i + 1 < n; i++) {
             PUSH(p->vx[0],h,p->vy[0], 0,1,0, cr,cg,cb);
@@ -121,10 +235,10 @@ static float *build_obstacle_mesh(const Scene *sc, int *out_nverts) {
             float wr = cr*shade, wg = cg*shade, wb = cb*shade;
             PUSH(p->vx[k0],h,p->vy[k0], nx,0,nz, wr,wg,wb);
             PUSH(p->vx[k1],h,p->vy[k1], nx,0,nz, wr,wg,wb);
-            PUSH(p->vx[k1],0,p->vy[k1], nx,0,nz, wr,wg,wb);
+            PUSH(p->vx[k1],zb,p->vy[k1], nx,0,nz, wr,wg,wb);
             PUSH(p->vx[k0],h,p->vy[k0], nx,0,nz, wr,wg,wb);
-            PUSH(p->vx[k1],0,p->vy[k1], nx,0,nz, wr,wg,wb);
-            PUSH(p->vx[k0],0,p->vy[k0], nx,0,nz, wr,wg,wb);
+            PUSH(p->vx[k1],zb,p->vy[k1], nx,0,nz, wr,wg,wb);
+            PUSH(p->vx[k0],zb,p->vy[k0], nx,0,nz, wr,wg,wb);
         }
     }
 #undef PUSH
@@ -138,7 +252,8 @@ static float *build_turret_mesh(DefGame *g, int *out_nv){
     int nt=def_turret_count(g); int nv=nt*30;
     float *buf=malloc((size_t)nv*9*sizeof(float)); int c=0;
     for(int id=0;id<nt;id++){ DefTurret *t=def_turret(g,id);
-        float cx=t->x, cz=t->y, hw=0.32f, h=1.6f;
+        float cx=t->x, cz=t->y, hw=0.32f;
+        float zb=ter_z(cx,cz), h=zb+1.6f;            // seat on terrain
         float cr=0.95f, cg=t->heavy?0.20f:0.55f, cb=0.10f;
         float x0=cx-hw,x1=cx+hw,z0=cz-hw,z1=cz+hw;
 #define VT(PX,PY,PZ,NX,NY,NZ) do{float*o=buf+c*9;o[0]=PX;o[1]=PY;o[2]=PZ;\
@@ -147,10 +262,10 @@ static float *build_turret_mesh(DefGame *g, int *out_nv){
         VT(ax,ay,az,nx,ny,nz);VT(bx,by,bz,nx,ny,nz);VT(px2,py2,pz2,nx,ny,nz); \
         VT(ax,ay,az,nx,ny,nz);VT(px2,py2,pz2,nx,ny,nz);VT(dx,dy,dz,nx,ny,nz);}while(0)
         QT(x0,h,z0, x1,h,z0, x1,h,z1, x0,h,z1, 0,1,0);    // top
-        QT(x1,0,z0, x1,0,z1, x1,h,z1, x1,h,z0, 1,0,0);    // +X
-        QT(x0,0,z1, x0,0,z0, x0,h,z0, x0,h,z1, -1,0,0);   // -X
-        QT(x0,0,z1, x1,0,z1, x1,h,z1, x0,h,z1, 0,0,1);    // +Z
-        QT(x1,0,z0, x0,0,z0, x0,h,z0, x1,h,z0, 0,0,-1);   // -Z
+        QT(x1,zb,z0, x1,zb,z1, x1,h,z1, x1,h,z0, 1,0,0);    // +X
+        QT(x0,zb,z1, x0,zb,z0, x0,h,z0, x0,h,z1, -1,0,0);   // -X
+        QT(x0,zb,z1, x1,zb,z1, x1,h,z1, x0,h,z1, 0,0,1);    // +Z
+        QT(x1,zb,z0, x0,zb,z0, x0,h,z0, x1,h,z0, 0,0,-1);   // -Z
 #undef VT
 #undef QT
     }
@@ -187,16 +302,17 @@ static int build_struct_mesh(DefGame *g, float cell, float *buf){
         if(id==gCoreId){ cr=0.75f*t; cg=0.16f*t; cb=0.16f*t; }   // core = red
         else           { cr=0.55f*t; cg=0.57f*t; cb=0.62f*t; }   // ring = steel
         float x0=cx*cell, x1=x0+cell, z0=cy*cell, z1=z0+cell;
+        float zb=ter_z((x0+x1)*0.5f,(z0+z1)*0.5f), H1=zb+H;   // seat on terrain
 #define VS(PX,PY,PZ,NX,NY,NZ) do{float*o=buf+c*9;o[0]=PX;o[1]=PY;o[2]=PZ;\
         o[3]=NX;o[4]=NY;o[5]=NZ;o[6]=cr;o[7]=cg;o[8]=cb;c++;}while(0)
 #define QS(ax,ay,az,bx,by,bz,px2,py2,pz2,dx,dy,dz,nx,ny,nz) do{ \
         VS(ax,ay,az,nx,ny,nz);VS(bx,by,bz,nx,ny,nz);VS(px2,py2,pz2,nx,ny,nz); \
         VS(ax,ay,az,nx,ny,nz);VS(px2,py2,pz2,nx,ny,nz);VS(dx,dy,dz,nx,ny,nz);}while(0)
-        QS(x0,H,z0, x1,H,z0, x1,H,z1, x0,H,z1, 0,1,0);    // top
-        QS(x1,0,z0, x1,0,z1, x1,H,z1, x1,H,z0, 1,0,0);    // +X
-        QS(x0,0,z1, x0,0,z0, x0,H,z0, x0,H,z1, -1,0,0);   // -X
-        QS(x0,0,z1, x1,0,z1, x1,H,z1, x0,H,z1, 0,0,1);    // +Z
-        QS(x1,0,z0, x0,0,z0, x0,H,z0, x1,H,z0, 0,0,-1);   // -Z
+        QS(x0,H1,z0, x1,H1,z0, x1,H1,z1, x0,H1,z1, 0,1,0);    // top
+        QS(x1,zb,z0, x1,zb,z1, x1,H1,z1, x1,H1,z0, 1,0,0);    // +X
+        QS(x0,zb,z1, x0,zb,z0, x0,H1,z0, x0,H1,z1, -1,0,0);   // -X
+        QS(x0,zb,z1, x1,zb,z1, x1,H1,z1, x0,H1,z1, 0,0,1);    // +Z
+        QS(x1,zb,z0, x0,zb,z0, x0,H1,z0, x1,H1,z0, 0,0,-1);   // -Z
 #undef VS
 #undef QS
     }
@@ -210,6 +326,20 @@ int main(int argc, char **argv){
     printf("scene %s: %dx%d cell=%g (%gx%g m) poly=%d spawn=%d goal=%d\n",
            scene_path, sc.gw, sc.gh, (double)sc.cell, (double)sc.world_w, (double)sc.world_h,
            sc.n_poly, sc.n_spawn, sc.n_goal);
+
+    // terreno render-only (§9): glb dalla scena (o VAT_HORDE_TERRAIN), heightmap
+    // .zhm a fianco (stesso path, estensione .zhm). Il .zhm è CPU-only → caricato
+    // prima di SDL così i builder mesh statici lo campionano (ter_z).
+    char terrain_glb[256]=""; const char *te=getenv("VAT_HORDE_TERRAIN");
+    if(te) snprintf(terrain_glb,sizeof terrain_glb,"%s",te);
+    else if(sc.terrain[0]) snprintf(terrain_glb,sizeof terrain_glb,"%s",sc.terrain);
+    if(terrain_glb[0]){
+        char zhm[256]; snprintf(zhm,sizeof zhm,"%s",terrain_glb);
+        char *dot=strrchr(zhm,'.'); if(dot) strcpy(dot,".zhm"); else strncat(zhm,".zhm",sizeof zhm-strlen(zhm)-1);
+        if(terrain_load(zhm,&gTer)==0){ gTerOn=1;
+            printf("terreno: %s + %s (%dx%d @ %.1f px/m)\n",terrain_glb,zhm,gTer.w,gTer.h,(double)gTer.px_per_m); }
+        else printf("terreno: %s ma .zhm mancante (%s) -> sprite su z=0\n",terrain_glb,zhm);
+    }
     // Modalità benchmark: VAT_HORDE_FILL=N prefilla il campo; VAT_HORDE_BENCH=
     // "warmup,measure" scalda poi misura medie sim/render su `measure` step.
     int fillN = getenv("VAT_HORDE_FILL") ? atoi(getenv("VAT_HORDE_FILL")) : 0;
@@ -289,6 +419,13 @@ int main(int argc, char **argv){
 
     const char *shot=getenv("VAT_HORDE_SHOT");
     int shot_frames = shot? atoi(shot):0; if(shot&&shot_frames<=0)shot_frames=600;
+
+    // blast headless: VAT_HORDE_BLAST="frame,x,y[,strength,up]" → esplosione con
+    // lancio (apply_impulse_ex) a quel frame; per verificare il volo balistico.
+    int blast_frame=-1; float blast_x=0,blast_y=0,blast_str=28.0f,blast_up=0.7f;
+    if(getenv("VAT_HORDE_BLAST")){ sscanf(getenv("VAT_HORDE_BLAST"),"%d,%f,%f,%f,%f",
+        &blast_frame,&blast_x,&blast_y,&blast_str,&blast_up); }
+    int blast_pending=0;   // armato da E (interattivo) o dall'env
     int SW=1280,SH=720;
 
     if(!SDL_Init(SDL_INIT_VIDEO)){fprintf(stderr,"SDL:%s\n",SDL_GetError());return 1;}
@@ -305,10 +442,39 @@ int main(int argc, char **argv){
     GLuint bi; glGenBuffers(1,&bi);glBindBuffer(GL_ARRAY_BUFFER,bi);
     glBufferData(GL_ARRAY_BUFFER,sizeof(inst),NULL,GL_DYNAMIC_DRAW);
 
-    // --- ostacoli: programma flat + mesh statica estrusa dalla scena.
+    // --- terreno glb (render-only): carica la mesh del suolo + shader texturizzato.
+    Ground gnd; int groundOn=0;
+    GLuint progGnd=0; GLint uVPgnd=0,uHasGnd=0,uColGnd=0;
+    if(terrain_glb[0] && load_ground_glb(terrain_glb,&gnd)==0){ groundOn=1;
+        progGnd=vg_shader("vat/ground.vs","vat/ground.fs");
+        uVPgnd=glGetUniformLocation(progGnd,"uVP");
+        uHasGnd=glGetUniformLocation(progGnd,"uHasTex");
+        uColGnd=glGetUniformLocation(progGnd,"uColor");
+        glUniform1i(glGetUniformLocation(progGnd,"uTex"),0); }
+
+    // --- ombre a terra: un disco unitario instanziato sotto ogni agente alla
+    // quota del terreno (blob morbido, blend). Ground reale (terrain_z) anche
+    // sotto chi vola → l'ombra resta a terra.
+#define SHADN 18
+    float disc[SHADN*2]; disc[0]=0; disc[1]=0;        // fan: centro + 16 + chiusura
+    for(int i=0;i<SHADN-1;i++){ float a=(float)i*(6.2831853f/16.0f);
+        disc[(i+1)*2]=cosf(a); disc[(i+1)*2+1]=sinf(a); }
+    GLuint progSh=vg_shader("vat/shadow.vs","vat/shadow.fs");
+    GLint uVPsh=glGetUniformLocation(progSh,"uVP");
+    GLuint shVao,shDisc,shInst; glGenVertexArrays(1,&shVao);glBindVertexArray(shVao);
+    glGenBuffers(1,&shDisc);glBindBuffer(GL_ARRAY_BUFFER,shDisc);
+    glBufferData(GL_ARRAY_BUFFER,sizeof disc,disc,GL_STATIC_DRAW);
+    glVertexAttribPointer(0,2,GL_FLOAT,0,2*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glGenBuffers(1,&shInst);glBindBuffer(GL_ARRAY_BUFFER,shInst);
+    glBufferData(GL_ARRAY_BUFFER,sizeof shad,NULL,GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(1,4,GL_FLOAT,0,4*sizeof(float),(void*)0);glEnableVertexAttribArray(1);glVertexAttribDivisor(1,1);
+    glBindVertexArray(0);
+
+    // --- ostacoli: programma flat + mesh statica estrusa dalla scena (il quad
+    // suolo flat si salta quando c'è il terreno glb).
     GLuint progFlat=vg_shader("vat/flat.vs","vat/flat.fs");
     GLint uVPflat=glGetUniformLocation(progFlat,"uVP");
-    int obNV=0; float *obMesh=build_obstacle_mesh(&sc,&obNV);
+    int obNV=0; float *obMesh=build_obstacle_mesh(&sc,!groundOn,&obNV);
     GLuint obVao,obVbo; glGenVertexArrays(1,&obVao);glBindVertexArray(obVao);
     glGenBuffers(1,&obVbo);glBindBuffer(GL_ARRAY_BUFFER,obVbo);
     glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)obNV*9*sizeof(float),obMesh,GL_STATIC_DRAW);
@@ -396,6 +562,7 @@ int main(int argc, char **argv){
             else if(e.type==SDL_EVENT_KEY_DOWN)switch(e.key.key){
                 case SDLK_ESCAPE:running=0;break; case SDLK_C:cam_free=!cam_free;break; case SDLK_T:useTex=!useTex;break;
                 case SDLK_SPACE:paused=!paused;break;
+                case SDLK_E:blast_x=cx;blast_y=cz;blast_pending=1;break;  // esplosione+lancio al centro camera
                 case SDLK_LEFT:az-=0.06f;break; case SDLK_RIGHT:az+=0.06f;break; case SDLK_UP:el+=0.04f;break; case SDLK_DOWN:el-=0.04f;break;
                 case SDLK_EQUALS:case SDLK_PLUS:hh*=0.9f;break; case SDLK_MINUS:hh*=1.1f;break; } }
         double sim_ms=0, lay_ms=0;
@@ -405,7 +572,11 @@ int main(int argc, char **argv){
         double frame_t=(double)(nowc-prev)/(double)pf; prev=nowc;
         if(shot || bench_meas) frame_t=FIXED_DT;
         if(frame_t>0.25) frame_t=0.25;                 // anti spiral-of-death
+        if(blast_frame>=0 && frame>=blast_frame){ blast_pending=1; blast_frame=-1; }
         if(!paused){
+            if(blast_pending){ simp_apply_impulse_ex(s,blast_x,blast_y,8.0f,blast_str,blast_up);
+                blast_pending=0; printf("blast @ (%.1f,%.1f) str %.1f up %.2f\n",
+                    (double)blast_x,(double)blast_y,(double)blast_str,(double)blast_up); }
             acc_t+=frame_t;
             while(acc_t>=FIXED_DT){
                 // §8: il director emette l'ondata (burst-free). In benchmark
@@ -436,6 +607,12 @@ int main(int argc, char **argv){
         Uint64 r0=SDL_GetPerformanceCounter();
         glViewport(0,0,SW,SH);glClearColor(0.12f,0.13f,0.16f,1);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 
+        // terreno glb (suolo texturizzato), sotto a tutto
+        if(groundOn){ glUseProgram(progGnd);glUniformMatrix4fv(uVPgnd,1,GL_FALSE,vp);
+            glUniform1i(uHasGnd, useTex && gnd.hasTex); glUniform3f(uColGnd,0.30f,0.32f,0.26f);
+            glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,gnd.tex);
+            glBindVertexArray(gnd.vao);glDrawElements(GL_TRIANGLES,gnd.nidx,GL_UNSIGNED_INT,0); }
+
         // ostacoli + suolo (statici)
         glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
         glBindVertexArray(obVao);glDrawArrays(GL_TRIANGLES,0,obNV);
@@ -446,9 +623,9 @@ int main(int argc, char **argv){
           for(int id=0;id<def_turret_count(g);id++){ DefTurret *t=def_turret(g,id);
               if(t->tracer_ttl<=0.0f) continue;
               float ex=t->x+cosf(t->ang)*t->last_t, ez=t->y+sinf(t->ang)*t->last_t;
-              float *o=trbuf+tc*9; o[0]=t->x;o[1]=0.9f;o[2]=t->y;
+              float *o=trbuf+tc*9; o[0]=t->x;o[1]=0.9f+ter_z(t->x,t->y);o[2]=t->y;
               o[3]=0;o[4]=1;o[5]=0; o[6]=3;o[7]=3;o[8]=0.4f; tc++;
-              o=trbuf+tc*9; o[0]=ex;o[1]=0.9f;o[2]=ez;
+              o=trbuf+tc*9; o[0]=ex;o[1]=0.9f+ter_z(ex,ez);o[2]=ez;
               o[3]=0;o[4]=1;o[5]=0; o[6]=3;o[7]=3;o[8]=0.4f; tc++; }
           if(tc){ glBindVertexArray(trVao);glBindBuffer(GL_ARRAY_BUFFER,trVbo);
               glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)tc*9*sizeof(float),trbuf);
@@ -460,6 +637,22 @@ int main(int argc, char **argv){
                 glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)sv*9*sizeof(float),stBuf);
                 glDrawArrays(GL_TRIANGLES,0,sv); } }
 
+        // ombre a terra (sotto l'orda, alla quota del terreno): blend, no depth write.
+        // Per i flyer l'ombra resta a terra (terrain_z, non la quota di volo) e si
+        // RIMPICCIOLISCE con l'altezza za[] → segnala visivamente quanto è alto.
+        { const float *px=simp_px(s),*py=simp_py(s),*rad=simp_radius_arr(s),*za=simp_z_arr(s);
+          int n=simp_count(s);
+          int nsh=0; for(int i=0;i<n && nsh<MAXA;i++){
+              float ax=px[i], ay=py[i], fz=za?za[i]:0.0f; float *o=shad+nsh*4;
+              o[0]=ax; o[1]=ter_z(ax,ay)+0.02f; o[2]=ay;
+              o[3]=rad[i]*1.35f/(1.0f+0.20f*fz); nsh++; }
+          if(nsh){ glUseProgram(progSh);glUniformMatrix4fv(uVPsh,1,GL_FALSE,vp);
+              glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);
+              glBindVertexArray(shVao);glBindBuffer(GL_ARRAY_BUFFER,shInst);
+              glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)nsh*4*sizeof(float),shad);
+              glDrawArraysInstanced(GL_TRIANGLE_FAN,0,SHADN,nsh);
+              glDepthMask(GL_TRUE);glDisable(GL_BLEND); } }
+
         // orda VAT
         glUseProgram(prog);glUniformMatrix4fv(uVP,1,GL_FALSE,vp);
         glUniform1i(glGetUniformLocation(prog,"texPos"),0);
@@ -470,6 +663,8 @@ int main(int argc, char **argv){
         for(int v=0;v<NVAR;v++){
             int count=vat_layer_fill_variant(vl,s,v,inst,MAXA);
             if(!count) continue; total+=count;
+            // posa gli sprite sulla quota del terreno (o[1]=altezza, o[0]/o[2]=x/y)
+            if(gTerOn) for(int q=0;q<count;q++) inst[q*12+1]+=ter_z(inst[q*12+0],inst[q*12+2]);
             const VatMeta *M=A[v].M;
             glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferSubData(GL_ARRAY_BUFFER,0,count*12*sizeof(float),inst);
             glUniform2f(uTS,(float)M->texW,(float)M->texH);glUniform1f(uRPF,(float)M->rowsPerFrame);
@@ -523,6 +718,7 @@ int main(int argc, char **argv){
         SDL_GL_SwapWindow(win);
     }
     free(stBuf); if(dir) def_director_destroy(dir);
+    if(gTerOn) terrain_free(&gTer);
     def_destroy(g); vat_layer_destroy(vl); simp_destroy(s); scene_free(&sc);
     SDL_GL_DestroyContext(ctx);SDL_DestroyWindow(win);SDL_Quit(); return 0;
 }

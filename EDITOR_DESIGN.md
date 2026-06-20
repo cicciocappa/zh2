@@ -89,6 +89,12 @@ exit 12 40 2 2  rate 5 ramp 0 delay 180 pool 300
 # torretta pre-piazzata (livelli a difesa fissa). Il piazzamento a budget del
 # giocatore è la "fase di setup" futura, non l'editor.
 turret 50 30  range 45 arc -1 1 heavy 0 pierce 1
+
+# --- terreno mesh + props (NUOVO, §9-§10) ---
+terrain meshes/level1.glb            # mesh suolo texturizzata; .zhm baked a fianco
+prop bus      40 22 90              # istanza di catalogo: tipo x y rot(gradi)
+prop edicola  55 30 0
+prop palazzo  20 60 0               # footprint/hp/flag/attrito vengono dal catalogo
 ```
 
 ### Cosa guadagna la struct `Scene`
@@ -216,6 +222,19 @@ da buttare, solo da affiancare.
 esteso; pure-C in fase 1, cimgui in fase 2; nessun editing live (re-instantiate
 on Play); struttura distruttibile = `poly solid hp [core]`.
 
+**Prese (sessione terreno+prop, vedi §9-§10):**
+- **Terreno = mesh `.glb` texturizzata** caricata as-is a runtime via **cgltf**
+  (single-header C, come glad/stb già in `vat/`); heightmap `.zhm` **baked** a
+  fianco, usata SOLO per il render (quota di sprite/strutture). Zero effetto su
+  sim/gameplay (la sim resta 2D planare su z=0). La grid-mesh-da-heightmap è
+  scartata come primo slice (si parte direttamente dal loader glTF).
+- **Prop = catalogo + istanze**: tipo autorato una volta (mesh/footprint/hp/
+  flag/stati danno/fx), istanze `prop <tipo> x y rot` nel `.scn`.
+- **"Peso" di un prop = costo Dijkstra** (il `weight` già esistente); il
+  footprint si rasterizza `solid` o `cost W`. Nessun concetto nuovo per il peso.
+- **Attrito = asse SEPARATO e opzionale** (erosione tangenziale, §10), NON
+  ridondante col footprint cost.
+
 **Aperte:**
 - `exit` vs estendere `spawn` con i campi script: scelto `exit` separato per non
   appesantire lo spawn semplice, ma da riconfermare quando si scrive il loader.
@@ -227,3 +246,126 @@ on Play); struttura distruttibile = `poly solid hp [core]`.
   all'implementazione del picking.
 - Validazione "goal raggiungibile": il flood-fill della nav lo dà gratis
   (`phi` finito dalle celle goal) — quando agganciare l'avviso in editor.
+
+---
+
+## 9. Terreno: mesh `.glb` + heightmap (puro render)
+
+Ogni livello ha un **terreno** = mesh `.glb` modellata e texturizzata in Blender,
+usata **as-is a runtime**. La simulazione resta **2D planare su z=0**: il terreno
+è SOLO grafica, costo sim zero. La quota serve a *posare* gli elementi che la sim
+muove in piano (sprite zombie, strutture, ombre) così leggono come "salgono sul
+marciapiede" o "emergono dalla scalinata della metro". (Stesso intento della
+heightmap M6 in `GFX_DESIGN.md §9, ma sorgente = mesh autorata anziché procedurale.)
+
+### Tre stadi isolati (ognuno testabile da solo)
+
+1. **Bake** — `gfx/terrain_bake.py`, Blender headless: raycast verso il basso
+   sull'AABB della mesh → griglia di quote `Z(x,y)` → **`.zhm`** binario (header
+   `ZHM1`: origine in metri, px/m, W×H, Z raw float; convenzione dell'header
+   `.zspr`). Risoluzione render ~**4 px/m**, NON la cella nav (è render, non
+   collisione). Bake = preprocessing offline, non runtime.
+2. **Loader glTF** — in `vat_horde` via **cgltf** (single-header C; unica
+   dipendenza nuova, sta in `vat/` accanto a glad/stb). Carica vertici/UV/
+   texture del `.glb` e lo disegna come mesh statica del suolo (sostituisce il
+   quad/suolo flat di oggi). I poligoni-ostacolo (`poly`) restano estrusi sopra.
+3. **Sampling** — `terrain_z(x,y)` bilineare sulla `.zhm` → quota di: anchor
+   sprite (`sprite_layer`), apice del volo balistico (offset visivo, la fisica
+   resta su z=0), base di strutture/torrette/ombre. **Math testabile a parte**
+   (sample bilineare su `.zhm` sintetica con gradino noto).
+
+### Gotcha (da `GFX_DESIGN.md §9`)
+- Muri/torrette/ombre vanno campionati a `terrain_z` o **fluttuano**; v1 può
+  fare solo suolo + sprite e rimandare il resto.
+- Volo balistico calcolato su z=0 piatto: su pendenze ripide l'apice visivo si
+  scolla dal suolo → **tenere i dislivelli LIEVI** (marciapiedi, scalini, rampe).
+- La `.zhm` è ancorata al sistema metrico della scena (stessa origine del `world`).
+
+### Milestone slice 1
+Bake di un terrain con un gradino (marciapiede + scalinata) → caricato in
+`vat_horde` via cgltf → `SANDBOX_SHOT` headless con sprite che **seguono la
+quota**. Test della math di sampling separato dal render.
+
+### Stato (giugno 2026)
+- **Slice 1 FATTO** — formato `.zhm` + `terrain.h/.c` (`terrain_z` bilineare,
+  zero deps) + `gfx/terrain_bake.py` (raycast Blender → `.zhm`, backfill bordi).
+  `test_terrain` PASS; bake reale verificato end-to-end.
+- **Slice 2 FATTO** — loader glTF (cgltf in `vat/cgltf_impl.c`, `-w`) +
+  shader `vat/ground.vs/.fs` (texture base-color + key NW). Carica TUTTE le
+  primitive di TUTTI i nodi con la matrice mondo; mapping glTF y-up → mondo
+  `(x,y,-z)` coerente col bake. Texture sia esterna (uri) sia EMBEDDED
+  (`stbi_load_from_memory`). Gli agenti si POSANO sulla quota (post-process
+  del buffer instance, il `vat_layer` resta terrain-agnostico); ostacoli/
+  torrette/strutture sollevati al `terrain_z` della base; il quad-suolo flat
+  si salta col terreno glb. Campo `terrain` nel `.scn` (parse/save, env
+  override `VAT_HORDE_TERRAIN`). Verificato headless: gradino 3 m con sprite/
+  torrette seduti sulla superficie, texture a scacchi mappata. `.zhm` mancante
+  = fallback grazioso a z=0. Scena demo `scenes/terrain.scn`
+  (+ `gfx/terrain_demo_make.py`).
+- **Ombre + tracer a quota FATTO** — tracer di fuoco sollevati al `terrain_z`
+  degli estremi; **ombre a terra aggiunte** (non c'erano nel path VAT): disco
+  unitario instanziato sotto ogni agente alla quota REALE del terreno (blob
+  morbido blended, `vat/shadow.vs/.fs`), ground via `terrain_z` anche sotto chi
+  vola → l'ombra resta a terra. Verificato headless su terreno e su scena piatta
+  (`ter_z=0`, nessun z-fight, nessuna regressione).
+- **Volo balistico height-aware FATTO** — il render del volo già abbraccia il
+  terreno (`za + terrain_z(x,y)`: usare il ground CORRENTE evita galleggiamenti/
+  sprofondi, scelta migliore della parabola assoluta dato che il sim resta
+  planare). L'ombra del flyer resta a TERRA (`terrain_z`, non la quota di volo)
+  e si RIMPICCIOLISCE con `za` → segnala l'altezza. Sorgente di volo aggiunta a
+  `vat_horde` (tasto `E` = esplosione+lancio al centro camera; headless
+  `VAT_HORDE_BLAST="frame,x,y[,str,up]"`). Verificato: pack lanciato a cavallo
+  del gradino, agenti in aria con ombre a terra staccate e ridotte, rientro a
+  quota corretto.
+- **Resta**: sorgente terreno procedurale/urbana (GFX_DESIGN §9 fase 2).
+
+---
+
+## 10. Catalogo prop: tre assi ortogonali
+
+Un **prop** è un oggetto di scenario (palazzo, edicola, autobus, roccia, albero,
+semaforo, segmento di muro/recinzione…). Modello = **catalogo** (il *tipo*,
+autorato una volta) + **istanze** nel `.scn` (`prop <tipo> x y rot`). Il catalogo
+NON sta nel core: è dati del gioco/editor; `scene.c` parsa solo le istanze e
+rasterizza il footprint (come per i `poly`), il layer di gioco agisce hp/attrito.
+
+Le proprietà di un tipo si scompongono in **assi indipendenti** — niente concetto
+"peso/attrito" monolitico:
+
+| Asse | Cosa | Come (cuciture esistenti) |
+|------|------|----------------------------|
+| **Render** | mesh `.glb` (+ stati di danno: mesh alternative a soglie di hp; death-fx a hp 0) | macchina a stati VISIVA; la sim conosce solo hp + footprint |
+| **Footprint nav** | `{ solid \| cost <w> \| none }` — il **"peso" = costo Dijkstra** | `scene_rasterize_poly` → wall / cost (già fatto) |
+| **Distruttibilità** | `hp` + `attackable`: assedio **diretto** (folla che preme per passare oltre) → crollo → reroute | loop SIEGE/§7, `simp_wall_pressure` con `into_wall > 0` |
+| **Attrito (OPZ.)** | erosione **passiva** dal flusso che scorre ACCANTO (anche senza sbarrare): accumula → cede → death-fx + cambio nav | componente **tangenziale** del flow (`into_wall ≤ 0`), già annotata in `SIEGE_DESIGN.md §5` come "hazard ambientale" |
+| **Draggable (OPZ.)** | `mass` + `drag`: il prop viene **trascinato** dal flusso, non distrutto | terza categoria di corpo PBD (massa finita, no steering/goal); UNICA vera aggiunta al core |
+
+### L'asse "attrito" in dettaglio (idea utente, opzionale)
+Prop sottili (pali, alberi, semafori) **non sbarrano** il passaggio ma il flusso
+gli scorre accanto e li **logora**: si accumula lo **shear tangenziale** (la
+componente del flow parallela alla superficie, `into_wall ≤ 0`) + il volume di
+passanti; superata una soglia il prop **cede**, con conseguenze emergenti:
+- **death-fx** che ammazza gli zombie nei paraggi;
+- **cambio nav**: il prop che cade diventa ostacolo e può **bloccare un varco**
+  (footprint `none → solid/cost`), instradando di colpo l'orda altrove.
+
+È la prima destinazione concreta della componente tangenziale che `SIEGE_DESIGN`
+teneva da parte: **sensore già pronto, zero roba nuova nel core**. Dà
+imprevedibilità (fronte che cambia da solo). **Non fondamentale** — implementabile
+dopo il resto del catalogo, o ignorabile.
+
+### Categorie derivate (combinazioni degli assi)
+- **Edificio** (palazzo): `solid` + hp altissimo (≈ indistruttibile) o `core`.
+- **Barricata/muro**: `solid` + hp medio + stati di danno (mesh rovinate).
+- **Light prop** (tavolino, carretto hotdog): footprint `none`, **despawn al
+  contatto** col fronte (flavour, ~zero nav).
+- **Draggable** (cassonetto, auto): asse draggable; footprint dinamico mentre si
+  sposta (o trascurato in v1).
+- **Sottile erodibile** (palo, albero): footprint `none`/piccolo + asse attrito.
+
+### Formato catalogo (da definire all'implementazione)
+File-dati per tipo (mesh path, footprint poly in coord locali, hp, flag
+`attackable`/`draggable`, soglie stati danno + mesh, fx, soglia attrito,
+mass/drag). L'editor lo legge per offrire la palette di prop; il `.scn` referenzia
+per nome. **Aperto:** un file per tipo vs un catalogo unico; coord footprint
+locali ruotate da `rot` all'instantiate.
