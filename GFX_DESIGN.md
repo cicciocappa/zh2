@@ -264,3 +264,38 @@ da un dettaglio.
   alla WC2. Da decidere col primo tileset; non blocca nulla di tecnico.
 - Crossfade tra tier di zoom: durata e curva, da tarare a occhio.
 - Formato sheet/atlas definitivo e tool di packing: con lo stack.
+
+## 9. Rilievo del terreno (heightmap VISIVA, idea giugno 2026)
+
+Dislivelli LIEVI puramente estetici (marciapiedi ~10–15 cm ai bordi strada
+nell'urbano, ondulazioni ~0.3–0.5 m nell'agreste) **che non toccano il
+gameplay**. Tecnica RTS classica: rilievo visivo sopra un piano di gioco piatto.
+
+- **Il core non si tocca: costo simulazione = ZERO.** La sim è 2D pura (nav,
+  SDF, PBD, flow su `z=0`); la heightmap vive SOLO nel renderer, che alza ogni
+  cosa di `H(x,y)` al disegno. Coerente col principio "core renderer-agnostico"
+  (§7) — niente nei test, niente in `sim_particles`.
+- **Lavoro nel renderer, piccolo:** (1) il suolo passa da quad piatto (2 tri,
+  oggi `build_obstacle_mesh` in `vat_horde`) a **griglia tassellata** displaced
+  da `H`, mesh STATICA (a 1 m: ~16k tri per 100×80 m = nulla per la GPU),
+  normali da differenze finite per l'ombra; (2) **sorgente di `H`**: procedurale
+  (noise) per l'agreste, oppure raster (PNG grayscale, `stb_image` già linkato)
+  o — meglio per i marciapiedi — DERIVATA dalla geometria vettoriale della
+  scena (banda rialzata lungo i bordi strada); (3) **ogni elemento campiona `H`
+  e si alza**: agenti via texture height nel vertex shader (un lookup in più nel
+  VAT shader, CPU 0) o sample bilineare in `vat_layer_fill` (~50k sample/frame =
+  <0.1 ms). 
+- **Gotcha (onesti):** muri/torrette/cadaveri/ombre dei volanti vanno
+  campionati a `H` alla base o fluttuano sul pendio — per la v1 si può spostare
+  SOLO suolo+agenti e ignorarli (errore impercettibile sul lieve); il volo
+  balistico usa `z` su suolo piatto `0` → su collina vera lo scollamento si
+  vede (altro motivo per tenerlo LIEVE); il futuro y-sort a sprite dovrà sommare
+  `H` (col VAT 3D c'è z-buffer vero, nessun problema oggi). Rischio di fondo: se
+  il rilievo diventa ripido i giocatori si aspettano che CONTI (rallenta in
+  salita, blocca LoS) → restare nel lieve.
+- **Fasi:** (1) suolo tassellato + `H` procedurale campionata dagli agenti nel
+  vertex shader (isolato, reversibile, 90% del valore estetico), validata a
+  occhio nel sandbox VAT; (2) se convince, sorgente urbana (marciapiedi dai
+  bordi strada, estensione a `scene.h`) + height-aware degli altri elementi.
+- **Stima:** v1 piccola (~una sessione); versione completa media (bookkeeping
+  per-elemento + pipeline marciapiedi). Vedi TODO M6.

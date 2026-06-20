@@ -284,6 +284,17 @@ statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
       delta di heading per frame (max °/s sensato, proposta utente), che
       migliora anche i camminatori — uno zombie non piroetta. Da tarare
       insieme nella stessa sessione.
+- [ ] **Heightmap VISIVA del terreno** (dislivelli LIEVI, solo estetica, NESSUN
+      impatto gameplay — vedi `GFX_DESIGN.md` §9). Core intoccato (sim 2D pura
+      su z=0): costo simulazione zero, vive tutto nel renderer. Lavoro piccolo:
+      (1) suolo da quad piatto a griglia tassellata displaced da H(x,y) (mesh
+      statica, ~16k tri/100×80 m), normali da differenze finite; (2) sorgente H
+      procedurale (agreste) o derivata dai bordi strada (marciapiedi urbani);
+      (3) agenti sollevati di H via texture nel vertex shader (CPU 0) o sample in
+      vat_layer_fill. Gotcha: muri/torrette/ombre vanno campionati a H o
+      fluttuano (v1 = solo suolo+agenti); volo balistico su z=0 piatto si scolla
+      sul ripido → tenere LIEVE. Fase 1 = una sessione (90% del look); fase 2 =
+      sorgente urbana + height-aware degli altri elementi.
 ## M8 — Scala estrema / GPU (solo se serve oltre ~100k o per liberare la CPU)
 
 - [ ] Port dei passi a compute shader GL 4.3 (counting sort con atomics, PBD a
