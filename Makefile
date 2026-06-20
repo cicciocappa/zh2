@@ -10,7 +10,7 @@ SDL_LIBS   := $(shell $(SDL_PC) --libs   sdl3 2>/dev/null)
 
 all: test_particles test_impulse test_dormant test_handles test_query test_corpses \
      test_types test_density_route test_jam test_scene test_siege test_turret \
-     test_defense
+     test_defense test_base
 
 test_particles: test_particles.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_particles.c sim_particles.c $(LDLIBS)
@@ -51,6 +51,9 @@ test_turret: test_turret.c sim_particles.c sim_particles.h
 test_defense: test_defense.c defense.c sim_particles.c defense.h sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_defense.c defense.c sim_particles.c $(LDLIBS)
 
+test_base: test_base.c defense.c sim_particles.c defense.h sim_particles.h
+	$(CC) $(CFLAGS) -o $@ test_base.c defense.c sim_particles.c $(LDLIBS)
+
 # headless CPU benchmark del core (zero deps: niente SDL/GL/asset). Portatile.
 bench_sim: bench_sim.c sim_particles.c scene.c sim_particles.h scene.h
 	$(CC) $(CFLAGS) -o $@ bench_sim.c sim_particles.c scene.c $(LDLIBS)
@@ -89,10 +92,11 @@ test: all
 	./test_siege
 	./test_turret
 	./test_defense
+	./test_base
 
 clean:
 	rm -rf test_particles test_impulse test_dormant test_handles test_query \
 	       test_corpses test_types test_density_route test_jam test_scene \
-	       test_siege test_turret test_defense bench_sim sandbox sprite_view frames
+	       test_siege test_turret test_defense test_base bench_sim sandbox sprite_view frames
 
 .PHONY: all test clean

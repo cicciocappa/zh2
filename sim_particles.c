@@ -799,6 +799,9 @@ void simp_kill(SimP *s, int i) {
 }
 
 int simp_count(const SimP *s) { return s->count; }
+int simp_grid_w(const SimP *s) { return s->gw; }
+int simp_grid_h(const SimP *s) { return s->gh; }
+float simp_cell_size(const SimP *s) { return s->cell; }
 
 bool simp_free_at(const SimP *s, float x, float y, float r) {
     if (x < r || y < r || x > s->world_w - r || y > s->world_h - r) return false;

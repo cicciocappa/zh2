@@ -65,8 +65,41 @@ int        def_add_turret(DefGame *g, const DefTurret *t);
 DefTurret *def_turret(DefGame *g, int id);
 int        def_turret_count(const DefGame *g);
 
+/* ---- §7 base & defeat: destructible structures ----
+ *
+ * A structure is a group of nav cells (walls) sharing one HP pool. The horde
+ * sieges it via the SIEGE sensor (simp_wall_pressure/_cell): each agent pressing
+ * a structure cell to reach the goal beyond runs a per-slot attack timer that
+ * chips the pool. At HP 0 the structure COLLAPSES — its cells are freed and the
+ * nav recommits, so the horde reroutes itself (M3/SIEGE, already proven). Rings
+ * of walls around the base are ordinary structures; the CORE is the one flagged
+ * is_core: its collapse is the loss condition (def_lost), not a reroute.
+ *
+ * Setup (before stepping): add structures, assign their cells, then build the
+ * scene goal at the center (simp_set_goal) so the horde is pulled inward. The
+ * siege is processed inside def_update (the sensor is fresh right after the
+ * step), so the per-frame order stays simp_step → def_update. */
+
+/* Add a structure with hp_max HP; is_core != 0 marks the loss-condition core.
+ * Returns its id (>= 0), or -1 if the table is full. */
+int   def_add_structure(DefGame *g, float hp_max, int is_core);
+/* Assign nav cell (cx,cy) to structure id and raise the wall there. Call
+ * simp_terrain_commit yourself once after assigning all cells. */
+void  def_struct_cell(DefGame *g, int id, int cx, int cy);
+
+int   def_struct_count(const DefGame *g);
+/* Structure id owning nav cell (cx,cy), or -1 (none / freed on collapse). Lets
+ * the renderer rebuild the live structure mesh (collapsed cells disappear). */
+int   def_cell_struct(const DefGame *g, int cx, int cy);
+float def_struct_hp(const DefGame *g, int id);      /* current, 0 if collapsed */
+float def_struct_hp_max(const DefGame *g, int id);
+int   def_struct_collapsed(const DefGame *g, int id);
+int   def_lost(const DefGame *g);                   /* 1 once the core has fallen */
+
 /* Advance all turrets: acquire/dwell or sweep, fire on cadence (only with a
- * target in arc+range), apply damage → wounds / death. Call after simp_step. */
+ * target in arc+range), apply damage → wounds / death. Then process the siege
+ * on all structures (per-slot attack timers, collapse → reroute / loss).
+ * Call after simp_step. */
 void def_update(DefGame *g, float dt);
 
 /* ---- read access (tests / HUD) ---- */

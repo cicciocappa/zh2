@@ -1,0 +1,17 @@
+# base-defense scene (M5 §7) for vat_horde — run with VAT_HORDE_BASE=1.
+# Central goal = the base; the horde converges 360° from the four edges. The
+# core ring + outer ring sealing the goal are built programmatically by
+# vat_horde (def_struct_cell), not as scene polys, so they collapse with HP.
+cell 0.5
+world 100 80
+set k_density 2.5
+set k_jam 6
+
+# the base core sits at the world center (centroid ~50,40)
+goal 48 38 4 4
+
+# spawn bands hugging the four edges
+spawn 2 1 96 3
+spawn 2 76 96 3
+spawn 1 2 3 76
+spawn 96 2 3 76

@@ -148,6 +148,52 @@ static float *build_turret_mesh(DefGame *g, int *out_nv){
     *out_nv=c; return buf;
 }
 
+// --- §7 base & siege (gated on VAT_HORDE_BASE): two concentric wall rings of
+// nav cells around the base center, sealing the central goal. The horde sieges
+// them (def_update), HP drops, cells free on collapse. State kept file-scope so
+// the per-frame mesh rebuild and HUD can read it.
+static int gBaseOn=0, gCoreId=-1, gOuterId=-1, gBaseCX=0, gBaseCY=0, gBaseHO=0;
+static void build_base(DefGame *g, SimP *s, float cell, float bcx, float bcy){
+    int cx0=(int)(bcx/cell), cy0=(int)(bcy/cell), hc=6, ho=16;
+    gCoreId  = def_add_structure(g, 1200.0f, 1);   // innermost = loss
+    gOuterId = def_add_structure(g,  800.0f, 0);   // reroutes on collapse
+    for(int cy=cy0-hc;cy<=cy0+hc;cy++)for(int cx=cx0-hc;cx<=cx0+hc;cx++)
+        if(cx==cx0-hc||cx==cx0+hc||cy==cy0-hc||cy==cy0+hc) def_struct_cell(g,gCoreId,cx,cy);
+    for(int cy=cy0-ho;cy<=cy0+ho;cy++)for(int cx=cx0-ho;cx<=cx0+ho;cx++)
+        if(cx==cx0-ho||cx==cx0+ho||cy==cy0-ho||cy==cy0+ho) def_struct_cell(g,gOuterId,cx,cy);
+    simp_terrain_commit(s);
+    gBaseCX=cx0; gBaseCY=cy0; gBaseHO=ho; gBaseOn=1;
+}
+// rebuild the live structure mesh each frame from def_cell_struct: collapsed
+// cells vanish, surviving cells darken as their structure's HP drops. A box per
+// live cell, 9-float flat layout. Returns vertex count.
+static int build_struct_mesh(DefGame *g, float cell, float *buf){
+    int c=0; float H=2.8f;
+    for(int cy=gBaseCY-gBaseHO-1; cy<=gBaseCY+gBaseHO+1; cy++)
+    for(int cx=gBaseCX-gBaseHO-1; cx<=gBaseCX+gBaseHO+1; cx++){
+        int id=def_cell_struct(g,cx,cy); if(id<0) continue;
+        float frac=def_struct_hp(g,id)/ (def_struct_hp_max(g,id)+1e-3f); // 1..0
+        float t=0.35f+0.65f*frac;                         // darken with damage
+        float cr,cg,cb;
+        if(id==gCoreId){ cr=0.75f*t; cg=0.16f*t; cb=0.16f*t; }   // core = red
+        else           { cr=0.55f*t; cg=0.57f*t; cb=0.62f*t; }   // ring = steel
+        float x0=cx*cell, x1=x0+cell, z0=cy*cell, z1=z0+cell;
+#define VS(PX,PY,PZ,NX,NY,NZ) do{float*o=buf+c*9;o[0]=PX;o[1]=PY;o[2]=PZ;\
+        o[3]=NX;o[4]=NY;o[5]=NZ;o[6]=cr;o[7]=cg;o[8]=cb;c++;}while(0)
+#define QS(ax,ay,az,bx,by,bz,px2,py2,pz2,dx,dy,dz,nx,ny,nz) do{ \
+        VS(ax,ay,az,nx,ny,nz);VS(bx,by,bz,nx,ny,nz);VS(px2,py2,pz2,nx,ny,nz); \
+        VS(ax,ay,az,nx,ny,nz);VS(px2,py2,pz2,nx,ny,nz);VS(dx,dy,dz,nx,ny,nz);}while(0)
+        QS(x0,H,z0, x1,H,z0, x1,H,z1, x0,H,z1, 0,1,0);    // top
+        QS(x1,0,z0, x1,0,z1, x1,H,z1, x1,H,z0, 1,0,0);    // +X
+        QS(x0,0,z1, x0,0,z0, x0,H,z0, x0,H,z1, -1,0,0);   // -X
+        QS(x0,0,z1, x1,0,z1, x1,H,z1, x0,H,z1, 0,0,1);    // +Z
+        QS(x1,0,z0, x0,0,z0, x0,H,z0, x1,H,z0, 0,0,-1);   // -Z
+#undef VS
+#undef QS
+    }
+    return c;
+}
+
 int main(int argc, char **argv){
     const char *scene_path = argc > 1 ? argv[1] : "scenes/obstacles.scn";
     Scene sc;
@@ -187,8 +233,10 @@ int main(int argc, char **argv){
 #define NT 10
     float mn = sc.world_w<sc.world_h?sc.world_w:sc.world_h;
     float TR_R = 0.22f*mn;
+    int nt_want=getenv("VAT_HORDE_TURRETS")?atoi(getenv("VAT_HORDE_TURRETS")):NT;
+    if(nt_want>NT)nt_want=NT; if(nt_want<0)nt_want=0;
     int placed=0;
-    for(int i=0;i<NT;i++){ float th=(float)i*(6.2831853f/(float)NT);
+    for(int i=0;i<nt_want;i++){ float th=(float)i*(6.2831853f/(float)NT);
         float tx=bcx+TR_R*cosf(th), ty=bcy+TR_R*sinf(th);
         /* salta le posizioni fuori dal mondo (base sul bordo → mezzo anello
            cadrebbe fuori): restano le torrette che guardano l'orda in arrivo */
@@ -204,6 +252,12 @@ int main(int argc, char **argv){
         def_add_turret(g,&t); placed++; }
     printf("torrette: %d piazzate (anello r=%.1f m attorno alla base (%.1f,%.1f))\n",
            placed,(double)TR_R,(double)bcx,(double)bcy);
+
+    // §7 base & siege: due anelli distruttibili attorno al goal centrale.
+    if(getenv("VAT_HORDE_BASE")){ build_base(g,s,sc.cell,bcx,bcy);
+        printf("base: core HP %.0f + ring HP %.0f attorno a cella (%d,%d)\n",
+               (double)def_struct_hp_max(g,gCoreId),(double)def_struct_hp_max(g,gOuterId),
+               gBaseCX,gBaseCY); }
 
     if(fillN){ int got=prefill_lattice(s,g,vl,&sc,fillN);
         printf("prefill: target %d -> %d agenti piazzati\n", fillN, got); }
@@ -255,6 +309,18 @@ int main(int argc, char **argv){
     glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
     glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
     glBindVertexArray(0);
+
+    // strutture della base (dinamico: ricostruito ogni frame dallo stato vivo).
+    int stMaxV = gBaseOn ? (2*gBaseHO+3)*(2*gBaseHO+3)*30 : 0;
+    float *stBuf = stMaxV ? malloc((size_t)stMaxV*9*sizeof(float)) : NULL;
+    GLuint stVao=0,stVbo=0;
+    if(gBaseOn){ glGenVertexArrays(1,&stVao);glBindVertexArray(stVao);
+        glGenBuffers(1,&stVbo);glBindBuffer(GL_ARRAY_BUFFER,stVbo);
+        glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)stMaxV*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
+        glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
+        glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
+        glBindVertexArray(0); }
 
     // carica un Asset (VAO+mesh+texture VAT) per variante.
     Asset A[NVAR];
@@ -370,6 +436,12 @@ int main(int argc, char **argv){
               glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)tc*9*sizeof(float),trbuf);
               glLineWidth(2.5f); glDrawArrays(GL_LINES,0,tc); } }
 
+        // strutture della base (rebuild dallo stato vivo: celle crollate spariscono)
+        if(gBaseOn){ int sv=build_struct_mesh(g,sc.cell,stBuf);
+            if(sv){ glBindVertexArray(stVao);glBindBuffer(GL_ARRAY_BUFFER,stVbo);
+                glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)sv*9*sizeof(float),stBuf);
+                glDrawArrays(GL_TRIANGLES,0,sv); } }
+
         // orda VAT
         glUseProgram(prog);glUniformMatrix4fv(uVP,1,GL_FALSE,vp);
         glUniform1i(glGetUniformLocation(prog,"texPos"),0);
@@ -395,9 +467,12 @@ int main(int argc, char **argv){
 
         // HUD: medie mobili sim/layer/render nel titolo
         acc_sim+=sim_ms; acc_lay+=lay_ms; acc_ren+=ren_ms; acc_n++;
-        if(acc_n>=30){ char title[256]; double S=acc_sim/acc_n,L=acc_lay/acc_n,R=acc_ren/acc_n;
-            snprintf(title,sizeof title,"vat_horde — %d agenti | torrette kills %d crawler %d | sim %.2f layer %.2f render %.2f ms | %.0f fps-cap",
-                     total,def_kills(g),def_count_wound(g,DW_CRAWLING),S,L,R,1000.0/(S+L+R));
+        if(acc_n>=30){ char title[320]; double S=acc_sim/acc_n,L=acc_lay/acc_n,R=acc_ren/acc_n;
+            char base[96]=""; if(gBaseOn){ int pc=(int)(100.0f*def_struct_hp(g,gCoreId)/(def_struct_hp_max(g,gCoreId)+1e-3f));
+                int po=(int)(100.0f*def_struct_hp(g,gOuterId)/(def_struct_hp_max(g,gOuterId)+1e-3f));
+                snprintf(base,sizeof base, def_lost(g)?" | BASE PERSA":" | ring %d%% core %d%%", po<0?0:po, pc<0?0:pc); }
+            snprintf(title,sizeof title,"vat_horde — %d agenti | kills %d crawler %d%s | sim %.2f lay %.2f ren %.2f ms | %.0f fps",
+                     total,def_kills(g),def_count_wound(g,DW_CRAWLING),base,S,L,R,1000.0/(S+L+R));
             SDL_SetWindowTitle(win,title); acc_sim=acc_lay=acc_ren=0; acc_n=0; }
 
         // benchmark: accumula nella finestra di misura, poi stampa medie ed esci
@@ -420,9 +495,15 @@ int main(int argc, char **argv){
             printf("frame %d: %d agenti | shots %d kills %d, crawler %d, bloody %d, arm %d | sim %.2f render %.2f ms -> vat_horde_shot.bmp\n",
                    frame,total,def_shots(g),def_kills(g),def_count_wound(g,DW_CRAWLING),
                    def_count_wound(g,DW_BLOODY),def_count_wound(g,DW_MAIMED_ARM),sim_ms,ren_ms);
+            if(gBaseOn) printf("  base: ring HP %.0f/%.0f%s | core HP %.0f/%.0f%s | %s\n",
+                   (double)def_struct_hp(g,gOuterId),(double)def_struct_hp_max(g,gOuterId),
+                   def_struct_collapsed(g,gOuterId)?" CROLLATO":"",
+                   (double)def_struct_hp(g,gCoreId),(double)def_struct_hp_max(g,gCoreId),
+                   def_struct_collapsed(g,gCoreId)?" CROLLATO":"", def_lost(g)?"BASE PERSA":"base regge");
             shot_done=1; running=0; }
         SDL_GL_SwapWindow(win);
     }
+    free(stBuf);
     def_destroy(g); vat_layer_destroy(vl); simp_destroy(s); scene_free(&sc);
     SDL_GL_DestroyContext(ctx);SDL_DestroyWindow(win);SDL_Quit(); return 0;
 }

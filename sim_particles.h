@@ -138,6 +138,12 @@ typedef struct SimP SimP;
 SimP *simp_create(int gw, int gh, float cell_size, int max_agents);
 void  simp_destroy(SimP *s);
 
+/* Nav-grid dimensions and cell size, as passed to simp_create. Read-only; let
+ * game code decode cell indices (e.g. simp_wall_cell = cy*grid_w + cx). */
+int   simp_grid_w(const SimP *s);
+int   simp_grid_h(const SimP *s);
+float simp_cell_size(const SimP *s);
+
 SimPParams *simp_params(SimP *s);          /* live-tweakable               */
 
 /* Worker-thread count for simp_step (M4). Default = online CPUs, or the

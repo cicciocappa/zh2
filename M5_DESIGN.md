@@ -309,6 +309,27 @@ LOD del renderer, fuori scope core. Da decidere il TTL/visual in M6.
 
 ## 7. La base e la sconfitta
 
+> **IMPLEMENTATO** (`test_base.c` PASS, aggancio visivo in `vat_horde`). Sistema
+> di **strutture distruttibili** lato gioco in `defense.c`: una struttura =
+> gruppo di celle-muro con HP condivisi. API: `def_add_structure(g, hp, is_core)`,
+> `def_struct_cell(g, id, cx, cy)` (assegna la cella e alza il muro),
+> `def_cell_struct` (per il render), `def_struct_hp/_max/_collapsed`, `def_lost`.
+> L'assedio è processato in `def_update` (dopo le torrette): per ogni agente a
+> terra con `simp_wall_pressure ≥ ATTACK_MIN_P` sulla cella di una struttura, un
+> timer d'attacco **per-slot** (stessi `ATTACK_PERIOD 0.8`/`ATTACK_DAMAGE 5`/
+> `ATTACK_MIN_P 0.006` di `test_siege`) eroso gli HP; a HP ≤ 0 → **crollo**: le
+> celle vengono liberate (`simp_set_wall false`) + `simp_terrain_commit` →
+> reroute automatico; se la struttura è il **core** (`is_core`) non si fa
+> reroute, si alza `def_lost` (sconfitta). Deterministico (timer per-slot +
+> sim deterministica). Due nuovi accessor banali al core
+> (`simp_grid_w`/`simp_grid_h`/`simp_cell_size`) per decodificare `wall_cell`.
+> Nota di verifica: l'assedio morde solo con una folla CONCENTRATA (anelli
+> piccoli, orda densa) — anelli grandi e orda rada diluiscono il fronte e gli
+> HP scendono di pochissimo. In `vat_horde` (scena `scenes/base.scn`,
+> `VAT_HORDE_BASE=1`) le 10 torrette tengono la base senza fatica; con
+> `VAT_HORDE_TURRETS=0` l'orda non difesa fa crollare l'anello esterno (reroute
+> visibile: la folla dilaga sul core), poi il core → `BASE PERSA`.
+
 Il giocatore difende la base al **centro**; l'orda è attratta lì (disegniamo il
 target lì) e dopo aver abbattuto mura ed eventuali barriere, se raggiunge il
 core è game over.

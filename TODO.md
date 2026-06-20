@@ -213,8 +213,16 @@ statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
 - [x] **Morte** (§6): cadavere M3.3 (leggera) / gib senza cadavere (pesante) /
       biomassa-stub; ordinamento kill (trappola indici M3.4). FATTO: hit→handle
       prima di ogni kill; tank a N colpi pesanti. `test_defense.c` PASS (13/13).
-- [ ] **Base + sconfitta** (§7): il core = struttura assediabile più interna
+- [x] **Base + sconfitta** (§7): il core = struttura assediabile più interna
       (riusa SIEGE per intero), goal centrale, game over a `core_hp <= 0`.
+      FATTO: strutture distruttibili in `defense.c` (`def_add_structure`/
+      `def_struct_cell`/`def_lost`, assedio per-slot in `def_update`, crollo→
+      `simp_set_wall(false)`+commit→reroute; il core non reroute, si perde).
+      `test_base.c` PASS (reroute esterno→core cade→lost; difesa che regge;
+      determinismo; no-NaN). Aggancio visivo in `vat_horde` (`scenes/base.scn`,
+      `VAT_HORDE_BASE=1`, `VAT_HORDE_TURRETS=N`): anelli renderizzati dallo stato
+      vivo (crollo = spariscono), HUD core/ring HP + BASE PERSA. 2 accessor core
+      nuovi (`simp_grid_w`/`_h`/`simp_cell_size`) per decodificare `wall_cell`.
 - [ ] **Spawn director + budget** (§8): ondate dalle rect di scena (no burst
       via `simp_free_at`), budget statico di piazzamento.
 

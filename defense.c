@@ -28,6 +28,19 @@ static const DefEnemyDef ENEMY[BT_COUNT] = {
 #define MAXPIERCE  64        /* max agents a piercing shot resolves          */
 #define TURRET_CAP 256
 
+/* §7 siege of structures — same discrete-attack model as test_siege.c */
+#define STRUCT_CAP    64
+#define ATTACK_PERIOD 0.8f   /* s between hits while an agent presses        */
+#define ATTACK_DAMAGE 5.0f   /* HP per hit                                   */
+#define ATTACK_MIN_P  0.006f /* min wall_pressure to count as a real attack
+                              * (gates out the tangential grazing leak)      */
+
+typedef struct {
+    float hp, hp_max;
+    int   is_core;       /* collapse = loss, not reroute */
+    int   collapsed;
+} DefStruct;
+
 struct DefGame {
     SimP *s;
     int   cap;
@@ -42,6 +55,13 @@ struct DefGame {
     float rayt[MAXPIERCE];
     SimPHandle rayh[MAXPIERCE];
     int   kills, shots;
+    /* §7 base & defeat */
+    int       gw, gh;       /* cached nav-grid dims (decode wall_cell)       */
+    DefStruct structs[STRUCT_CAP];
+    int       nstructs;
+    int16_t  *cell_struct;  /* gw*gh: structure id per nav cell, -1 = none   */
+    float    *atk_timer;    /* per slot: siege attack accumulator            */
+    int       lost;         /* 1 once the core has collapsed                 */
 };
 
 /* deterministic per-slot hash (no RNG state: same slot -> same roll) */
@@ -58,12 +78,18 @@ DefGame *def_create(SimP *s, int cap) {
     g->wound = (uint8_t *)calloc((size_t)cap, 1);
     g->hheat = (uint8_t *)calloc((size_t)cap, 1);
     g->qbuf  = (int *)malloc((size_t)cap * sizeof(int));
+    g->gw = simp_grid_w(s); g->gh = simp_grid_h(s);
+    size_t ncell = (size_t)g->gw * (size_t)g->gh;
+    g->cell_struct = (int16_t *)malloc(ncell * sizeof(int16_t));
+    for (size_t k = 0; k < ncell; k++) g->cell_struct[k] = -1;
+    g->atk_timer = (float *)calloc((size_t)cap, sizeof(float));
     return g;
 }
 
 void def_destroy(DefGame *g) {
     if (!g) return;
     free(g->hp); free(g->body); free(g->wound); free(g->hheat); free(g->qbuf);
+    free(g->cell_struct); free(g->atk_timer);
     free(g);
 }
 
@@ -201,9 +227,85 @@ static void turret_update(DefGame *g, DefTurret *t, float dt) {
     for (int k = 0; k < count; k++) apply_damage(g, g->rayh[k], t);
 }
 
+/* ---- §7 base & defeat: structures + siege ---- */
+
+int def_add_structure(DefGame *g, float hp_max, int is_core) {
+    if (g->nstructs >= STRUCT_CAP) return -1;
+    int id = g->nstructs++;
+    g->structs[id].hp = g->structs[id].hp_max = hp_max;
+    g->structs[id].is_core = is_core ? 1 : 0;
+    g->structs[id].collapsed = 0;
+    return id;
+}
+
+void def_struct_cell(DefGame *g, int id, int cx, int cy) {
+    if (id < 0 || id >= g->nstructs) return;
+    if (cx < 0 || cy < 0 || cx >= g->gw || cy >= g->gh) return;
+    g->cell_struct[cy * g->gw + cx] = (int16_t)id;
+    simp_set_wall(g->s, cx, cy, true);
+}
+
+/* HP hit zero: free the structure's cells and recommit the nav so the horde
+ * reroutes. The CORE is special — it doesn't reroute, its fall is the loss. */
+static void collapse_structure(DefGame *g, int id) {
+    DefStruct *st = &g->structs[id];
+    st->collapsed = 1;
+    st->hp = 0.0f;
+    if (st->is_core) { g->lost = 1; return; }
+    int gw = g->gw, n = gw * g->gh;
+    for (int c = 0; c < n; c++)
+        if (g->cell_struct[c] == (int16_t)id) {
+            simp_set_wall(g->s, c % gw, c / gw, false);
+            g->cell_struct[c] = -1;
+        }
+    simp_terrain_commit(g->s);
+}
+
+/* Per-slot discrete attacks from grounded agents pressing a structure to reach
+ * the goal beyond (SIEGE sensor, fresh after the step). Mirrors test_siege.c. */
+static void siege_update(DefGame *g, float dt) {
+    SimP *s = g->s;
+    const float *wp = simp_wall_pressure(s);
+    const int   *wc = simp_wall_cell(s);
+    int n = simp_count(s);
+    for (int i = 0; i < n; i++) {
+        int slot = simp_slot_of(s, i);
+        float p = wp[i];
+        int cell = (p > 0.0f) ? wc[i] : -1;
+        int sid  = (cell >= 0) ? g->cell_struct[cell] : -1;
+        if (p >= ATTACK_MIN_P && sid >= 0 && !g->structs[sid].collapsed) {
+            g->atk_timer[slot] += dt;
+            if (g->atk_timer[slot] >= ATTACK_PERIOD) {
+                g->atk_timer[slot] -= ATTACK_PERIOD;
+                g->structs[sid].hp -= ATTACK_DAMAGE;
+                if (g->structs[sid].hp <= 0.0f) collapse_structure(g, sid);
+            }
+        } else {
+            g->atk_timer[slot] = 0.0f;   /* not really pressing: no free hit */
+        }
+    }
+}
+
+int   def_struct_count(const DefGame *g) { return g->nstructs; }
+int   def_cell_struct(const DefGame *g, int cx, int cy) {
+    if (cx < 0 || cy < 0 || cx >= g->gw || cy >= g->gh) return -1;
+    return g->cell_struct[cy * g->gw + cx];
+}
+float def_struct_hp(const DefGame *g, int id) {
+    return (id >= 0 && id < g->nstructs) ? g->structs[id].hp : 0.0f;
+}
+float def_struct_hp_max(const DefGame *g, int id) {
+    return (id >= 0 && id < g->nstructs) ? g->structs[id].hp_max : 0.0f;
+}
+int def_struct_collapsed(const DefGame *g, int id) {
+    return (id >= 0 && id < g->nstructs) ? g->structs[id].collapsed : 0;
+}
+int def_lost(const DefGame *g) { return g->lost; }
+
 void def_update(DefGame *g, float dt) {
     for (int id = 0; id < g->nturrets; id++)
         turret_update(g, &g->turrets[id], dt);
+    siege_update(g, dt);
 }
 
 /* ---- read access ---- */
