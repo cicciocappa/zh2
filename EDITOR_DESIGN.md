@@ -189,6 +189,26 @@ confronto struct (il formato nuovo incluso) + determinismo del raster (già
 coperto); (b) **unit del picking**: camera + pixel noti → punto mondo atteso
 (math pura, headless); (c) visiva via `SANDBOX_SHOT`/screenshot.
 
+**STATO (giugno 2026) — fase 1 prima fetta FATTA**:
+- **Picking** (`vat/edit_pick.h`): `m4_invert` + `pick_y0` (unproject a y=0,
+  ortho E prospettica). `test_pick` PASS — round-trip mondo→pixel→pick su griglia
+  di punti + center-pixel + raggio parallelo (verifica (b)).
+- **Modalità EDIT in `vat_horde`** (`VAT_HORDE_EDIT=1` o `TAB`): la sim si ferma,
+  picking del cursore (VP del frame precedente), overlay flat-shaded delle rect
+  color-codate + poligono in costruzione + cursore. Tool a tastiera (1-7), snap
+  cella (G), `[`/`]` altezza/peso, F2 salva. Mouse: LMB drag = rect, LMB =
+  vertice poly (Invio chiude), RMB = annulla vertice / cancella entità.
+- **Scene = verità + re-instantiate su Play** (§1): `build_world`/`free_world`
+  fattorizzati; TAB EDIT→PLAY rifà sim+gameplay dalla Scene editata (mesh
+  ostacoli ri-uploadata). Editing non-live, come da design.
+- **Logica di mutazione** (`vat/editor.h`, pura): `test_editor` PASS — drag→rect,
+  poly close/reject, delete-at, snap, point-in-poly, save/reload round-trip
+  (verifica (a), formato fase-1 invariato).
+- **Finestra ridimensionabile + F11 fullscreen**; viewport/aspect dinamici.
+- **RESTA (fase 1)**: select/move/drag-resize di un'entità (oggi solo
+  create/delete), HUD a font bitmap (`stb_easy_font`; ora l'HUD è nel titolo
+  finestra), editing dei `set`/`world`/`cell` da UI, snap visivo della griglia.
+
 ### Fase 2 — Gameplay
 `poly hp`/`core` → strutture (§7), `turret` → torrette, `exit` → director-per-
 uscita (§8), `budget`. Il layer `level.c` (game-side) deriva `DefGame`/director

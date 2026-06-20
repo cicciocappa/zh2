@@ -39,8 +39,17 @@ poi scala, poi gioco.
 - [x] **Sandbox 2D ritirato** in favore di `vat_horde` (l'unico tool visivo):
       `sandbox_particles.c` resta non compilato/non nei target. L'editing si fa
       nell'editor 3D (sotto), non nel vecchio sandbox 2D.
-- [ ] **EDITOR DI LIVELLI** (design completo in `EDITOR_DESIGN.md`): modalità
-      EDIT dentro `vat_horde`, edita+playtesta nello stesso tool. `Scene` =
+- [~] **EDITOR DI LIVELLI** (design completo in `EDITOR_DESIGN.md`): modalità
+      EDIT dentro `vat_horde`, edita+playtesta nello stesso tool. **Fase 1 prima
+      fetta FATTA** (giugno 2026): picking (`vat/edit_pick.h`, `test_pick`),
+      modalità EDIT (`VAT_HORDE_EDIT=1`/TAB: sim ferma, overlay rect color-codate
+      + poligono in costruzione + cursore, tool 1-7, snap G, F2 salva), Scene =
+      verità con re-instantiate su Play (`build_world`/`free_world`), logica di
+      mutazione (`vat/editor.h`, `test_editor`: drag/poly/delete/snap + roundtrip
+      save). Finestra ridimensionabile + F11 fullscreen, build mingw64
+      predisposta. RESTA fase 1: select/move/resize entità, HUD font bitmap
+      (ora nel titolo), editing set/world/cell, griglia visiva. Poi fase 2/3.
+      `Scene` =
       unica verità (re-instantiate su Play, niente editing live); il formato
       `.scn` cresce per ospitare le entità gameplay (struttura distruttibile =
       `poly solid hp [core]`, `exit` con script director, `turret`, `budget`),

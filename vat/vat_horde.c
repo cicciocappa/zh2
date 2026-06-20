@@ -6,8 +6,15 @@
 // glDrawElementsInstanced per variante.
 //
 //   ./vat_horde [scena.scn]            (default: scenes/obstacles.scn)
-// Controlli: frecce=pan  +/-=zoom  C=camera  T=texture  SPACE=pausa  E=esplosione
-//            (lancio in volo al centro camera)  ESC=esci
+// Controlli PLAY: frecce=pan  +/-=zoom  C=camera  T=texture  SPACE=pausa
+//            E=esplosione (lancio al centro camera)  F11=fullscreen  ESC=esci
+//            TAB=modalità EDIT
+// EDITOR (EDITOR_DESIGN fase 1, VAT_HORDE_EDIT=1 per partire in EDIT): la sim si
+//   ferma, si edita la Scene e si re-instanzia tornando in PLAY (TAB). Tool a
+//   tastiera: 1=select 2=goal 3=spawn 4=cost 5=pack 6=muro 7=costo-poly.
+//   Mouse: LMB drag = rect (goal/spawn/cost/pack); LMB click = vertice poligono
+//   (Invio chiude, Backspace/RMB toglie l'ultimo); RMB su un'entità = cancella.
+//   G=snap on/off  [ ]=altezza poly / peso costo  F2=salva la .scn caricata.
 // Headless:  VAT_HORDE_SHOT="<frames>" ./vat_horde  -> simula N step, screenshot
 //            vat_horde_shot.bmp, esce. VAT_HORDE_CAM="cx,cz,hh,az,el".
 //            VAT_HORDE_BLAST="frame,x,y[,str,up]" -> esplosione+lancio a quel frame.
@@ -19,10 +26,15 @@
 #include "defense.h"
 #include "cgltf.h"
 #include "terrain.h"
+#include "edit_pick.h"
+#include "editor.h"
 
 #define MAXA 60000
+#define NT 10                  // numero massimo di torrette (anello demo)
 static float inst[MAXA*12];
 static float shad[MAXA*4];     // ground shadow instances: xyz center + radius
+#define EDOVL_MAXV 8192        // vertici max dell'overlay editor (rects+poly+cursore)
+static float edovl[EDOVL_MAXV*9];
 
 // I body type disponibili (asset bakati in vat/assets/). Texture placeholder: la
 // skirt non ha ancora il _diffuse.png -> rende flat-shaded (tintata), corretto.
@@ -319,6 +331,79 @@ static int build_struct_mesh(DefGame *g, float cell, float *buf){
     return c;
 }
 
+// Costruisce il mondo VIVO (sim + gameplay) DERIVATO dalla Scene (EDITOR_DESIGN
+// §1): scene_instantiate + torrette ad anello + base opz. + prefill bench +
+// director. Chiamato all'avvio e di nuovo su EDIT→PLAY (re-instantiate). Aggiorna
+// spctx->s per il callback del director. Ritorna 0, -1 su fallimento.
+static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx,
+                       SimP **ps, DefGame **pg, DefDirector **pdir){
+    SimP *s = scene_instantiate(sc, MAXA);
+    if(!s){ fprintf(stderr,"scene_instantiate fail\n"); return -1; }
+    spctx->s = s; spctx->vl = vl;
+
+    DefGame *g = def_create(s, MAXA);
+    float bcx=sc->world_w*0.5f, bcy=sc->world_h*0.5f;
+    if(sc->n_goal>0){ float sx=0,sy=0; for(int k=0;k<sc->n_goal;k++){
+            sx+=sc->goal[k].x+sc->goal[k].w*0.5f; sy+=sc->goal[k].y+sc->goal[k].h*0.5f; }
+        bcx=sx/sc->n_goal; bcy=sy/sc->n_goal; }
+    float mn = sc->world_w<sc->world_h?sc->world_w:sc->world_h;
+    float TR_R = 0.22f*mn;
+    int nt_want=getenv("VAT_HORDE_TURRETS")?atoi(getenv("VAT_HORDE_TURRETS")):NT;
+    if(nt_want>NT)nt_want=NT; if(nt_want<0)nt_want=0;
+    def_set_budget(g, getenv("VAT_HORDE_BUDGET")?atoi(getenv("VAT_HORDE_BUDGET")):1000);
+    int placed=0;
+    for(int i=0;i<nt_want;i++){ float th=(float)i*(6.2831853f/(float)NT);
+        float tx=bcx+TR_R*cosf(th), ty=bcy+TR_R*sinf(th);
+        if(tx<1.0f||tx>sc->world_w-1.0f||ty<1.0f||ty>sc->world_h-1.0f) continue;
+        DefTurret t={0};
+        t.x=tx; t.y=ty; t.ang=th;
+        float ha=3.15f; t.arc_min=th-ha; t.arc_max=th+ha;
+        t.sweep_dir=1; t.sweep_speed=3.0f; t.range=55.0f;
+        t.heavy=(i%4==2); t.piercing=(i%4==0);
+        t.fire_period=t.heavy?0.5f:0.10f; t.damage=t.heavy?0.0f:55.0f;
+        def_add_turret(g,&t); placed++; }
+    printf("torrette: %d piazzate (anello r=%.1f m attorno alla base (%.1f,%.1f))\n",
+           placed,(double)TR_R,(double)bcx,(double)bcy);
+
+    if(getenv("VAT_HORDE_BASE")){ build_base(g,s,sc->cell,bcx,bcy);
+        printf("base: core HP %.0f + ring HP %.0f attorno a cella (%d,%d)\n",
+               (double)def_struct_hp_max(g,gCoreId),(double)def_struct_hp_max(g,gOuterId),
+               gBaseCX,gBaseCY); }
+
+    if(fillN){ int got=prefill_lattice(s,g,vl,sc,fillN);
+        printf("prefill: target %d -> %d agenti piazzati\n", fillN, got); }
+
+    DefRect drects[16]; int ndr=sc->n_spawn<16?sc->n_spawn:16;
+    for(int k=0;k<ndr;k++){ drects[k].x=sc->spawn[k].x; drects[k].y=sc->spawn[k].y;
+        drects[k].w=sc->spawn[k].w; drects[k].h=sc->spawn[k].h; }
+    DefDirector *dir=NULL;
+    if(!fillN && ndr>0){ DefDirectorCfg dc={0};
+        dc.rects=drects; dc.nrects=ndr; dc.spawn_radius=0.34f;
+        dc.base_rate=getenv("VAT_HORDE_RATE")?atof(getenv("VAT_HORDE_RATE")):16.0f;
+        dc.rate_ramp=8.0f; dc.wave_period=15.0f; dc.seed=0x5EED1234u;
+        dc.on_spawn=on_director_spawn; dc.user=spctx;
+        dir=def_director_create(g,&dc);
+        printf("director: %d rect, base %.0f/s +%.0f/ondata (15s)\n",ndr,(double)dc.base_rate,(double)dc.rate_ramp); }
+
+    *ps=s; *pg=g; *pdir=dir; return 0;
+}
+
+static void free_world(SimP *s, DefGame *g, DefDirector *dir){
+    if(dir) def_director_destroy(dir);
+    if(g)   def_destroy(g);
+    if(s)   simp_destroy(s);
+}
+
+// Ricostruisce la mesh statica degli ostacoli nel VBO esistente (i poly della
+// Scene cambiano in EDIT). Ritorna il nuovo conteggio vertici. Gli attrib del
+// VAO restano validi (puntano allo stesso buffer).
+static int upload_obstacle_mesh(GLuint vbo, const Scene *sc, int with_ground){
+    int nv=0; float *m=build_obstacle_mesh(sc,with_ground,&nv);
+    glBindBuffer(GL_ARRAY_BUFFER,vbo);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)nv*9*sizeof(float),m,GL_STATIC_DRAW);
+    free(m); return nv;
+}
+
 int main(int argc, char **argv){
     const char *scene_path = argc > 1 ? argv[1] : "scenes/obstacles.scn";
     Scene sc;
@@ -359,63 +444,11 @@ int main(int argc, char **argv){
     vat_layer_set_random_count(vl,NCOSMETIC);   /* il crawler solo via pin, non a caso */
     printf("varianti=%d (di cui %d cosmetiche + crawler)\n",NVAR,NCOSMETIC);
 
-    SimP *s = scene_instantiate(&sc, MAXA);
-    if(!s){ fprintf(stderr,"scene_instantiate fail\n"); return 1; }
-
-    // gameplay difensivo (M5): torrette in anello attorno alla base (centroide
-    // dei goal, fallback centro mondo), affacciate verso l'esterno.
-    DefGame *g = def_create(s, MAXA);
-    float bcx=sc.world_w*0.5f, bcy=sc.world_h*0.5f;
-    if(sc.n_goal>0){ float sx=0,sy=0; for(int k=0;k<sc.n_goal;k++){
-            sx+=sc.goal[k].x+sc.goal[k].w*0.5f; sy+=sc.goal[k].y+sc.goal[k].h*0.5f; }
-        bcx=sx/sc.n_goal; bcy=sy/sc.n_goal; }
-#define NT 10
-    float mn = sc.world_w<sc.world_h?sc.world_w:sc.world_h;
-    float TR_R = 0.22f*mn;
-    int nt_want=getenv("VAT_HORDE_TURRETS")?atoi(getenv("VAT_HORDE_TURRETS")):NT;
-    if(nt_want>NT)nt_want=NT; if(nt_want<0)nt_want=0;
-    def_set_budget(g, getenv("VAT_HORDE_BUDGET")?atoi(getenv("VAT_HORDE_BUDGET")):1000);
-    int placed=0;
-    for(int i=0;i<nt_want;i++){ float th=(float)i*(6.2831853f/(float)NT);
-        float tx=bcx+TR_R*cosf(th), ty=bcy+TR_R*sinf(th);
-        /* salta le posizioni fuori dal mondo (base sul bordo → mezzo anello
-           cadrebbe fuori): restano le torrette che guardano l'orda in arrivo */
-        if(tx<1.0f||tx>sc.world_w-1.0f||ty<1.0f||ty>sc.world_h-1.0f) continue;
-        DefTurret t={0};
-        t.x=tx; t.y=ty; t.ang=th;
-        /* arco ampio = auto-target sul più vicino (ingaggio garantito per questo
-           primo aggancio; l'arco direzionale stretto è tuning gameplay futuro) */
-        float ha=3.15f; t.arc_min=th-ha; t.arc_max=th+ha;
-        t.sweep_dir=1; t.sweep_speed=3.0f; t.range=55.0f;
-        t.heavy=(i%4==2); t.piercing=(i%4==0);
-        t.fire_period=t.heavy?0.5f:0.10f; t.damage=t.heavy?0.0f:55.0f;
-        def_add_turret(g,&t); placed++; }
-    printf("torrette: %d piazzate (anello r=%.1f m attorno alla base (%.1f,%.1f))\n",
-           placed,(double)TR_R,(double)bcx,(double)bcy);
-
-    // §7 base & siege: due anelli distruttibili attorno al goal centrale.
-    if(getenv("VAT_HORDE_BASE")){ build_base(g,s,sc.cell,bcx,bcy);
-        printf("base: core HP %.0f + ring HP %.0f attorno a cella (%d,%d)\n",
-               (double)def_struct_hp_max(g,gCoreId),(double)def_struct_hp_max(g,gOuterId),
-               gBaseCX,gBaseCY); }
-
-    if(fillN){ int got=prefill_lattice(s,g,vl,&sc,fillN);
-        printf("prefill: target %d -> %d agenti piazzati\n", fillN, got); }
-
-    // §8 spawn director: ondate burst-free dalle rect di scena, rampa per ondata
-    // (rate + durezza del mix). Non in benchmark (fillN prefilla a mano).
-    SpawnCtx spctx={s,vl};
-    DefRect drects[16]; int ndr=sc.n_spawn<16?sc.n_spawn:16;
-    for(int k=0;k<ndr;k++){ drects[k].x=sc.spawn[k].x; drects[k].y=sc.spawn[k].y;
-        drects[k].w=sc.spawn[k].w; drects[k].h=sc.spawn[k].h; }
-    DefDirector *dir=NULL;
-    if(!fillN && ndr>0){ DefDirectorCfg dc={0};
-        dc.rects=drects; dc.nrects=ndr; dc.spawn_radius=0.34f;
-        dc.base_rate=getenv("VAT_HORDE_RATE")?atof(getenv("VAT_HORDE_RATE")):16.0f;
-        dc.rate_ramp=8.0f; dc.wave_period=15.0f; dc.seed=0x5EED1234u;
-        dc.on_spawn=on_director_spawn; dc.user=&spctx;
-        dir=def_director_create(g,&dc);
-        printf("director: %d rect, base %.0f/s +%.0f/ondata (15s)\n",ndr,(double)dc.base_rate,(double)dc.rate_ramp); }
+    // Mondo vivo derivato dalla Scene (build_world): sim + torrette + base +
+    // director. spctx persiste (il director ne tiene il puntatore come user).
+    SpawnCtx spctx={NULL,vl};
+    SimP *s=NULL; DefGame *g=NULL; DefDirector *dir=NULL;
+    if(build_world(&sc, vl, fillN, &spctx, &s, &g, &dir)!=0) return 1;
 
     const char *shot=getenv("VAT_HORDE_SHOT");
     int shot_frames = shot? atoi(shot):0; if(shot&&shot_frames<=0)shot_frames=600;
@@ -432,7 +465,8 @@ int main(int argc, char **argv){
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION,3);SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER,1);SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE,24);
-    SDL_Window*win=SDL_CreateWindow("vat_horde",SW,SH,SDL_WINDOW_OPENGL);
+    SDL_Window*win=SDL_CreateWindow("vat_horde",SW,SH,SDL_WINDOW_OPENGL|SDL_WINDOW_RESIZABLE);
+    int fullscreen=0;
     SDL_GLContext ctx=SDL_GL_CreateContext(win);
     if(!ctx||!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress)){fprintf(stderr,"GL init fail\n");return 1;}
     printf("GL %s\n",glGetString(GL_VERSION));
@@ -483,6 +517,19 @@ int main(int argc, char **argv){
     glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
     glBindVertexArray(0); free(obMesh);
     printf("ostacoli: %d triangoli\n",obNV/3);
+
+    // overlay editor (rect/poly/cursore): stesso layout del flat shader, dinamico.
+    GLuint ovVao,ovVbo; glGenVertexArrays(1,&ovVao);glBindVertexArray(ovVao);
+    glGenBuffers(1,&ovVbo);glBindBuffer(GL_ARRAY_BUFFER,ovVbo);
+    glBufferData(GL_ARRAY_BUFFER,sizeof edovl,NULL,GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
+    glBindVertexArray(0);
+
+    // stato editor (EDITOR_DESIGN fase 1): VAT_HORDE_EDIT=1 parte in EDIT, TAB
+    // commuta. In EDIT la sim NON steppa, si edita la Scene e si salva (F2).
+    Editor ed; ed_init(&ed); ed.active = getenv("VAT_HORDE_EDIT")?1:0;
 
     // torrette (statico) + tracer di fuoco (dinamico), stesso flat shader.
     int turNV=0; float *turMesh=build_turret_mesh(g,&turNV);
@@ -553,18 +600,101 @@ int main(int argc, char **argv){
     // consumo in passi da 1/60 → la sim avanza alla stessa velocità a 60 o 144 Hz
     // (il vsync governa i frame, non i passi di simulazione).
     const float FIXED_DT=1.0f/60.0f;
+    mat4 vp; m_identity(vp);     // hoisted: il picking nel mouse handler usa la VP del frame precedente
     Uint64 prev=SDL_GetPerformanceCounter(); double acc_t=0.0;
     double acc_sim=0,acc_lay=0,acc_ren=0; int acc_n=0;
     double bsim=0,blay=0,bren=0; int bn=0;     // finestra di misura benchmark
     int running=1,frame=0,shot_done=0;
     while(running){
-        SDL_Event e; while(SDL_PollEvent(&e)){ if(e.type==SDL_EVENT_QUIT)running=0;
-            else if(e.type==SDL_EVENT_KEY_DOWN)switch(e.key.key){
-                case SDLK_ESCAPE:running=0;break; case SDLK_C:cam_free=!cam_free;break; case SDLK_T:useTex=!useTex;break;
+        SDL_Event e; while(SDL_PollEvent(&e)){
+            if(e.type==SDL_EVENT_QUIT){ running=0; continue; }
+            // --- mouse: SOLO in EDIT (in PLAY non interferisce) ---
+            if(ed.active && (e.type==SDL_EVENT_MOUSE_MOTION ||
+                             e.type==SDL_EVENT_MOUSE_BUTTON_DOWN ||
+                             e.type==SDL_EVENT_MOUSE_BUTTON_UP)){
+                // punto logico -> pixel (corretto anche su HiDPI: SW/SH sono pixel)
+                int wpw=1,wph=1; SDL_GetWindowSize(win,&wpw,&wph);
+                int motion=(e.type==SDL_EVENT_MOUSE_MOTION);
+                float mxf=(motion?e.motion.x:e.button.x)*(float)SW/(wpw>0?wpw:1);
+                float myf=(motion?e.motion.y:e.button.y)*(float)SH/(wph>0?wph:1);
+                float wx=0,wy=0; int hit=pick_y0(vp,mxf,myf,SW,SH,&wx,&wy);
+                if(hit){ ed.curx=wx; ed.cury=wy; ed.have_cursor=1; }
+                if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN && hit){
+                    if(e.button.button==SDL_BUTTON_LEFT){
+                        if(ed.tool==ED_GOAL||ed.tool==ED_SPAWN||ed.tool==ED_COST||ed.tool==ED_PACK){
+                            ed.dragging=1; ed.ax=ed.bx=wx; ed.ay=ed.by=wy;
+                        } else if(ed.tool==ED_WALL||ed.tool==ED_COSTPOLY){
+                            ed_poly_vertex(&ed,&sc,wx,wy);
+                        }
+                    } else if(e.button.button==SDL_BUTTON_RIGHT){
+                        if(ed.npoly>0) ed.npoly--;                 // annulla ultimo vertice
+                        else if(ed_delete_at(&sc,wx,wy)){ ed.dirty=1;
+                            obNV=upload_obstacle_mesh(obVbo,&sc,!groundOn); }
+                    }
+                } else if(motion && ed.dragging && hit){ ed.bx=wx; ed.by=wy; }
+                else if(e.type==SDL_EVENT_MOUSE_BUTTON_UP &&
+                        e.button.button==SDL_BUTTON_LEFT && ed.dragging){
+                    ed_commit_drag(&ed,&sc);
+                }
+                continue;
+            }
+            if(e.type!=SDL_EVENT_KEY_DOWN) continue;
+            // --- tasti globali (EDIT e PLAY) ---
+            switch(e.key.key){
+                case SDLK_ESCAPE: running=0; break;
+                case SDLK_F11: fullscreen=!fullscreen; SDL_SetWindowFullscreen(win,fullscreen); break;
+                case SDLK_TAB:                                    // EDIT<->PLAY
+                    if(ed.active){
+                        if(ed.dirty){ free_world(s,g,dir);        // re-instanzia dalla Scene editata
+                            if(build_world(&sc,vl,fillN,&spctx,&s,&g,&dir)!=0){running=0;break;}
+                            obNV=upload_obstacle_mesh(obVbo,&sc,!groundOn); ed.dirty=0; }
+                        ed.active=0;
+                    } else ed.active=1;
+                    break;
+                default: break;
+            }
+            if(ed.active) switch(e.key.key){                      // --- tasti EDIT ---
+                case SDLK_1: ed.tool=ED_SELECT; break;
+                case SDLK_2: ed.tool=ED_GOAL;   break;
+                case SDLK_3: ed.tool=ED_SPAWN;  break;
+                case SDLK_4: ed.tool=ED_COST;   break;
+                case SDLK_5: ed.tool=ED_PACK;   break;
+                case SDLK_6: ed.tool=ED_WALL;   break;
+                case SDLK_7: ed.tool=ED_COSTPOLY; break;
+                case SDLK_G: ed.snap=!ed.snap;  break;
+                case SDLK_RETURN:
+                    if((ed.tool==ED_WALL||ed.tool==ED_COSTPOLY) && ed_poly_close(&ed,&sc))
+                        obNV=upload_obstacle_mesh(obVbo,&sc,!groundOn);
+                    break;
+                case SDLK_BACKSPACE: if(ed.npoly>0) ed.npoly--; break;
+                case SDLK_LEFTBRACKET:
+                    if(ed.tool==ED_WALL) ed.poly_h=fmaxf(0.2f,ed.poly_h-0.5f);
+                    else if(ed.tool==ED_COSTPOLY) ed.poly_cost=fmaxf(0.0f,ed.poly_cost-1.0f);
+                    else ed.rect_cost=fmaxf(0.0f,ed.rect_cost-1.0f);
+                    break;
+                case SDLK_RIGHTBRACKET:
+                    if(ed.tool==ED_WALL) ed.poly_h+=0.5f;
+                    else if(ed.tool==ED_COSTPOLY) ed.poly_cost+=1.0f;
+                    else ed.rect_cost+=1.0f;
+                    break;
+                case SDLK_F2:
+                    if(scene_save(scene_path,&sc)==0) printf("salvato %s\n",scene_path);
+                    else fprintf(stderr,"save fail %s\n",scene_path);
+                    break;
+                default: break;
+            } else switch(e.key.key){                             // --- tasti PLAY ---
+                case SDLK_C:cam_free=!cam_free;break; case SDLK_T:useTex=!useTex;break;
                 case SDLK_SPACE:paused=!paused;break;
-                case SDLK_E:blast_x=cx;blast_y=cz;blast_pending=1;break;  // esplosione+lancio al centro camera
-                case SDLK_LEFT:az-=0.06f;break; case SDLK_RIGHT:az+=0.06f;break; case SDLK_UP:el+=0.04f;break; case SDLK_DOWN:el-=0.04f;break;
-                case SDLK_EQUALS:case SDLK_PLUS:hh*=0.9f;break; case SDLK_MINUS:hh*=1.1f;break; } }
+                case SDLK_E:blast_x=cx;blast_y=cz;blast_pending=1;break;
+                default: break;
+            }
+            switch(e.key.key){                                    // --- camera (sempre) ---
+                case SDLK_LEFT:az-=0.06f;break; case SDLK_RIGHT:az+=0.06f;break;
+                case SDLK_UP:el+=0.04f;break; case SDLK_DOWN:el-=0.04f;break;
+                case SDLK_EQUALS:case SDLK_PLUS:hh*=0.9f;break; case SDLK_MINUS:hh*=1.1f;break;
+                default: break;
+            }
+        }
         double sim_ms=0, lay_ms=0;
         // tempo del frame: reale (interattivo) o fisso 1/60 (headless shot/bench →
         // 1 passo/frame, deterministico e indipendente dal tempo a parete).
@@ -573,7 +703,7 @@ int main(int argc, char **argv){
         if(shot || bench_meas) frame_t=FIXED_DT;
         if(frame_t>0.25) frame_t=0.25;                 // anti spiral-of-death
         if(blast_frame>=0 && frame>=blast_frame){ blast_pending=1; blast_frame=-1; }
-        if(!paused){
+        if(!ed.active && !paused){
             if(blast_pending){ simp_apply_impulse_ex(s,blast_x,blast_y,8.0f,blast_str,blast_up);
                 blast_pending=0; printf("blast @ (%.1f,%.1f) str %.1f up %.2f\n",
                     (double)blast_x,(double)blast_y,(double)blast_str,(double)blast_up); }
@@ -598,7 +728,10 @@ int main(int argc, char **argv){
             }
         } else acc_t=0.0;                              // in pausa: niente debito
 
-        float asp=(float)SW/SH; mat4 proj,view,vp; float ctr[3]={cx,0.9f,cz},up[3]={0,1,0};
+        // dimensione drawable corrente (resize/fullscreen/DPI). Headless (shot/
+        // bench) resta inchiodata a 1280×720 → screenshot deterministici.
+        if(!shot && !bench_meas) SDL_GetWindowSizeInPixels(win,&SW,&SH);
+        float asp=(float)SW/SH; mat4 proj,view; float ctr[3]={cx,0.9f,cz},up[3]={0,1,0};
         float eye[3]={cx+hh*cosf(el)*sinf(az),0.9f+hh*sinf(el),cz+hh*cosf(el)*cosf(az)};
         if(cam_free)m_persp(proj,45.0f*3.14159f/180.0f,asp,0.1f,500.0f);
         else m_ortho(proj,-hh*asp,hh*asp,-hh,hh,-200,400);
@@ -637,6 +770,15 @@ int main(int argc, char **argv){
                 glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)sv*9*sizeof(float),stBuf);
                 glDrawArrays(GL_TRIANGLES,0,sv); } }
 
+        // overlay editor (rect/poly-in-corso/cursore) sopra il terreno, flat shader.
+        if(ed.active){ int ov=ed_overlay(&sc,&ed,edovl,EDOVL_MAXV);
+            if(ov){ glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
+                glBindVertexArray(ovVao);glBindBuffer(GL_ARRAY_BUFFER,ovVbo);
+                glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)ov*9*sizeof(float),edovl);
+                glDrawArrays(GL_TRIANGLES,0,ov); } }
+
+        int total=0;
+      if(!ed.active){   // in EDIT niente orda viva: scena statica + overlay
         // ombre a terra (sotto l'orda, alla quota del terreno): blend, no depth write.
         // Per i flyer l'ombra resta a terra (terrain_z, non la quota di volo) e si
         // RIMPICCIOLISCE con l'altezza za[] → segnala visivamente quanto è alto.
@@ -659,7 +801,6 @@ int main(int argc, char **argv){
         glUniform1i(glGetUniformLocation(prog,"texNorm"),1);
         glUniform1i(glGetUniformLocation(prog,"texDiff"),2);
 
-        int total=0;
         for(int v=0;v<NVAR;v++){
             int count=vat_layer_fill_variant(vl,s,v,inst,MAXA);
             if(!count) continue; total+=count;
@@ -675,12 +816,19 @@ int main(int argc, char **argv){
             glBindVertexArray(A[v].vao);glDrawElementsInstanced(GL_TRIANGLES,A[v].ni,GL_UNSIGNED_SHORT,0,count);
         }
         glBindVertexArray(0);
+      }   // fine if(!ed.active)
         glFinish();
         double ren_ms=(double)(SDL_GetPerformanceCounter()-r0)*1000.0/pf;
 
         // HUD: medie mobili sim/layer/render nel titolo
         acc_sim+=sim_ms; acc_lay+=lay_ms; acc_ren+=ren_ms; acc_n++;
-        if(acc_n>=30){ char title[384]; double S=acc_sim/acc_n,L=acc_lay/acc_n,R=acc_ren/acc_n;
+        if(ed.active && acc_n>=30){ char t[256];
+            snprintf(t,sizeof t,"vat_horde EDIT — tool:%s%s | poly h%.1f cost%.0f | rect cost%.0f | cur(%.1f,%.1f) | g=%d goal%d spawn%d cost%d pack%d poly%d%s | TAB=play F2=save",
+                ED_TOOL_NAME[ed.tool], ed.dragging?"*":"", (double)ed.poly_h,(double)ed.poly_cost,(double)ed.rect_cost,
+                (double)ed.curx,(double)ed.cury, ed.snap, sc.n_goal,sc.n_spawn,sc.n_cost,sc.n_pack,sc.n_poly,
+                ed.dirty?" *":"");
+            SDL_SetWindowTitle(win,t); acc_sim=acc_lay=acc_ren=0; acc_n=0; }
+        else if(acc_n>=30){ char title[384]; double S=acc_sim/acc_n,L=acc_lay/acc_n,R=acc_ren/acc_n;
             char base[96]=""; if(gBaseOn){ int pc=(int)(100.0f*def_struct_hp(g,gCoreId)/(def_struct_hp_max(g,gCoreId)+1e-3f));
                 int po=(int)(100.0f*def_struct_hp(g,gOuterId)/(def_struct_hp_max(g,gOuterId)+1e-3f));
                 snprintf(base,sizeof base, def_lost(g)?" | BASE PERSA":" | ring %d%% core %d%%", po<0?0:po, pc<0?0:pc); }

@@ -17,6 +17,8 @@ test_defense
 test_base
 test_director
 test_terrain
+test_pick
+test_editor
 bench_sim
 *.o
 frames/
@@ -30,6 +32,9 @@ vat_view_shot.bmp
 vat/glad.o
 vat_horde
 vat_horde_shot.bmp
+
+# Windows cross-build (make TARGET=win64)
+*.exe
 
 # baked heightmaps (derived from the .glb via gfx/terrain_bake.py)
 *.zhm

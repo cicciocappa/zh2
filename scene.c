@@ -8,6 +8,10 @@
 #include <stddef.h>
 #include <math.h>
 
+#if defined(_WIN32)
+#define strtok_r strtok_s        /* MS CRT: identical 3-arg signature */
+#endif
+
 /* ---- SimPParams fields addressable from "set <name> <value>" ------------ */
 
 typedef struct { const char *name; size_t off; int is_int; } ParamEntry;

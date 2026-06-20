@@ -17,7 +17,11 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
+#if defined(_WIN32)
+#include <windows.h>          /* GetSystemInfo: no sysconf on mingw-w64 */
+#else
 #include <unistd.h>
+#endif
 
 typedef void (*SimJob)(void *arg, int worker, int begin, int end);
 
@@ -65,7 +69,12 @@ static void *simpool_worker(void *vp) {
 static int simpool_default_threads(void) {
     const char *e = getenv("SIMP_THREADS");
     if (e) { int n = atoi(e); return n > 0 ? n : 1; }
+#if defined(_WIN32)
+    SYSTEM_INFO si; GetSystemInfo(&si);
+    int n = (int)si.dwNumberOfProcessors;
+#else
     long n = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
     return n > 0 ? (int)n : 1;
 }
 

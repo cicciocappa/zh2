@@ -3,14 +3,38 @@ CC      ?= gcc
 CFLAGS  ?= -O2 -Wall -Wextra -std=c11 -pthread
 LDLIBS   = -lm
 
-# SDL3 built from source lives in ~/.local (its .pc already carries the rpath)
-SDL_PC     := PKG_CONFIG_PATH=$(HOME)/.local/lib/pkgconfig:$(PKG_CONFIG_PATH) pkg-config
-SDL_CFLAGS := $(shell $(SDL_PC) --cflags sdl3 2>/dev/null)
-SDL_LIBS   := $(shell $(SDL_PC) --libs   sdl3 2>/dev/null)
+# --- Platform / cross-compile ------------------------------------------------
+# Native Linux by default. Windows cross-build via mingw-w64:
+#     make vat_horde TARGET=win64
+# Needs the SDL3 mingw-w64 dev package; set SDL3_MINGW to its prefix (the dir
+# holding include/SDL3 and lib/libSDL3.dll.a). Override CROSS for a different
+# toolchain triplet. Graphical exes get the .exe suffix. Ship SDL3.dll alongside.
+TARGET ?= native
+
+ifeq ($(TARGET),win64)
+  CROSS      ?= x86_64-w64-mingw32-
+  CC         := $(CROSS)gcc
+  EXE        := .exe
+  DL_LIB     :=                       # no dlopen on Windows (glad uses LoadLibrary)
+  # win32 import libs an SDL3 OpenGL app pulls in
+  PLAT_LIBS  := -lopengl32 -lgdi32 -lwinmm -lole32 -loleaut32 -limm32 \
+                -lsetupapi -lversion -lcfgmgr32
+  SDL3_MINGW ?= /usr/x86_64-w64-mingw32
+  SDL_CFLAGS := -I$(SDL3_MINGW)/include
+  SDL_LIBS   := -L$(SDL3_MINGW)/lib -lSDL3
+else
+  EXE        :=
+  DL_LIB     := -ldl
+  PLAT_LIBS  :=
+  # SDL3 built from source lives in ~/.local (its .pc already carries the rpath)
+  SDL_PC     := PKG_CONFIG_PATH=$(HOME)/.local/lib/pkgconfig:$(PKG_CONFIG_PATH) pkg-config
+  SDL_CFLAGS := $(shell $(SDL_PC) --cflags sdl3 2>/dev/null)
+  SDL_LIBS   := $(shell $(SDL_PC) --libs   sdl3 2>/dev/null)
+endif
 
 all: test_particles test_impulse test_dormant test_handles test_query test_corpses \
      test_types test_density_route test_jam test_scene test_siege test_turret \
-     test_defense test_base test_director test_terrain
+     test_defense test_base test_director test_terrain test_pick test_editor
 
 test_particles: test_particles.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_particles.c sim_particles.c $(LDLIBS)
@@ -60,22 +84,30 @@ test_director: test_director.c defense.c sim_particles.c defense.h sim_particles
 test_terrain: test_terrain.c terrain.c terrain.h
 	$(CC) $(CFLAGS) -o $@ test_terrain.c terrain.c $(LDLIBS)
 
+# editor picking math (headless, zero deps): EDITOR_DESIGN §6 verifica (b)
+test_pick: test_pick.c vat/edit_pick.h
+	$(CC) $(CFLAGS) -o $@ test_pick.c $(LDLIBS)
+
+# editor mutation logic + save/reload roundtrip: EDITOR_DESIGN §6 verifica (a)
+test_editor: test_editor.c vat/editor.h scene.c scene.h sim_particles.c sim_particles.h
+	$(CC) $(CFLAGS) -I. -o $@ test_editor.c scene.c sim_particles.c $(LDLIBS)
+
 # headless CPU benchmark del core (zero deps: niente SDL/GL/asset). Portatile.
 bench_sim: bench_sim.c sim_particles.c scene.c sim_particles.h scene.h
 	$(CC) $(CFLAGS) -o $@ bench_sim.c sim_particles.c scene.c $(LDLIBS)
 
 sandbox: sandbox_particles.c sim_particles.c sim_particles.h scene.c scene.h \
          sprite_layer.c sprite_layer.h
-	$(CC) $(CFLAGS) $(SDL_CFLAGS) -o $@ sandbox_particles.c sim_particles.c scene.c sprite_layer.c $(SDL_LIBS) $(LDLIBS)
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -o $@$(EXE) sandbox_particles.c sim_particles.c scene.c sprite_layer.c $(SDL_LIBS) $(PLAT_LIBS) $(LDLIBS)
 
 sprite_view: sprite_view.c
-	$(CC) $(CFLAGS) $(SDL_CFLAGS) -o $@ sprite_view.c $(SDL_LIBS) $(LDLIBS)
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -o $@$(EXE) sprite_view.c $(SDL_LIBS) $(PLAT_LIBS) $(LDLIBS)
 
 # VAT 3D previewer (migrazione_3d.md). glad.c e stb compilati con -w (codice di terzi).
 vat_view: vat/vat_view.c vat/glad.c vat/stb_impl.c vat/vat.vs vat/vat.fs
 	$(CC) -O2 -w -Ivat $(SDL_CFLAGS) -c vat/glad.c -o vat/glad.o
 	$(CC) -O2 -w -Ivat -c vat/stb_impl.c -o vat/stb_impl.o
-	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Ivat -o $@ vat/vat_view.c vat/glad.o vat/stb_impl.o $(SDL_LIBS) $(LDLIBS) -ldl
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Ivat -o $@$(EXE) vat/vat_view.c vat/glad.o vat/stb_impl.o $(SDL_LIBS) $(PLAT_LIBS) $(LDLIBS) $(DL_LIB)
 
 # Orda reale del core sim_particles resa in 3D VAT (vat_layer + vat_horde) su
 # scena vettoriale (scene.c). Ostacoli estrusi via vat/flat.vs/.fs.
@@ -83,7 +115,7 @@ vat_horde: vat/vat_horde.c vat/vat_layer.c sim_particles.c scene.c defense.c ter
 	$(CC) -O2 -w -Ivat $(SDL_CFLAGS) -c vat/glad.c -o vat/glad.o
 	$(CC) -O2 -w -Ivat -c vat/stb_impl.c -o vat/stb_impl.o
 	$(CC) -O2 -w -Ivat -c vat/cgltf_impl.c -o vat/cgltf_impl.o
-	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Ivat -I. -o $@ vat/vat_horde.c vat/vat_layer.c sim_particles.c scene.c defense.c terrain.c vat/glad.o vat/stb_impl.o vat/cgltf_impl.o $(SDL_LIBS) $(LDLIBS) -ldl
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Ivat -I. -o $@$(EXE) vat/vat_horde.c vat/vat_layer.c sim_particles.c scene.c defense.c terrain.c vat/glad.o vat/stb_impl.o vat/cgltf_impl.o $(SDL_LIBS) $(PLAT_LIBS) $(LDLIBS) $(DL_LIB)
 
 test: all
 	./test_particles
@@ -102,10 +134,13 @@ test: all
 	./test_base
 	./test_director
 	./test_terrain
+	./test_pick
+	./test_editor
 
 clean:
 	rm -rf test_particles test_impulse test_dormant test_handles test_query \
 	       test_corpses test_types test_density_route test_jam test_scene \
-	       test_siege test_turret test_defense test_base test_director test_terrain bench_sim sandbox sprite_view frames
+	       test_siege test_turret test_defense test_base test_director test_terrain bench_sim test_pick test_editor \
+	       sandbox sprite_view vat_view vat_horde frames *.exe vat/*.o
 
 .PHONY: all test clean

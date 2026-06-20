@@ -1,0 +1,89 @@
+/* edit_pick.h — screen->world picking for the level editor (EDITOR_DESIGN §3).
+ *
+ * Header-only, ZERO deps (operates on raw float[16] column-major matrices, the
+ * same layout vat_gl.h's mat4 uses). Included by both vat_horde (the host) and
+ * test_pick.c (headless math unit test, design §6 verification (b)).
+ *
+ * The editor needs to turn a mouse pixel into a world point on the ground plane
+ * y=0. We unproject the pixel to a near and a far clip-space point through
+ * inverse(VP), then intersect that line with y=0. Works for ortho AND
+ * perspective VP (the editor camera is ortho, but the math is general).
+ */
+#ifndef EDIT_PICK_H
+#define EDIT_PICK_H
+
+/* General 4x4 inverse (cofactor expansion, MESA gluInvertMatrix). Column-major
+ * in == column-major out. Returns 1 on success, 0 if singular. */
+static int m4_invert(const float m[16], float out[16]) {
+    float inv[16], det;
+    inv[0]  =  m[5]*m[10]*m[15] - m[5]*m[11]*m[14] - m[9]*m[6]*m[15]
+             + m[9]*m[7]*m[14] + m[13]*m[6]*m[11] - m[13]*m[7]*m[10];
+    inv[4]  = -m[4]*m[10]*m[15] + m[4]*m[11]*m[14] + m[8]*m[6]*m[15]
+             - m[8]*m[7]*m[14] - m[12]*m[6]*m[11] + m[12]*m[7]*m[10];
+    inv[8]  =  m[4]*m[9]*m[15] - m[4]*m[11]*m[13] - m[8]*m[5]*m[15]
+             + m[8]*m[7]*m[13] + m[12]*m[5]*m[11] - m[12]*m[7]*m[9];
+    inv[12] = -m[4]*m[9]*m[14] + m[4]*m[10]*m[13] + m[8]*m[5]*m[14]
+             - m[8]*m[6]*m[13] - m[12]*m[5]*m[10] + m[12]*m[6]*m[9];
+    inv[1]  = -m[1]*m[10]*m[15] + m[1]*m[11]*m[14] + m[9]*m[2]*m[15]
+             - m[9]*m[3]*m[14] - m[13]*m[2]*m[11] + m[13]*m[3]*m[10];
+    inv[5]  =  m[0]*m[10]*m[15] - m[0]*m[11]*m[14] - m[8]*m[2]*m[15]
+             + m[8]*m[3]*m[14] + m[12]*m[2]*m[11] - m[12]*m[3]*m[10];
+    inv[9]  = -m[0]*m[9]*m[15] + m[0]*m[11]*m[13] + m[8]*m[1]*m[15]
+             - m[8]*m[3]*m[13] - m[12]*m[1]*m[11] + m[12]*m[3]*m[9];
+    inv[13] =  m[0]*m[9]*m[14] - m[0]*m[10]*m[13] - m[8]*m[1]*m[14]
+             + m[8]*m[2]*m[13] + m[12]*m[1]*m[10] - m[12]*m[2]*m[9];
+    inv[2]  =  m[1]*m[6]*m[15] - m[1]*m[7]*m[14] - m[5]*m[2]*m[15]
+             + m[5]*m[3]*m[14] + m[13]*m[2]*m[7] - m[13]*m[3]*m[6];
+    inv[6]  = -m[0]*m[6]*m[15] + m[0]*m[7]*m[14] + m[4]*m[2]*m[15]
+             - m[4]*m[3]*m[14] - m[12]*m[2]*m[7] + m[12]*m[3]*m[6];
+    inv[10] =  m[0]*m[5]*m[15] - m[0]*m[7]*m[13] - m[4]*m[1]*m[15]
+             + m[4]*m[3]*m[13] + m[12]*m[1]*m[7] - m[12]*m[3]*m[5];
+    inv[14] = -m[0]*m[5]*m[14] + m[0]*m[6]*m[13] + m[4]*m[1]*m[14]
+             - m[4]*m[2]*m[13] - m[12]*m[1]*m[6] + m[12]*m[2]*m[5];
+    inv[3]  = -m[1]*m[6]*m[11] + m[1]*m[7]*m[10] + m[5]*m[2]*m[11]
+             - m[5]*m[3]*m[10] - m[9]*m[2]*m[7] + m[9]*m[3]*m[6];
+    inv[7]  =  m[0]*m[6]*m[11] - m[0]*m[7]*m[10] - m[4]*m[2]*m[11]
+             + m[4]*m[3]*m[10] + m[8]*m[2]*m[7] - m[8]*m[3]*m[6];
+    inv[11] = -m[0]*m[5]*m[11] + m[0]*m[7]*m[9] + m[4]*m[1]*m[11]
+             - m[4]*m[3]*m[9] - m[8]*m[1]*m[7] + m[8]*m[3]*m[5];
+    inv[15] =  m[0]*m[5]*m[10] - m[0]*m[6]*m[9] - m[4]*m[1]*m[10]
+             + m[4]*m[2]*m[9] + m[8]*m[1]*m[6] - m[8]*m[2]*m[5];
+
+    det = m[0]*inv[0] + m[1]*inv[4] + m[2]*inv[8] + m[3]*inv[12];
+    if (det > -1e-20f && det < 1e-20f) return 0;
+    det = 1.0f / det;
+    for (int i = 0; i < 16; i++) out[i] = inv[i] * det;
+    return 1;
+}
+
+/* column-major 4x4 * vec4 -> vec4 */
+static void m4_mulv(const float m[16], const float v[4], float out[4]) {
+    for (int r = 0; r < 4; r++)
+        out[r] = m[0*4+r]*v[0] + m[1*4+r]*v[1] + m[2*4+r]*v[2] + m[3*4+r]*v[3];
+}
+
+/* Pixel (mx,my, top-left origin) in a W x H viewport, through VP, onto y=0.
+ * Returns 1 and writes world (*wx,*wy) [the ground (x,z) in meters], or 0 if the
+ * eye ray is parallel to the ground plane (no hit). */
+static int pick_y0(const float vp[16], float mx, float my, int W, int H,
+                   float *wx, float *wy) {
+    float inv[16];
+    if (!m4_invert(vp, inv)) return 0;
+    float ndc_x = 2.0f*mx/(float)W - 1.0f;
+    float ndc_y = 1.0f - 2.0f*my/(float)H;          /* flip: pixels go down */
+    float nearc[4] = { ndc_x, ndc_y, -1.0f, 1.0f }; /* GL clip near */
+    float farc [4] = { ndc_x, ndc_y,  1.0f, 1.0f }; /* GL clip far  */
+    float p0[4], p1[4];
+    m4_mulv(inv, nearc, p0);
+    m4_mulv(inv, farc,  p1);
+    if (p0[3] == 0.0f || p1[3] == 0.0f) return 0;
+    for (int i = 0; i < 3; i++) { p0[i] /= p0[3]; p1[i] /= p1[3]; }
+    float dy = p1[1] - p0[1];
+    if (dy > -1e-9f && dy < 1e-9f) return 0;         /* ray parallel to ground */
+    float t = -p0[1] / dy;
+    *wx = p0[0] + t*(p1[0] - p0[0]);
+    *wy = p0[2] + t*(p1[2] - p0[2]);
+    return 1;
+}
+
+#endif /* EDIT_PICK_H */
