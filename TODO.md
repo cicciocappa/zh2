@@ -36,12 +36,19 @@ poi scala, poi gioco.
       **20k già sta nei 16.6 ms a 60 Hz single-thread (14.3 ms)** — il collo
       di bottiglia OGGI è il render sull'iGPU. 50k stabile (nessuna esplosione
       PBD) ma 34 ms sim → serve M4 per 60 Hz. 20k è ampiamente alla portata.
-- [ ] **Portare il sandbox 2D** (`sandbox_particles.c`) al formato vettoriale:
-      oggi NON compila (usava `.wall`/`scene_alloc`/save-celle-dipinte). Non è
-      nei target di default. Decidere: pennelli che editano poligoni, o ritirarlo
-      in favore di `vat_horde`.
-- [ ] Editor di ostacoli nel sandbox 3D: piazzare/spostare poligoni a runtime,
-      salvare la `.scn`.
+- [x] **Sandbox 2D ritirato** in favore di `vat_horde` (l'unico tool visivo):
+      `sandbox_particles.c` resta non compilato/non nei target. L'editing si fa
+      nell'editor 3D (sotto), non nel vecchio sandbox 2D.
+- [ ] **EDITOR DI LIVELLI** (design completo in `EDITOR_DESIGN.md`): modalità
+      EDIT dentro `vat_horde`, edita+playtesta nello stesso tool. `Scene` =
+      unica verità (re-instantiate su Play, niente editing live); il formato
+      `.scn` cresce per ospitare le entità gameplay (struttura distruttibile =
+      `poly solid hp [core]`, `exit` con script director, `turret`, `budget`),
+      retro-compatibile. UI pure-C in fase 1 (font bitmap + tastiera), cimgui in
+      fase 2. **Fase 1 (terreno)**: picking sul piano y=0, tool rect/poly,
+      save/load, `test_scene` esteso (roundtrip del formato nuovo) + unit del
+      picking. **Fase 2 (gameplay)**: layer `level.c` che deriva DefGame/director
+      dalla Scene. **Fase 3**: undo, snap toggle, validazione, playtest in-editor.
 
 ## Subito (prossima sessione)
 
