@@ -15,6 +15,7 @@ test_siege
 test_turret
 test_defense
 test_base
+test_director
 bench_sim
 *.o
 frames/

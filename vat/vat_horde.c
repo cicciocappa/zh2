@@ -53,6 +53,15 @@ static void spawn_enemy(DefGame *g, SimP *s, VatLayer *vl, float x, float y, uns
     vat_layer_pin_variant(vl,slot,body_variant(b,r>>7));
 }
 
+// §8: il director sceglie posizione+tipo (mix che si indurisce per ondata); qui
+// agganciamo solo la variante VAT cosmetica all'agente appena nato.
+typedef struct { SimP *s; VatLayer *vl; } SpawnCtx;
+static void on_director_spawn(void *user, SimPHandle h, DefBody body, unsigned roll){
+    SpawnCtx *c=(SpawnCtx*)user;
+    int i=simp_index_of(c->s,h); if(i<0) return;
+    vat_layer_pin_variant(c->vl, simp_slot_of(c->s,i), body_variant(body, roll>>7));
+}
+
 // Benchmark prefill: popola il campo a `target` agenti su un lattice jitterato
 // (passo = sqrt(area/target), clampato per non sovrapporre) → niente transitorio
 // PBD da spawn denso. Ritorna quanti effettivamente piazzati (free_at salta muri
@@ -235,6 +244,7 @@ int main(int argc, char **argv){
     float TR_R = 0.22f*mn;
     int nt_want=getenv("VAT_HORDE_TURRETS")?atoi(getenv("VAT_HORDE_TURRETS")):NT;
     if(nt_want>NT)nt_want=NT; if(nt_want<0)nt_want=0;
+    def_set_budget(g, getenv("VAT_HORDE_BUDGET")?atoi(getenv("VAT_HORDE_BUDGET")):1000);
     int placed=0;
     for(int i=0;i<nt_want;i++){ float th=(float)i*(6.2831853f/(float)NT);
         float tx=bcx+TR_R*cosf(th), ty=bcy+TR_R*sinf(th);
@@ -261,6 +271,21 @@ int main(int argc, char **argv){
 
     if(fillN){ int got=prefill_lattice(s,g,vl,&sc,fillN);
         printf("prefill: target %d -> %d agenti piazzati\n", fillN, got); }
+
+    // §8 spawn director: ondate burst-free dalle rect di scena, rampa per ondata
+    // (rate + durezza del mix). Non in benchmark (fillN prefilla a mano).
+    SpawnCtx spctx={s,vl};
+    DefRect drects[16]; int ndr=sc.n_spawn<16?sc.n_spawn:16;
+    for(int k=0;k<ndr;k++){ drects[k].x=sc.spawn[k].x; drects[k].y=sc.spawn[k].y;
+        drects[k].w=sc.spawn[k].w; drects[k].h=sc.spawn[k].h; }
+    DefDirector *dir=NULL;
+    if(!fillN && ndr>0){ DefDirectorCfg dc={0};
+        dc.rects=drects; dc.nrects=ndr; dc.spawn_radius=0.34f;
+        dc.base_rate=getenv("VAT_HORDE_RATE")?atof(getenv("VAT_HORDE_RATE")):16.0f;
+        dc.rate_ramp=8.0f; dc.wave_period=15.0f; dc.seed=0x5EED1234u;
+        dc.on_spawn=on_director_spawn; dc.user=&spctx;
+        dir=def_director_create(g,&dc);
+        printf("director: %d rect, base %.0f/s +%.0f/ondata (15s)\n",ndr,(double)dc.base_rate,(double)dc.rate_ramp); }
 
     const char *shot=getenv("VAT_HORDE_SHOT");
     int shot_frames = shot? atoi(shot):0; if(shot&&shot_frames<=0)shot_frames=600;
@@ -357,7 +382,6 @@ int main(int argc, char **argv){
 
     float cx=sc.world_w*0.5f, cz=sc.world_h*0.30f, hh=15.0f, az=0.7f, el=0.40f; int cam_free=0,paused=0,useTex=1;
     { const char*cs=getenv("VAT_HORDE_CAM"); if(cs) sscanf(cs,"%f,%f,%f,%f,%f",&cx,&cz,&hh,&az,&el); }
-    unsigned rng=1234;
     Uint64 pf=SDL_GetPerformanceFrequency();
     // timestep FISSO disaccoppiato dal framerate: accumulo il tempo reale e lo
     // consumo in passi da 1/60 → la sim avanza alla stessa velocità a 60 o 144 Hz
@@ -384,15 +408,9 @@ int main(int argc, char **argv){
         if(!paused){
             acc_t+=frame_t;
             while(acc_t>=FIXED_DT){
-                // spawn dalle rect (burst-free via free_at). In benchmark (fillN)
-                // il campo è già pieno: niente spawn per-passo.
-                for(int k=0;!fillN && k<30 && simp_count(s)<MAXA;k++){
-                    rng^=rng<<13;rng^=rng>>17;rng^=rng<<5;
-                    const SceneRect *r=&sc.spawn[(rng>>3)%sc.n_spawn];
-                    float x=r->x+(rng%10000)/10000.0f*r->w;
-                    float y=r->y+((rng>>8)%10000)/10000.0f*r->h;
-                    if(simp_free_at(s,x,y,0.34f)) spawn_enemy(g,s,vl,x,y,rng>>16);
-                }
+                // §8: il director emette l'ondata (burst-free). In benchmark
+                // (fillN) il campo è già pieno: niente director.
+                if(dir && simp_count(s)<MAXA) def_director_update(dir,FIXED_DT);
                 Uint64 t0=SDL_GetPerformanceCounter();
                 simp_step(s,FIXED_DT);
                 Uint64 t1=SDL_GetPerformanceCounter();
@@ -467,12 +485,13 @@ int main(int argc, char **argv){
 
         // HUD: medie mobili sim/layer/render nel titolo
         acc_sim+=sim_ms; acc_lay+=lay_ms; acc_ren+=ren_ms; acc_n++;
-        if(acc_n>=30){ char title[320]; double S=acc_sim/acc_n,L=acc_lay/acc_n,R=acc_ren/acc_n;
+        if(acc_n>=30){ char title[384]; double S=acc_sim/acc_n,L=acc_lay/acc_n,R=acc_ren/acc_n;
             char base[96]=""; if(gBaseOn){ int pc=(int)(100.0f*def_struct_hp(g,gCoreId)/(def_struct_hp_max(g,gCoreId)+1e-3f));
                 int po=(int)(100.0f*def_struct_hp(g,gOuterId)/(def_struct_hp_max(g,gOuterId)+1e-3f));
                 snprintf(base,sizeof base, def_lost(g)?" | BASE PERSA":" | ring %d%% core %d%%", po<0?0:po, pc<0?0:pc); }
-            snprintf(title,sizeof title,"vat_horde — %d agenti | kills %d crawler %d%s | sim %.2f lay %.2f ren %.2f ms | %.0f fps",
-                     total,def_kills(g),def_count_wound(g,DW_CRAWLING),base,S,L,R,1000.0/(S+L+R));
+            char wv[48]=""; if(dir) snprintf(wv,sizeof wv," | ondata %d budget %d",def_director_wave(dir),def_budget(g));
+            snprintf(title,sizeof title,"vat_horde — %d agenti%s | kills %d crawler %d%s | sim %.2f ren %.2f ms | %.0f fps",
+                     total,wv,def_kills(g),def_count_wound(g,DW_CRAWLING),base,S,R,1000.0/(S+L+R));
             SDL_SetWindowTitle(win,title); acc_sim=acc_lay=acc_ren=0; acc_n=0; }
 
         // benchmark: accumula nella finestra di misura, poi stampa medie ed esci
@@ -503,7 +522,7 @@ int main(int argc, char **argv){
             shot_done=1; running=0; }
         SDL_GL_SwapWindow(win);
     }
-    free(stBuf);
+    free(stBuf); if(dir) def_director_destroy(dir);
     def_destroy(g); vat_layer_destroy(vl); simp_destroy(s); scene_free(&sc);
     SDL_GL_DestroyContext(ctx);SDL_DestroyWindow(win);SDL_Quit(); return 0;
 }

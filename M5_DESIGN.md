@@ -367,6 +367,25 @@ difesa chiuso, sui sistemi che esistono già.
 
 ## 8. Spawn director + budget di piazzamento (minimi)
 
+> **IMPLEMENTATO** (`test_director.c` PASS, agganciato a `vat_horde`). In
+> `defense.c`, disaccoppiato da `scene.h` (prende `DefRect` generiche, il
+> chiamante converte dalle rect di scena). `def_director_create/update/destroy`
+> + `def_director_wave/emitted`. Emissione **burst-free**: ogni tentativo nasce
+> solo dove `simp_free_at` è libero → l'emitter si auto-strozza alla portata
+> dell'uscita (overlap allo spawn misurato 0.000 m). **Rampa per ondata**:
+> `rate = base_rate + wave·rate_ramp` (ondata = `time/wave_period`), e il MIX
+> si indurisce (tank 2%→15%, obesi 12%→30%, bambini calano). RNG xorshift con
+> seed → deterministico. Callback `on_spawn(user, handle, body, roll)` per
+> taggare l'agente lato renderer (variante VAT cosmetica in `vat_horde`).
+> **Budget** (§8): `def_set_budget`/`def_budget`/`def_spend(cost)` — contatore
+> statico, il gioco fissa il costo torretta (in `vat_horde` budget speso al
+> piazzamento, mostrato nell'HUD con l'ondata). Verifica: rate early 14.6/s →
+> late 43.0/s, tank% 0.7→15.6, budget deduce e rifiuta a secco, determinismo,
+> no-NaN. Nota: il director sostituisce il vecchio pump fisso a 30/step di
+> `vat_horde` → escalation a ondate credibile (senza difese l'anello esterno
+> arriva a ~50/800 verso i 67 s; con 10 torrette la base regge comoda).
+> **M5 slice 1 COMPLETO.**
+
 Tutto lato gioco, nessun primitivo nuovo.
 
 - **Spawn director**: emette dalle rect `spawn` di scena (M7) lungo il bordo,

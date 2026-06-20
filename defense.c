@@ -62,6 +62,7 @@ struct DefGame {
     int16_t  *cell_struct;  /* gw*gh: structure id per nav cell, -1 = none   */
     float    *atk_timer;    /* per slot: siege attack accumulator            */
     int       lost;         /* 1 once the core has collapsed                 */
+    int       budget;       /* §8 placement budget                          */
 };
 
 /* deterministic per-slot hash (no RNG state: same slot -> same roll) */
@@ -307,6 +308,94 @@ void def_update(DefGame *g, float dt) {
         turret_update(g, &g->turrets[id], dt);
     siege_update(g, dt);
 }
+
+/* ---- §8 placement budget ---- */
+
+void def_set_budget(DefGame *g, int budget) { g->budget = budget; }
+int  def_budget(const DefGame *g) { return g->budget; }
+int  def_spend(DefGame *g, int cost) {
+    if (cost < 0 || g->budget < cost) return 0;
+    g->budget -= cost;
+    return 1;
+}
+
+/* ---- §8 spawn director ---- */
+
+#define DIR_RECT_CAP 16
+#define DIR_MAX_PER_FRAME 64   /* safety cap so a huge dt can't burst         */
+
+struct DefDirector {
+    DefGame *g;
+    DefRect  rects[DIR_RECT_CAP];
+    int      nrects;
+    float    radius, base_rate, rate_ramp, wave_period;
+    DefSpawnFn on_spawn; void *user;
+    float    time, accum;
+    int      emitted;
+    uint32_t rng;
+};
+
+static inline uint32_t xs32(uint32_t *s) {
+    uint32_t x = *s; x ^= x << 13; x ^= x >> 17; x ^= x << 5; *s = x; return x;
+}
+
+/* Body mix that toughens with the wave: tanks and obese grow, children shrink. */
+static DefBody director_body(uint32_t *rng, int wave) {
+    uint32_t k = xs32(rng) % 100u;
+    int tank_pct = 2 + wave * 2; if (tank_pct > 15) tank_pct = 15;
+    if (k < (uint32_t)tank_pct) return BT_TANK;
+    uint32_t r2 = xs32(rng) % 100u;
+    int obese_pct = 12 + wave * 2; if (obese_pct > 30) obese_pct = 30;
+    if (r2 < (uint32_t)obese_pct)            return BT_OBESE;
+    if (r2 < (uint32_t)(obese_pct + 30))     return BT_MAN;
+    if (r2 < (uint32_t)(obese_pct + 55))     return BT_WOMAN;
+    return BT_CHILD;
+}
+
+DefDirector *def_director_create(DefGame *g, const DefDirectorCfg *cfg) {
+    DefDirector *d = (DefDirector *)calloc(1, sizeof(DefDirector));
+    d->g = g;
+    d->nrects = cfg->nrects < DIR_RECT_CAP ? cfg->nrects : DIR_RECT_CAP;
+    for (int i = 0; i < d->nrects; i++) d->rects[i] = cfg->rects[i];
+    d->radius      = cfg->spawn_radius > 0.0f ? cfg->spawn_radius : 0.34f;
+    d->base_rate   = cfg->base_rate;
+    d->rate_ramp   = cfg->rate_ramp;
+    d->wave_period = cfg->wave_period > 0.0f ? cfg->wave_period : 20.0f;
+    d->on_spawn = cfg->on_spawn; d->user = cfg->user;
+    d->rng = cfg->seed ? cfg->seed : 0xD17EC709u;
+    return d;
+}
+
+void def_director_destroy(DefDirector *d) { free(d); }
+
+void def_director_update(DefDirector *d, float dt) {
+    if (d->nrects <= 0) return;
+    d->time += dt;
+    int wave = (int)(d->time / d->wave_period);
+    float rate = d->base_rate + (float)wave * d->rate_ramp;
+    if (rate < 0.0f) rate = 0.0f;
+    d->accum += rate * dt;
+    int want = (int)d->accum; d->accum -= (float)want;
+    if (want > DIR_MAX_PER_FRAME) want = DIR_MAX_PER_FRAME;
+
+    SimP *s = d->g->s;
+    for (int k = 0; k < want; k++) {
+        const DefRect *rc = &d->rects[xs32(&d->rng) % (uint32_t)d->nrects];
+        float fx = (float)(xs32(&d->rng) % 100000u) / 100000.0f;
+        float fy = (float)(xs32(&d->rng) % 100000u) / 100000.0f;
+        float x = rc->x + fx * rc->w, y = rc->y + fy * rc->h;
+        if (!simp_free_at(s, x, y, d->radius)) continue;   /* burst-free throttle */
+        unsigned roll = xs32(&d->rng);
+        DefBody body = director_body(&d->rng, wave);
+        SimPHandle h = def_spawn(d->g, x, y, body);
+        if (h == SIMP_HANDLE_INVALID) continue;
+        d->emitted++;
+        if (d->on_spawn) d->on_spawn(d->user, h, body, roll);
+    }
+}
+
+int def_director_wave(const DefDirector *d) { return (int)(d->time / d->wave_period); }
+int def_director_emitted(const DefDirector *d) { return d->emitted; }
 
 /* ---- read access ---- */
 

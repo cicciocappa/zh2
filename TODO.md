@@ -223,8 +223,15 @@ statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
       `VAT_HORDE_BASE=1`, `VAT_HORDE_TURRETS=N`): anelli renderizzati dallo stato
       vivo (crollo = spariscono), HUD core/ring HP + BASE PERSA. 2 accessor core
       nuovi (`simp_grid_w`/`_h`/`simp_cell_size`) per decodificare `wall_cell`.
-- [ ] **Spawn director + budget** (§8): ondate dalle rect di scena (no burst
-      via `simp_free_at`), budget statico di piazzamento.
+- [x] **Spawn director + budget** (§8): ondate dalle rect di scena (no burst
+      via `simp_free_at`), budget statico di piazzamento. FATTO: `DefDirector`
+      in `defense.c` (disaccoppiato da scene.h, prende `DefRect`), emissione
+      burst-free auto-strozzata, rampa rate+mix per ondata (tank 2→15%),
+      callback on_spawn per la variante VAT, RNG seedato deterministico.
+      Budget: `def_set_budget`/`def_budget`/`def_spend`. `test_director.c` PASS
+      (rate 14.6→43/s, tank% 0.7→15.6, overlap 0.000, budget, determinismo,
+      no-NaN). Agganciato a `vat_horde` (sostituisce il pump fisso, HUD
+      ondata+budget). **M5 slice 1 COMPLETO** (resta solo M5b economia).
 
 ## M5b — Economia (doc separato, futuro)
 

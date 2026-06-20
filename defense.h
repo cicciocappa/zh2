@@ -102,6 +102,47 @@ int   def_lost(const DefGame *g);                   /* 1 once the core has falle
  * Call after simp_step. */
 void def_update(DefGame *g, float dt);
 
+/* ---- §8 placement budget ----
+ * A static per-level pot the player spends to place turrets. Slice 1: a plain
+ * counter; the game sets a turret's cost. def_spend deducts if affordable. */
+void def_set_budget(DefGame *g, int budget);
+int  def_budget(const DefGame *g);
+int  def_spend(DefGame *g, int cost);   /* 1 = afforded (deducted), 0 = too poor */
+
+/* ---- §8 spawn director ----
+ *
+ * Waves emitted from border rects, BURST-FREE: each attempt spawns only where
+ * simp_free_at is clear, so the emitter auto-throttles to the exit's capacity
+ * (no PBD ejection). Emission rate and enemy toughness RAMP over waves. Fully
+ * game-side, no core primitive. Decoupled from scene.h: the caller passes plain
+ * rects (in meters). The optional callback fires once per successful spawn so
+ * the renderer can tag the fresh agent (e.g. pin its VAT variant). */
+
+typedef struct { float x, y, w, h; } DefRect;
+
+/* user-supplied, NULL to ignore. h = new agent handle, body its type, roll a
+ * per-spawn random word (for cosmetic variant choice on the renderer side). */
+typedef void (*DefSpawnFn)(void *user, SimPHandle h, DefBody body, unsigned roll);
+
+typedef struct {
+    const DefRect *rects; int nrects; /* emission areas (copied)              */
+    float spawn_radius;               /* free_at probe radius (0 → 0.34 m)    */
+    float base_rate;                  /* enemies/s during wave 0              */
+    float rate_ramp;                  /* added enemies/s per subsequent wave  */
+    float wave_period;                /* seconds per wave (0 → 20 s)          */
+    uint32_t seed;                    /* RNG seed (0 → default); determinism  */
+    DefSpawnFn on_spawn; void *user;
+} DefDirectorCfg;
+
+typedef struct DefDirector DefDirector;
+
+DefDirector *def_director_create(DefGame *g, const DefDirectorCfg *cfg);
+void def_director_destroy(DefDirector *d);
+/* Emit this frame's quota (burst-free). Call once per step. */
+void def_director_update(DefDirector *d, float dt);
+int  def_director_wave(const DefDirector *d);      /* current wave index (0-based) */
+int  def_director_emitted(const DefDirector *d);   /* total agents spawned so far  */
+
 /* ---- read access (tests / HUD) ---- */
 int  def_kills(const DefGame *g);
 int  def_shots(const DefGame *g);
