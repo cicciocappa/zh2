@@ -243,6 +243,20 @@ statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
 - [ ] Attacchi speciali (mortaio, bombardamenti) + upgrade torrette, pagati in
       biomassa. Proiettili delle torrette GRATIS (niente spirale).
 - [ ] Muri/strutture costruite dal giocatore (collisione già SDF: funziona oggi).
+- [ ] **Spawn event SCRIPTATI (director-per-uscita)** — estensione del director
+      §8 per lo scenario urbano (uscite metro/cancelli/portoni con flussi
+      propri). Soluzione: UN `DefDirector` per uscita (oggetto già indirizzabile;
+      le uscite sono sempre poche). Tre campi per-director: (a) `start_delay` o
+      attivazione su EVENTO (prossimità giocatore / crollo struttura / fine
+      ondata, lega allo stato `dormant`); (b) `pool` = totale da emettere, scala
+      solo sugli spawn riusciti (`emitted` già lo fa → cap/congestione non
+      bruciano il pool) e ferma a 0; (c) `base_rate` esistente (`rate_ramp=0` =
+      flusso costante). Strozzamento fisico `simp_free_at` gratis sopra (varco
+      stretto = coda). Es: "t=180s cancello apre, 300 zombie a 5/s poi finisce"
+      = `{start_delay:180, base_rate:5, rate_ramp:0, pool:300}`. Livello = LISTA
+      di config (data-driven, si dipingono nell'editor M7+). Dettaglio in
+      `M5_DESIGN.md` §8. NB: alzare `DIR_RECT_CAP` (ora 16) se servono >16 rect
+      per un singolo director.
 
 ## M6 — Rendering & animazione
 

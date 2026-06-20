@@ -399,6 +399,26 @@ Tutto lato gioco, nessun primitivo nuovo.
   quella è economia/M5b). Posizionamento sulle celle libere, validato a occhio
   nel sandbox.
 
+**Estensione pianificata (M5b): spawn event SCRIPTATI, director-per-uscita.**
+Lo slice 1 ha UN director con rate globale e rect a peso uniforme. Per lo
+scenario urbano vero (uscite metro / cancelli / portoni con flussi propri) la
+soluzione adottata è **un `DefDirector` per uscita** — è già un oggetto
+indirizzabile con stato e ciclo di vita propri, e il numero di uscite è sempre
+limitato. Servono solo **tre campi per-director**: (a) `start_delay` (il
+director ignora gli update finché `time < delay` — o, meglio, attivazione su
+EVENTO: prossimità giocatore, crollo struttura, fine di un'altra ondata, legato
+allo stato `dormant` del core); (b) `pool` = conteggio totale da emettere, che
+scala solo sugli spawn RIUSCITI (`emitted` già si incrementa solo dopo
+`def_spawn` ok → congestione/cap non bruciano il pool, i 300 escono davvero
+tutti) e ferma il director a 0; (c) il `base_rate` esistente (`rate_ramp=0` per
+flusso costante). Sopra resta gratis lo strozzamento fisico (`simp_free_at`):
+varco stretto ⇒ il rate è capato alla portata reale e gli zombie fanno la coda
+e sgorgano. Esempio: "a t=180s il cancello apre, 300 zombie a 5/s poi si
+esaurisce" = `{start_delay:180, base_rate:5, rate_ramp:0, pool:300}`. Un livello
+diventa una LISTA di questi config (data-driven, si dipingono nell'editor di
+livelli, M7+). Unica risorsa condivisa da sorvegliare con molti director
+concorrenti: il cap globale `MAXA` (lo spawn rifiutato è già saltato con grazia).
+
 ---
 
 ## 9. Verifica — `test_turret.c` (headless)
