@@ -263,6 +263,18 @@ statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
       (SDF binaria: palazzo e barricata entrambi solidi; il peso decide *dove* si
       preme, gli HP *se* cade). Abilita lo scenario urbano e le barricate del
       giocatore (sopra). Dettaglio: `SIMULAZIONE.md` §I.4, `M5_DESIGN.md` §7.
+- [ ] **Accumulo cadaveri nella NAV (anti-imbuto) — GEMELLO del costo per-cella**
+      (design completo in `CORPSE_DESIGN.md`, perno anti-degenere in §7-bis).
+      Oggi i cadaveri pesano su `rho`/`jam` (`CORPSE_RHO`) ma restano sotto
+      `WALL_ENTER` → re-instradano solo fra strade APERTE. Per il PERNO
+      anti-imbuto ("barrico una strada e ammasso le torrette sull'altra": il
+      kill-zone si intasa di corpi → reroute → l'orda sfonda la barricata
+      scoperta) serve che una pila DENSA salga a costo **scala-muro** (un "muro
+      di cadaveri" nella nav) così da competere col costo-di-sfondamento
+      per-cella della barricata. Le due feature si progettano INSIEME. Crea
+      ritmo/gioco adattivo (decay → fronte oscillante). Leve secondarie lato
+      gioco: costo nav sotto le torrette (nudge mite), torrette meno efficaci se
+      ravvicinate (safety-net), screamer "intelligenti" (counterplay, dopo).
 - [ ] **Spawn event SCRIPTATI (director-per-uscita)** — estensione del director
       §8 per lo scenario urbano (uscite metro/cancelli/portoni con flussi
       propri). Soluzione: UN `DefDirector` per uscita (oggetto già indirizzabile;

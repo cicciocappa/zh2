@@ -181,6 +181,43 @@ giocatore deve capire quale minaccia sta vincendo. Mitigazioni di design:
   **requisito di leggibilità**, non abbellimento: la rampa è punitiva se non la
   vedi arrivare.
 
+## 7-bis. Ruolo anti-imbuto strategico (anti-degenere) — PERNO scelto
+
+Oltre alla fedeltà fisica, l'accumulo cadaveri è lo **strumento principale contro
+una semplificazione strategica**: "barrico una strada e ammasso *tutte* le torrette
+sull'altro accesso che lascio aperto". Senza contromisure è la soluzione facile e
+dominante. La contromisura **emergente** (preferita a una regola che proibisce):
+il kill-zone aperto si **riempie di cadaveri** → si intasa → il flow **re-instrada
+l'orda** verso il fianco lasciato scoperto (la strada barricata) → l'orda preme e
+sfonda la barricata, dove le torrette non ci sono. **Il successo del giocatore si
+auto-limita** attraverso la simulazione. Un'unica meccanica unifica tre cose che
+erano TODO separati: *accumulo cadaveri* + *distruzione indiretta per attrito* +
+*anti-imbuto*. Effetto collaterale voluto: crea **ritmo** (l'imbuto regge, poi si
+intasa, poi il fronte si sposta; il decay riapre → oscilla, non death-spiral se
+tarato) → premia il gioco adattivo, scoraggia il turtling.
+
+> **Nota tecnica sul reroute (importante).** Il peso `CORPSE_RHO` su `rho`/`jam`
+> resta **sotto `WALL_ENTER`** (§I.4 di `SIMULAZIONE.md`): da solo re-instrada
+> l'orda **solo fra strade APERTE**. Per spingerla a **sfondare una barricata**
+> (non solo a prendere un'altra strada aperta) il costo di una cella *davvero*
+> intasata deve poter salire fino a livelli **comparabili a un muro** — una pila
+> densa = un "muro di cadaveri" nella nav — così da competere col **costo di
+> sfondamento per-cella** della barricata (più basso di un palazzo, vedi
+> `M5_DESIGN.md` §7 e TODO core nav): allora il Dijkstra preferisce la barricata e
+> l'orda devia lì. È la versione *continua* della leva discreta di §4(a) (rendere
+> la cella attraversabile/solida): qui `corpse_mass` alza il costo fino a soglia
+> muro. **Le due feature sono gemelle** — l'anti-imbuto via cadaveri NON funziona
+> contro un giocatore che barrica, finché il costo cadaveri non può raggiungere la
+> scala del costo-muro. Da progettare insieme.
+
+Le altre leve discusse stanno **lato gioco**, complementari ma secondarie: costo
+nav additivo sotto le torrette (nudge morbido — ma se l'alternativa è *sfondare*
+una barricata serve costo > `WALL_ENTER`, rischio di affamare le torrette →
+dose mite); torrette meno efficaci se ravvicinate (rete di sicurezza, ma appiattisce
+il puzzle spaziale); screamer "intelligenti" che cercano il path più sicuro su un
+campo di pericolo e guidano l'orda (counterplay di flavor, secondo giro di
+pathfinding sui *pochi* screamer — più avanti).
+
 ## 8. Verifica — `test_corpse_pile.c` (piano)
 
 Headless, sulla falsariga di `test_corpses`/`test_siege`. Quattro parti:
