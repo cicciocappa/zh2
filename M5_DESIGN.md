@@ -363,6 +363,23 @@ difesa chiuso, sui sistemi che esistono già.
 > 1 c'è un solo core → non serve. L'attribuzione multi-goal è una questione
 > aperta (vedi `TODO.md` "Politica multi-goal") da chiudere nel doc economia.
 
+> **Pianificato (core nav): costo di sfondamento PER-CELLA.** Per lo scenario
+> urbano — palazzi indistruttibili da aggirare + barricate del giocatore che
+> chiudono le strade e instradano l'orda sotto le torrette — serve che la
+> Dijkstra distingua i muri per *appetibilità di sfondamento*. Oggi tutti i muri
+> condividono un `WALL_ENTER` costante → l'orda preme il muro geometricamente
+> più vicino e *potrebbe* premere un palazzo invece di deviare su una barricata.
+> Soluzione: **costo-muro per-cella** (palazzo altissimo ≫ barricata): la
+> pressione si instrada sul muro più ECONOMICO del percorso → l'orda sfonda le
+> barricate e **non tocca i palazzi** (entrare nel palazzo costa più che deviare
+> → `-grad(phi)` punta via dal palazzo). Doppia protezione dei palazzi: (1) il
+> routing li tiene fuori rotta; (2) niente HP → premerli non fa nulla, e
+> l'animazione d'attacco si gatta su "`wall_cell` è una struttura distruttibile".
+> Vincolo di level design: la rotta alla base sempre sbarrata da DISTRUTTIBILI
+> (la base lo è), mai sigillata solo da palazzi. Dettaglio in `SIMULAZIONE.md`
+> §I.4; voce in `TODO.md` (core nav). Distinto dagli HP: il costo decide *dove*
+> si preme, gli HP *se* la struttura cade.
+
 ---
 
 ## 8. Spawn director + budget di piazzamento (minimi)

@@ -123,6 +123,24 @@ muri) → gli agenti premono contro la parete → il PBD li blocca lì → un *s
 (§II.10) misura chi preme e dove → il gioco assegna HP alle strutture e le fa
 crollare → al crollo la rotta si ricalcola e l'orda dilaga.
 
+> **PIANIFICATO: costo di sfondamento PER-CELLA (non `WALL_ENTER` uniforme).**
+> Oggi ogni muro ha lo *stesso* costo d'ingresso (`WALL_ENTER` costante), quindi
+> la Dijkstra non distingue un palazzo da una barricata: l'orda preme il muro
+> geometricamente più vicino sul percorso — e *potrebbe* premere un palazzo
+> indistruttibile invece di deviare verso una barricata in deviazione. Per lo
+> scenario urbano (palazzi = ostacoli da aggirare, barricate del giocatore =
+> muri-bersaglio più economici da sfondare) serve promuovere il costo-muro da
+> costante globale a **campo per-cella**: `palazzo` altissimo, `barricata`
+> alto-ma-minore. La Dijkstra instrada così la pressione sul muro PIÙ ECONOMICO
+> del percorso → l'orda sfonda le barricate e **non tocca i palazzi** (entrare
+> in un palazzo costa più che deviare sulla barricata, quindi `-grad(phi)` punta
+> *via* dal palazzo). Unifica il modello in un unico costo continuo per cella:
+> `strada ~0 < fango < barricata ≪ palazzo`. La collisione resta separata
+> (palazzo e barricata sono entrambi solidi nell'SDF: il peso decide solo *dove*
+> si preme, gli HP *se* cade). Vincolo di level design: la rotta alla base va
+> sempre sbarrata da DISTRUTTIBILI (la base stessa lo è), mai sigillata solo da
+> palazzi. Vedi `M5_DESIGN.md` §7 e `TODO.md` (core nav).
+
 ### 5. Il ciclo di vita di uno step
 
 Ad ogni `simp_step(dt)` (timestep fisso 1/60), in ordine:
@@ -283,7 +301,8 @@ modificabili a runtime.
    `nc = costo_corrente + DC[k]·cost_mult[j]`, dove `DC[k]` è 1 per gli ortogonali
    e √2 per i diagonali.
    - Se il vicino è muro: `nc += WALL_ENTER` (5000). I muri sono attraversati,
-     non bloccati.
+     non bloccati. (PIANIFICATO: `WALL_ENTER` per-cella anziché costante, per
+     gerarchizzare palazzo ≫ barricata — vedi nota in §I.4 e `TODO.md`.)
    - **Anti-corner-cutting** (righe 208–209): un movimento diagonale che taglia
      l'angolo di due muri paga anch'esso il pedaggio.
 

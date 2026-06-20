@@ -250,6 +250,19 @@ statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
 - [ ] Attacchi speciali (mortaio, bombardamenti) + upgrade torrette, pagati in
       biomassa. Proiettili delle torrette GRATIS (niente spirale).
 - [ ] Muri/strutture costruite dal giocatore (collisione già SDF: funziona oggi).
+      Barricate runtime che chiudono le strade e instradano l'orda sotto le
+      torrette. Richiede il **costo di sfondamento per-cella** (sotto).
+- [ ] **[CORE NAV] Costo di sfondamento PER-CELLA** (oggi `WALL_ENTER` è una
+      costante globale → tutti i muri allo stesso peso). Promuoverlo a campo
+      per-cella per gerarchizzare i muri per appetibilità di sfondamento:
+      `palazzo` altissimo ≫ `barricata` alto-ma-minore. La Dijkstra instrada la
+      pressione d'assedio sul muro PIÙ ECONOMICO del percorso → l'orda sfonda le
+      barricate e NON preme i palazzi indistruttibili (entrare nel palazzo costa
+      più che deviare → `-grad(phi)` punta via). Unifica la nav in un costo
+      continuo per cella (`strada<fango<barricata≪palazzo`). Collisione separata
+      (SDF binaria: palazzo e barricata entrambi solidi; il peso decide *dove* si
+      preme, gli HP *se* cade). Abilita lo scenario urbano e le barricate del
+      giocatore (sopra). Dettaglio: `SIMULAZIONE.md` §I.4, `M5_DESIGN.md` §7.
 - [ ] **Spawn event SCRIPTATI (director-per-uscita)** — estensione del director
       §8 per lo scenario urbano (uscite metro/cancelli/portoni con flussi
       propri). Soluzione: UN `DefDirector` per uscita (oggetto già indirizzabile;
