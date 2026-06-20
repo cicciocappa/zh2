@@ -6,9 +6,11 @@
 // glDrawElementsInstanced per variante.
 //
 //   ./vat_horde [scena.scn]            (default: scenes/obstacles.scn)
-// Controlli PLAY: frecce=pan  +/-=zoom  C=camera  T=texture  SPACE=pausa
-//            E=esplosione (lancio al centro camera)  F11=fullscreen  ESC=esci
-//            TAB=modalità EDIT
+// Camera mouse: PLAY = LMB drag pan / RMB drag rotate / rotellina zoom;
+//            EDIT = Alt+LMB pan / Alt+RMB rotate / rotellina zoom (LMB/RMB nudi
+//            = strumenti). Tastiera (sempre): frecce=pan/rotate  +/-=zoom.
+// Controlli PLAY: C=camera  T=texture  SPACE=pausa  E=esplosione (lancio al
+//            centro camera)  F11=fullscreen  TAB=modalità EDIT  ESC=esci
 // EDITOR (EDITOR_DESIGN fase 1, VAT_HORDE_EDIT=1 per partire in EDIT): la sim si
 //   ferma, si edita la Scene e si re-instanzia tornando in PLAY (TAB). Tool a
 //   tastiera: 1=select 2=goal 3=spawn 4=cost 5=pack 6=muro 7=costo-poly.
@@ -594,6 +596,14 @@ int main(int argc, char **argv){
     GLint uVP=glGetUniformLocation(prog,"uVP"),uTS=glGetUniformLocation(prog,"texSize"),uRPF=glGetUniformLocation(prog,"rowsPerFrame"),uHas=glGetUniformLocation(prog,"uHasTex");
 
     float cx=sc.world_w*0.5f, cz=sc.world_h*0.30f, hh=15.0f, az=0.7f, el=0.40f; int cam_free=0,paused=0,useTex=1;
+    // camera col mouse: PLAY = LMB pan / RMB rotate / wheel zoom; EDIT = Alt+LMB
+    // pan / Alt+RMB rotate (LMB/RMB nudi = strumenti). Pan via anchor (il punto a
+    // terra sotto il cursore resta incollato), rotate via delta pixel, una volta
+    // per frame con la VP del frame precedente.
+    int   drag_cam=0;                 // 0 nessuno, 1 pan, 2 rotate
+    float drag_anx=0,drag_any=0;      // ancora mondo del pan
+    float mouse_px=0,mouse_py=0;      // ultimo cursore in pixel
+    float rot_px=0,rot_py=0;          // pixel di riferimento del rotate
     { const char*cs=getenv("VAT_HORDE_CAM"); if(cs) sscanf(cs,"%f,%f,%f,%f,%f",&cx,&cz,&hh,&az,&el); }
     Uint64 pf=SDL_GetPerformanceFrequency();
     // timestep FISSO disaccoppiato dal framerate: accumulo il tempo reale e lo
@@ -608,15 +618,34 @@ int main(int argc, char **argv){
     while(running){
         SDL_Event e; while(SDL_PollEvent(&e)){
             if(e.type==SDL_EVENT_QUIT){ running=0; continue; }
-            // --- mouse: SOLO in EDIT (in PLAY non interferisce) ---
-            if(ed.active && (e.type==SDL_EVENT_MOUSE_MOTION ||
-                             e.type==SDL_EVENT_MOUSE_BUTTON_DOWN ||
-                             e.type==SDL_EVENT_MOUSE_BUTTON_UP)){
+            // --- rotellina = zoom (entrambe le modalità) ---
+            if(e.type==SDL_EVENT_MOUSE_WHEEL){
+                hh *= (e.wheel.y>0)?0.9f:1.1f;
+                if(hh<2.0f)hh=2.0f; if(hh>400.0f)hh=400.0f; continue; }
+            // --- mouse (motion/button) ---
+            if(e.type==SDL_EVENT_MOUSE_MOTION ||
+               e.type==SDL_EVENT_MOUSE_BUTTON_DOWN ||
+               e.type==SDL_EVENT_MOUSE_BUTTON_UP){
                 // punto logico -> pixel (corretto anche su HiDPI: SW/SH sono pixel)
                 int wpw=1,wph=1; SDL_GetWindowSize(win,&wpw,&wph);
                 int motion=(e.type==SDL_EVENT_MOUSE_MOTION);
                 float mxf=(motion?e.motion.x:e.button.x)*(float)SW/(wpw>0?wpw:1);
                 float myf=(motion?e.motion.y:e.button.y)*(float)SH/(wph>0?wph:1);
+                if(motion){ mouse_px=mxf; mouse_py=myf; }
+                int alt = (SDL_GetModState()&SDL_KMOD_ALT)!=0;
+                // camera col mouse? PLAY: LMB/RMB nudi; EDIT: solo con Alt.
+                int cam_gesture = (!ed.active) || alt;
+                if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN && cam_gesture){
+                    if(e.button.button==SDL_BUTTON_LEFT){      // pan: ancora il punto sotto il cursore
+                        drag_cam=1; float ax,ay;
+                        if(pick_y0(vp,mxf,myf,SW,SH,&ax,&ay)){ drag_anx=ax; drag_any=ay; }
+                    } else if(e.button.button==SDL_BUTTON_RIGHT){ drag_cam=2; rot_px=mxf; rot_py=myf; }
+                    continue;
+                }
+                if(e.type==SDL_EVENT_MOUSE_BUTTON_UP && drag_cam){ drag_cam=0; continue; }
+                if(motion && drag_cam) continue;               // pan/rotate applicati nel frame body
+                // --- da qui in giù: strumenti editor (solo in EDIT, mouse nudo) ---
+                if(!ed.active) continue;
                 float wx=0,wy=0; int hit=pick_y0(vp,mxf,myf,SW,SH,&wx,&wy);
                 if(hit){ ed.curx=wx; ed.cury=wy; ed.have_cursor=1; }
                 if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN && hit){
@@ -731,6 +760,13 @@ int main(int argc, char **argv){
         // dimensione drawable corrente (resize/fullscreen/DPI). Headless (shot/
         // bench) resta inchiodata a 1280×720 → screenshot deterministici.
         if(!shot && !bench_meas) SDL_GetWindowSizeInPixels(win,&SW,&SH);
+        // camera col mouse (una volta per frame, VP del frame precedente). Pan:
+        // sposta il centro così il punto-ancora resta sotto il cursore. Rotate:
+        // delta pixel -> azimut/elevazione (clamp per non ribaltare).
+        if(drag_cam==1){ float cxw,cyw;
+            if(pick_y0(vp,mouse_px,mouse_py,SW,SH,&cxw,&cyw)){ cx+=drag_anx-cxw; cz+=drag_any-cyw; } }
+        else if(drag_cam==2){ az-=(mouse_px-rot_px)*0.005f; el+=(mouse_py-rot_py)*0.005f;
+            if(el<0.08f)el=0.08f; if(el>1.50f)el=1.50f; rot_px=mouse_px; rot_py=mouse_py; }
         float asp=(float)SW/SH; mat4 proj,view; float ctr[3]={cx,0.9f,cz},up[3]={0,1,0};
         float eye[3]={cx+hh*cosf(el)*sinf(az),0.9f+hh*sinf(el),cz+hh*cosf(el)*cosf(az)};
         if(cam_free)m_persp(proj,45.0f*3.14159f/180.0f,asp,0.1f,500.0f);
