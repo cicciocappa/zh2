@@ -341,11 +341,31 @@ static int build_struct_mesh(DefGame *g, float cell, float *buf){
 // §1): scene_instantiate + torrette ad anello + base opz. + prefill bench +
 // director. Chiamato all'avvio e di nuovo su EDIT→PLAY (re-instantiate). Aggiorna
 // spctx->s per il callback del director. Ritorna 0, -1 su fallimento.
+// Statici indistruttibili dal terreno: ogni cella-buco della maschera ZHM2
+// (EDITOR_DESIGN §9) diventa un muro PERMANENTE col tier 'palazzo' (alto, ≫
+// barricata) del costo di sfondamento per-cella → l'orda li aggira invece di
+// premerli. La collisione SDF è quella standard del muro.
+#define PALAZZO_WALL_MULT 10.0f
+typedef struct { SimP *s; int n; } HoleCtx;
+static void hole_wall_cb(void *u, int cx, int cy){
+    HoleCtx *c = (HoleCtx*)u;
+    simp_set_wall(c->s, cx, cy, true);
+    simp_set_wall_cost(c->s, cx, cy, PALAZZO_WALL_MULT * simp_wall_base_cost());
+    c->n++;
+}
+
 static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx,
                        SimP **ps, DefGame **pg, DefDirector **pdir){
     SimP *s = scene_instantiate(sc, MAXA);
     if(!s){ fprintf(stderr,"scene_instantiate fail\n"); return -1; }
     spctx->s = s; spctx->vl = vl;
+
+    // buchi del terreno (statici indistruttibili) PRIMA di prefill/base, così
+    // gli agenti non nascono dentro un palazzo e il nav è già corretto.
+    if(gTerOn){ HoleCtx hc={s,0};
+        terrain_each_hole_cell(&gTer, sc->cell, simp_grid_w(s), simp_grid_h(s), hole_wall_cb, &hc);
+        if(hc.n){ simp_terrain_commit(s);
+            printf("statici terreno: %d celle-muro (tier palazzo) dai buchi ZHM2\n", hc.n); } }
 
     DefGame *g = def_create(s, MAXA);
     float bcx=sc->world_w*0.5f, bcy=sc->world_h*0.5f;

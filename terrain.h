@@ -54,4 +54,12 @@ float terrain_z(const Terrain *t, float x, float y);
  * walls (simp_set_wall + a high wall-cost tier) at instantiate. */
 int terrain_hole(const Terrain *t, float x, float y);
 
+/* Visit every NAV cell (grid gw x gh, square `cell` metres, origin aligned with
+ * the terrain world origin) whose CENTRE lands on a hole, calling cb(user,cx,cy).
+ * Lets the host mark permanent walls without coupling this module to the sim.
+ * No-op if the terrain has no hole mask. Centre-sampling: a cell is a wall iff
+ * its centre is inside a footprint (cell-resolution edge, tunable later). */
+void terrain_each_hole_cell(const Terrain *t, float cell, int gw, int gh,
+                            void (*cb)(void *user, int cx, int cy), void *user);
+
 #endif /* TERRAIN_H */

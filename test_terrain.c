@@ -165,6 +165,41 @@ static int holes_check(void) {
     return ok;
 }
 
+/* terrain_each_hole_cell: nav cells whose centre lands on a footprint, via the
+ * decoupling callback (the host turns these into walls). */
+typedef struct { int gw, gh; unsigned char *mark; int count; } CellCtx;
+static void mark_cb(void *u, int cx, int cy) {
+    CellCtx *c = u;
+    if (cx >= 0 && cx < c->gw && cy >= 0 && cy < c->gh) {
+        c->mark[cy * c->gw + cx] = 1; c->count++;
+    }
+}
+static int cells_check(void) {
+    Terrain a; build(&a, 81, 65, 0.0f, 0.0f, 4.0f, plane);   /* 20 x 16 m */
+    a.hole = calloc((size_t)a.w * a.h, 1);
+    for (int j = 24; j <= 40; j++)                           /* world [8,12]x[6,10] */
+        for (int i = 32; i <= 48; i++) a.hole[j * a.w + i] = 1;
+
+    const int gw = 40, gh = 32;                              /* 0.5 m nav cells */
+    CellCtx c = { gw, gh, calloc((size_t)gw * gh, 1), 0 };
+    terrain_each_hole_cell(&a, 0.5f, gw, gh, mark_cb, &c);
+    int ok = c.count > 0;
+    ok = ok && c.mark[15 * gw + 20] == 1;   /* cell centre (10.25,7.75) -> inside */
+    ok = ok && c.mark[2 * gw + 2] == 0;     /* (1.25,1.25) -> open ground         */
+
+    /* ZHM1 (no mask) flags nothing */
+    Terrain d; build(&d, 81, 65, 0.0f, 0.0f, 4.0f, plane);   /* d.hole == NULL */
+    CellCtx e = { gw, gh, calloc((size_t)gw * gh, 1), 0 };
+    terrain_each_hole_cell(&d, 0.5f, gw, gh, mark_cb, &e);
+    ok = ok && e.count == 0;
+
+    printf("cells:     each_hole_cell -> %d wall cells, inside/outside, ZHM1=0 | %s\n",
+           c.count, ok ? "ok" : "BAD");
+    free(c.mark); free(e.mark);
+    terrain_free(&a); terrain_free(&d);
+    return ok;
+}
+
 int main(void) {
     int ok = 1;
     ok &= roundtrip();
@@ -172,6 +207,7 @@ int main(void) {
     ok &= step_check();
     ok &= clamp_check();
     ok &= holes_check();
+    ok &= cells_check();
     remove(TMP);
     printf(ok ? "PASS\n" : "FAIL\n");
     return ok ? 0 : 1;

@@ -120,3 +120,14 @@ int terrain_hole(const Terrain *t, float x, float y)
     if (j < 0) j = 0; else if (j >= t->h) j = t->h - 1;
     return t->hole[(size_t)j * t->w + i] ? 1 : 0;
 }
+
+void terrain_each_hole_cell(const Terrain *t, float cell, int gw, int gh,
+                            void (*cb)(void *, int, int), void *user)
+{
+    if (!t || !t->hole || !cb || cell <= 0.0f) return;
+    for (int cy = 0; cy < gh; cy++)
+        for (int cx = 0; cx < gw; cx++)
+            if (terrain_hole(t, ((float)cx + 0.5f) * cell,
+                                ((float)cy + 0.5f) * cell))
+                cb(user, cx, cy);
+}
