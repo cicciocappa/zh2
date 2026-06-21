@@ -28,8 +28,9 @@ declare -A A=(
  [idle]="Zombie Idle.fbx" [idle_2]="Zombie Idle 2.fbx"
  [attack]="Zombie Attack.fbx" [attack_2]="Zombie Attack 2.fbx"
  [scream]="Zombie Scream.fbx"
+ [hit]="Zombie Reaction Hit.fbx" [dying]="Zombie Dying.fbx" [death]="Zombie Death.fbx"
 )
-ORDER="walk walk_2 walk_3 walk_4 walk_5 walk_6 run run_2 idle idle_2 attack attack_2 scream"
+ORDER="walk walk_2 walk_3 walk_4 walk_5 walk_6 run run_2 idle idle_2 attack attack_2 scream hit dying death"
 
 # suffissi ESATTI: un glob "${PREFIX}"_*.bin cancellerebbe anche le varianti che
 # condividono il prefisso (es. zombie_fem vs zombie_fem_obese).

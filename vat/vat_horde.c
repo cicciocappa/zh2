@@ -40,15 +40,19 @@ static float edovl[EDOVL_MAXV*9];
 
 // I body type disponibili (asset bakati in vat/assets/). Texture placeholder: la
 // skirt non ha ancora il _diffuse.png -> rende flat-shaded (tintata), corretto.
+// Gli ULTIMI due (crawler, tank) sono body "di gioco": non assegnati a caso, solo
+// via pin/set_variant. Il tank riusa la diffuse di zombie_man (stesso UVMap).
 static const char *PREFIX[] = {
     "vat/assets/zombie_man", "vat/assets/zombie_man_obese",
     "vat/assets/zombie_fem", "vat/assets/zombie_fem_obese",
     "vat/assets/zombie_child", "vat/assets/zombie_fem_skirt",
     "vat/assets/zombie_maimed_legs",   /* crawler: tipo di gioco, non cosmetico */
+    "vat/assets/zombie_tank",          /* tank: tipo di gioco, non cosmetico */
 };
 #define NVAR ((int)(sizeof(PREFIX)/sizeof(PREFIX[0])))
-#define CRAWLER_VAR (NVAR-1)               /* indice del body crawler */
-#define NCOSMETIC   (NVAR-1)               /* le altre = body random cosmetici */
+#define TANK_VAR    (NVAR-1)               /* indice del body tank */
+#define CRAWLER_VAR (NVAR-2)               /* indice del body crawler */
+#define NCOSMETIC   (NVAR-2)               /* le prime = body random cosmetici */
 
 // --- spawn dei nemici come TIPI DI GIOCO (defense.c): la distribuzione decide
 // il body (HP/massa/velocità via la tabella EnemyDef), e il body sceglie la
@@ -62,7 +66,7 @@ static DefBody roll_body(unsigned r){
 static int body_variant(DefBody b, unsigned r){
     switch(b){ case BT_MAN:return 0; case BT_OBESE:return (r&1)?1:3;
         case BT_WOMAN:return (r&1)?2:5; case BT_CHILD:return 4;
-        case BT_TANK:return 1; default:return 0; }     /* tank = obeso scalato */
+        case BT_TANK:return TANK_VAR; default:return 0; }   /* tank = modello proprio */
 }
 static void spawn_enemy(DefGame *g, SimP *s, VatLayer *vl, float x, float y, unsigned r){
     DefBody b=roll_body(r);
@@ -443,8 +447,8 @@ int main(int argc, char **argv){
     VatLayer *vl=vat_layer_create_multi(metap,NVAR,MAXA);
     for(int v=0;v<NVAR;v++){ const VatMeta *M=vat_layer_meta_variant(vl,v);
         if(M->nclips<=0){fprintf(stderr,"meta vuoto: %s\n",PREFIX[v]);return 1;} }
-    vat_layer_set_random_count(vl,NCOSMETIC);   /* il crawler solo via pin, non a caso */
-    printf("varianti=%d (di cui %d cosmetiche + crawler)\n",NVAR,NCOSMETIC);
+    vat_layer_set_random_count(vl,NCOSMETIC);   /* crawler e tank solo via pin, non a caso */
+    printf("varianti=%d (di cui %d cosmetiche + crawler + tank)\n",NVAR,NCOSMETIC);
 
     // Mondo vivo derivato dalla Scene (build_world): sim + torrette + base +
     // director. spctx persiste (il director ne tiene il puntatore come user).
@@ -568,7 +572,9 @@ int main(int argc, char **argv){
         const VatMeta *M=vat_layer_meta_variant(vl,v); A[v].M=M;
         char pos[256],norm[256],mesh[256],diff[256];
         snprintf(pos,256,"%s_pos.raw",PREFIX[v]);snprintf(norm,256,"%s_norm.raw",PREFIX[v]);
-        snprintf(mesh,256,"%s_mesh.bin",PREFIX[v]);snprintf(diff,256,"%s_diffuse.png",PREFIX[v]);
+        snprintf(mesh,256,"%s_mesh.bin",PREFIX[v]);
+        // il tank condivide UVMap/topologia con zombie_man -> riusa la sua diffuse
+        snprintf(diff,256,"%s_diffuse.png", v==TANK_VAR ? "vat/assets/zombie_man" : PREFIX[v]);
 
         FILE*mf=fopen(mesh,"rb"); if(!mf){fprintf(stderr,"no mesh %s\n",mesh);return 1;}
         int nv,ni; if(fread(&nv,4,1,mf)){}if(fread(&ni,4,1,mf)){}

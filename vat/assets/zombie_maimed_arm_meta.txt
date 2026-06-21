@@ -1,9 +1,9 @@
 texW=256
-texH=2018
+texH=2522
 rowsPerFrame=2
 fps=30
 scale=0.01097732
-totalFrames=1009
+totalFrames=1261
 clip=walk startFrame=0 numFrames=122 duration_s=4.0667 stride_m=1.3141
 clip=walk_2 startFrame=122 numFrames=47 duration_s=1.5667 stride_m=0.8218
 clip=walk_3 startFrame=169 numFrames=91 duration_s=3.0333 stride_m=2.4774
@@ -17,3 +17,6 @@ clip=idle_2 startFrame=576 numFrames=128 duration_s=4.2667 stride_m=0.0000
 clip=attack startFrame=704 numFrames=80 duration_s=2.6667 stride_m=0.0000
 clip=attack_2 startFrame=784 numFrames=140 duration_s=4.6667 stride_m=0.0000
 clip=scream startFrame=924 numFrames=85 duration_s=2.8333 stride_m=0.0004
+clip=hit startFrame=1009 numFrames=61 duration_s=2.0333 stride_m=0.0000
+clip=dying startFrame=1070 numFrames=101 duration_s=3.3667 stride_m=1.0897
+clip=death startFrame=1171 numFrames=90 duration_s=3.0000 stride_m=1.4133
