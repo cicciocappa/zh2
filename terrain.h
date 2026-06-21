@@ -12,22 +12,30 @@
  *
  * FILE FORMAT (little-endian; follows the .zspr convention):
  *
- *     "ZHM1"                        magic, 4 bytes
+ *     "ZHM1" | "ZHM2"               magic, 4 bytes
  *     u32:  w h                     sample grid dimensions
  *     f32:  origin_x origin_y       world meters of sample (0,0)
  *     f32:  px_per_m                samples per meter (render res, e.g. 4)
  *     w*h f32                       Z heights, row-major: z[j*w + i] is the
  *                                   height at world (origin_x + i/px_per_m,
  *                                   origin_y + j/px_per_m). i along +x, j +y.
+ *     w*h u8   (ZHM2 only)          HOLE mask: 1 = impassable static footprint
+ *                                   (building/rock, EDITOR_DESIGN.md §9). The Z
+ *                                   under a hole is meaningless (back-filled for
+ *                                   a smooth render edge); the mask is what marks
+ *                                   the permanent nav walls at instantiate.
+ *                                   ZHM1 = no mask (t->hole == NULL).
  */
 #ifndef TERRAIN_H
 #define TERRAIN_H
+#include <stdint.h>
 
 typedef struct {
     int   w, h;                 /* sample grid dimensions */
     float origin_x, origin_y;   /* world meters of sample (0,0) */
     float px_per_m;             /* samples per meter (render resolution) */
     float *z;                   /* w*h heap, row-major z[j*w + i] */
+    uint8_t *hole;              /* w*h, 1 = impassable static (ZHM2); NULL = ZHM1 */
 } Terrain;
 
 /* Load/save a .zhm. Return 0 on success, negative on error (file or format).
@@ -39,5 +47,11 @@ void terrain_free(Terrain *t);   /* frees t->z and zeroes the struct */
 /* Bilinear height at world (x, y). Samples outside the grid clamp to the edge
  * (never extrapolates). Returns 0 if t has no data. */
 float terrain_z(const Terrain *t, float x, float y);
+
+/* 1 if world (x, y) lands on an impassable static footprint (building/rock),
+ * else 0. Nearest-sample on the ZHM2 hole mask; always 0 when the terrain has
+ * none (ZHM1, or no holes baked). The caller turns these into permanent nav
+ * walls (simp_set_wall + a high wall-cost tier) at instantiate. */
+int terrain_hole(const Terrain *t, float x, float y);
 
 #endif /* TERRAIN_H */

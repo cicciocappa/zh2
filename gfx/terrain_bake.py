@@ -100,6 +100,20 @@ def main():
             else:
                 misses += 1
 
+    # HOLE mask (ZHM2, EDITOR_DESIGN.md §9): a ray miss = no ground there = an
+    # impassable static footprint (building/rock). Snapshot it NOW, before the
+    # backfill below mutates `valid`. Exclude the outer ring: boundary rays graze
+    # the AABB max edges and miss without being real holes (a building shouldn't
+    # sit exactly on the level boundary — there's a border). The Z is still
+    # back-filled (continuous render edge); the mask carries the impassability.
+    hole = bytearray(w * h)
+    holes = 0
+    for j in range(1, h - 1):
+        for i in range(1, w - 1):
+            if not valid[j * w + i]:
+                hole[j * w + i] = 1
+                holes += 1
+
     # Backfill misses (mesh holes, and the AABB max edges where boundary rays
     # graze and miss) from their nearest valid neighbours: iterate until stable
     # so plateau/edge heights propagate outward instead of snapping to z_floor.
@@ -127,15 +141,17 @@ def main():
                     zvals[k] = z_floor
             break
 
+    # ZHM2 = Z grid + hole mask. (ZHM1 would just omit the trailing mask.)
     with open(args.out, "wb") as fp:
-        fp.write(b"ZHM1")
+        fp.write(b"ZHM2")
         fp.write(struct.pack("<2I", w, h))
         fp.write(struct.pack("<3f", origin_x, origin_y, ppm))
         fp.write(struct.pack(f"<{w * h}f", *zvals))
+        fp.write(bytes(hole))
 
     print(f"[terrain_bake] {args.out}  {w}x{h} @ {ppm} px/m  "
           f"origin=({origin_x:.2f},{origin_y:.2f})  "
-          f"z=[{lo.z:.2f},{hi.z:.2f}]  misses={misses}")
+          f"z=[{lo.z:.2f},{hi.z:.2f}]  misses={misses}  holes={holes}")
 
 
 main()

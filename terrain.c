@@ -9,6 +9,7 @@ void terrain_free(Terrain *t)
 {
     if (!t) return;
     free(t->z);
+    free(t->hole);
     memset(t, 0, sizeof(*t));
 }
 
@@ -23,9 +24,9 @@ int terrain_load(const char *path, Terrain *t)
     char magic[4];
     uint32_t dims[2];
     float hdr[3];   /* origin_x, origin_y, px_per_m */
-    if (fread(magic, 1, 4, fp) != 4 || memcmp(magic, "ZHM1", 4) != 0) {
-        fclose(fp); return -2;
-    }
+    if (fread(magic, 1, 4, fp) != 4) { fclose(fp); return -2; }
+    int v2 = memcmp(magic, "ZHM2", 4) == 0;
+    if (!v2 && memcmp(magic, "ZHM1", 4) != 0) { fclose(fp); return -2; }
     if (fread(dims, sizeof(uint32_t), 2, fp) != 2 ||
         fread(hdr, sizeof(float), 3, fp) != 3) {
         fclose(fp); return -2;
@@ -42,12 +43,19 @@ int terrain_load(const char *path, Terrain *t)
     if (fread(z, sizeof(float), n, fp) != n) {
         free(z); fclose(fp); return -2;
     }
+    uint8_t *hole = NULL;
+    if (v2) {
+        hole = malloc(n);
+        if (!hole) { free(z); fclose(fp); return -3; }
+        if (fread(hole, 1, n, fp) != n) { free(hole); free(z); fclose(fp); return -2; }
+    }
     fclose(fp);
 
     t->w = w; t->h = h;
     t->origin_x = hdr[0]; t->origin_y = hdr[1];
     t->px_per_m = hdr[2];
     t->z = z;
+    t->hole = hole;
     return 0;
 }
 
@@ -62,10 +70,12 @@ int terrain_save(const char *path, const Terrain *t)
     float hdr[3] = { t->origin_x, t->origin_y, t->px_per_m };
     size_t n = (size_t)t->w * (size_t)t->h;
 
-    int ok = fwrite("ZHM1", 1, 4, fp) == 4 &&
+    /* ZHM2 iff a hole mask is present, else ZHM1 (back-compatible) */
+    int ok = fwrite(t->hole ? "ZHM2" : "ZHM1", 1, 4, fp) == 4 &&
              fwrite(dims, sizeof(uint32_t), 2, fp) == 2 &&
              fwrite(hdr, sizeof(float), 3, fp) == 3 &&
              fwrite(t->z, sizeof(float), n, fp) == n;
+    if (ok && t->hole) ok = fwrite(t->hole, 1, n, fp) == n;
     fclose(fp);
     return ok ? 0 : -2;
 }
@@ -97,4 +107,16 @@ float terrain_z(const Terrain *t, float x, float y)
     float a = z00 + (z10 - z00) * tx;   /* lerp along x, row j0 */
     float b = z01 + (z11 - z01) * tx;   /* lerp along x, row j1 */
     return a + (b - a) * ty;            /* lerp along y */
+}
+
+int terrain_hole(const Terrain *t, float x, float y)
+{
+    if (!t || !t->hole || t->w <= 0 || t->h <= 0) return 0;
+
+    /* nearest sample (the mask is boolean; bilinear makes no sense) */
+    int i = (int)((x - t->origin_x) * t->px_per_m + 0.5f);
+    int j = (int)((y - t->origin_y) * t->px_per_m + 0.5f);
+    if (i < 0) i = 0; else if (i >= t->w) i = t->w - 1;
+    if (j < 0) j = 0; else if (j >= t->h) j = t->h - 1;
+    return t->hole[(size_t)j * t->w + i] ? 1 : 0;
 }
