@@ -4,14 +4,17 @@
 #include <string.h>
 #include <math.h>
 
-enum { ST_IDLE, ST_WALK, ST_RUN, ST_ATTACK, ST_SCREAM, ST_N };
-static const char *st_prefix[ST_N] = {"idle","walk","run","attack","scream"};
+enum { ST_IDLE, ST_WALK, ST_RUN, ST_ATTACK, ST_SCREAM, ST_HIT, ST_DYING, ST_DEATH, ST_N };
+static const char *st_prefix[ST_N] = {"idle","walk","run","attack","scream","hit","dying","death"};
 
 #define HEADING_TAU   0.25f
 #define SPEED_TAU     0.20f
 #define BLEND_DUR     0.25f
 #define MOVE_MIN      0.30f   /* sotto = heading congelato (anti-piroetta)   */
 #define HEADING_OFFSET 0.0f  /* allinea il forward del modello (Mixamo +Y) a +v */
+#define ATTACK_PRESS  0.006f  /* wall_pressure oltre cui l'agente "attacca": allineato
+                                 ad ATTACK_MIN_P di defense.c (animazione ⇔ assedio reale) */
+#define DECEDENT_HOLD 2.0f    /* s di tenuta dell'ultimo frame morte prima di liberare */
 
 struct VatLayer {
     VatMeta m[VAT_MAX_VARIANTS]; int nvar;   /* un asset VAT per body type */
@@ -26,6 +29,13 @@ struct VatLayer {
     float *hx, *hy, *spd, *phaseA, *phaseB, *blendF, *hmul;
     int   *clipA, *clipB, *pin;              /* pin[slot] = variante+1 forzata, 0 = libera */
     unsigned char *state, *target, *blending, *outfit, *var, *tr, *tg, *tb;
+    /* one-shot HIT overlay (interrompe la FSM per la durata della clip, poi torna) */
+    float *osT, *osPh; int *osClip;          /* osT[slot]>0 = flinch in corso */
+    /* pool decessi renderer-side: visuali che riproducono la clip morte una volta
+       e poi tengono l'ultimo frame, indipendenti dall'agente sim gia' rimosso. */
+    int dmax, dwrite;
+    float *dx, *dy, *dz, *dhd, *dsc, *dph, *dttl;
+    unsigned char *dvar, *dclip, *dout, *dtr, *dtg, *dtb, *dactive;
 };
 
 static unsigned hashu(unsigned a){ a^=a>>16; a*=2654435761u; a^=a>>13; a*=2246822519u; a^=a>>16; return a; }
@@ -69,6 +79,14 @@ VatLayer *vat_layer_create_multi(const char *const *meta_paths, int nvariants, i
     vl->clipA=calloc(n,sizeof(int)); vl->clipB=calloc(n,sizeof(int)); vl->pin=calloc(n,sizeof(int));
     vl->state=calloc(n,1); vl->target=calloc(n,1); vl->blending=calloc(n,1);
     vl->outfit=calloc(n,1); vl->var=calloc(n,1); vl->tr=calloc(n,1); vl->tg=calloc(n,1); vl->tb=calloc(n,1);
+    vl->osT=calloc(n,4); vl->osPh=calloc(n,4); vl->osClip=calloc(n,sizeof(int));
+    /* pool decessi: dimensionato a ~min(max,4096) come i cadaveri (M3.3) */
+    vl->dmax = max_slots<4096?max_slots:4096; vl->dwrite=0;
+    int d=vl->dmax;
+    vl->dx=calloc(d,4); vl->dy=calloc(d,4); vl->dz=calloc(d,4); vl->dhd=calloc(d,4);
+    vl->dsc=calloc(d,4); vl->dph=calloc(d,4); vl->dttl=calloc(d,4);
+    vl->dvar=calloc(d,1); vl->dclip=calloc(d,1); vl->dout=calloc(d,1);
+    vl->dtr=calloc(d,1); vl->dtg=calloc(d,1); vl->dtb=calloc(d,1); vl->dactive=calloc(d,1);
     return vl;
 }
 VatLayer *vat_layer_create(const char *meta_path, int max_slots){
@@ -77,7 +95,11 @@ VatLayer *vat_layer_create(const char *meta_path, int max_slots){
 void vat_layer_destroy(VatLayer *vl){ if(!vl)return;
     free(vl->seen);free(vl->hx);free(vl->hy);free(vl->spd);free(vl->phaseA);free(vl->phaseB);
     free(vl->blendF);free(vl->hmul);free(vl->clipA);free(vl->clipB);free(vl->pin);free(vl->state);free(vl->target);
-    free(vl->blending);free(vl->outfit);free(vl->var);free(vl->tr);free(vl->tg);free(vl->tb);free(vl); }
+    free(vl->blending);free(vl->outfit);free(vl->var);free(vl->tr);free(vl->tg);free(vl->tb);
+    free(vl->osT);free(vl->osPh);free(vl->osClip);
+    free(vl->dx);free(vl->dy);free(vl->dz);free(vl->dhd);free(vl->dsc);free(vl->dph);free(vl->dttl);
+    free(vl->dvar);free(vl->dclip);free(vl->dout);free(vl->dtr);free(vl->dtg);free(vl->dtb);free(vl->dactive);
+    free(vl); }
 int vat_layer_nvariants(const VatLayer *vl){ return vl->nvar; }
 const VatMeta *vat_layer_meta_variant(const VatLayer *vl, int variant){
     if(variant<0||variant>=vl->nvar)variant=0; return &vl->m[variant]; }
@@ -100,6 +122,43 @@ void vat_layer_set_variant(VatLayer *vl,int slot,int variant){
     vl->state[slot]=ST_WALK; vl->blending[slot]=0;
     vl->clipA[slot]=pick_clip(vl,variant,slot,ST_WALK); }
 
+/* One-shot HIT flinch su un agente vivo. No-op se il body non ha clip hit
+   (es. crawler) o se un flinch e' gia' in corso (i colpi ravvicinati non
+   ribattono il timer all'infinito). */
+void vat_layer_hit(VatLayer *vl, int slot){
+    if(slot<0||slot>=vl->max) return;
+    int body=vl->var[slot];
+    if(vl->group_n[body][ST_HIT]<=0) return;
+    if(vl->osT[slot]>0) return;                         /* gia' in flinch */
+    vl->osClip[slot]=pick_clip(vl,body,slot,ST_HIT);
+    vl->osPh[slot]=0;
+    vl->osT[slot]=vl->m[body].clip[vl->osClip[slot]].duration;
+    if(vl->osT[slot]<=0) vl->osT[slot]=1.0f;
+}
+
+/* Spawna un decedente: una visuale renderer-side che riproduce la clip morte del
+   body una volta a (x,y) e poi tiene l'ultimo frame, indipendente dall'agente
+   sim gia' rimosso. Snapshot di heading/variante/outfit/tinta dallo stato dello
+   slot. Da chiamare alla morte LEGGERA (non gib), prima che lo slot sia riusato.
+   No-op se il body non ha clip morte. Ring buffer: pieno = sovrascrive il piu'
+   vecchio (come i cadaveri M3.3). */
+void vat_layer_die(VatLayer *vl, int slot, float x, float y, float radius){
+    if(slot<0||slot>=vl->max) return;
+    int body=vl->var[slot];
+    /* preferisci 'death'/'dying' (a caso per varieta'); fallback: niente clip */
+    int st = (vl->group_n[body][ST_DEATH]>0 && (hashu(slot*7u)&1)) ? ST_DEATH
+           : (vl->group_n[body][ST_DYING]>0 ? ST_DYING
+           : (vl->group_n[body][ST_DEATH]>0 ? ST_DEATH : -1));
+    if(st<0) return;
+    int d=vl->dwrite; vl->dwrite=(d+1)%vl->dmax;
+    vl->dx[d]=x; vl->dy[d]=y; vl->dz[d]=0.0f; vl->dhd[d]=atan2f(vl->hx[slot],vl->hy[slot])+HEADING_OFFSET;
+    vl->dsc[d]=(radius/0.30f)*vl->hmul[slot]; vl->dph[d]=0.0f;
+    vl->dvar[d]=(unsigned char)body; vl->dclip[d]=(unsigned char)pick_clip(vl,body,slot,st);
+    vl->dout[d]=vl->outfit[slot]; vl->dtr[d]=vl->tr[slot]; vl->dtg[d]=vl->tg[slot]; vl->dtb[d]=vl->tb[slot];
+    vl->dttl[d]=vl->m[body].clip[vl->dclip[d]].duration + DECEDENT_HOLD;
+    vl->dactive[d]=1;
+}
+
 /* stato voluto dalla velocità, con isteresi */
 static int want_state(int cur,float spd){
     if(cur==ST_IDLE) return spd>0.40f ? ST_WALK : ST_IDLE;
@@ -111,8 +170,17 @@ static int want_state(int cur,float spd){
 
 void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
     const float *vx=simp_vx(s),*vy=simp_vy(s); const unsigned char *fl=simp_flags_arr(s);
+    const float *wp=simp_wall_pressure(s);                 /* sensore d'assedio (M5/SIEGE) */
     int n=simp_count(s);
     float alpha=1.0f-expf(-dt/HEADING_TAU), beta=1.0f-expf(-dt/SPEED_TAU);
+    /* avanza il pool decessi (indipendente dagli agenti vivi): clip una volta poi
+       tiene l'ultimo frame; libera lo slot a TTL scaduto. */
+    for(int d=0; d<vl->dmax; d++) if(vl->dactive[d]){
+        vl->dttl[d]-=dt; if(vl->dttl[d]<=0.0f){ vl->dactive[d]=0; continue; }
+        const VatClip *c=&vl->m[vl->dvar[d]].clip[vl->dclip[d]];
+        float dur=c->duration>0?c->duration:1.0f;
+        vl->dph[d]+=dt/dur; if(vl->dph[d]>1.0f)vl->dph[d]=1.0f;
+    }
     for(int i=0;i<n;i++){
         int slot=simp_slot_of(s,i); if(slot<0||slot>=vl->max) continue;
         SimPHandle h=simp_handle_of(s,i);
@@ -140,10 +208,25 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
         if(sp>MOVE_MIN && !(fl[i]&SIMP_FLYING)){
             vl->hx[slot]+=alpha*(vx[i]-vl->hx[slot]); vl->hy[slot]+=alpha*(vy[i]-vl->hy[slot]); }
 
-        /* FSM da velocità (dormienti = idle); gruppi del BODY di questo agente */
         int body=vl->var[slot];
+
+        /* one-shot HIT: interrompe la FSM per la durata della clip (tempo, niente
+           loop), poi riprende. Heading/spd restano aggiornati sopra. */
+        if(vl->osT[slot]>0.0f){
+            vl->osT[slot]-=dt;
+            const VatClip *c=&vl->m[body].clip[vl->osClip[slot]];
+            float dur=c->duration>0?c->duration:1.0f;
+            vl->osPh[slot]+=dt/dur; if(vl->osPh[slot]>1.0f)vl->osPh[slot]=1.0f;
+            continue;
+        }
+
+        /* FSM da velocità (dormienti = idle); gruppi del BODY di questo agente.
+           ATTACK = override condizione: l'agente preme un muro/struttura per
+           raggiungere il goal oltre (sensore d'assedio wall_pressure). */
         int cur=vl->state[slot];
         int want=(fl[i]&SIMP_DORMANT)?ST_IDLE:want_state(cur,vl->spd[slot]);
+        if(wp && wp[i]>ATTACK_PRESS && !(fl[i]&SIMP_FLYING) && vl->group_n[body][ST_ATTACK]>0)
+            want=ST_ATTACK;
         int eff=vl->blending[slot]?vl->target[slot]:cur;
         if(want!=eff && vl->group_n[body][want]>0){
             vl->blending[slot]=1; vl->target[slot]=want;
@@ -172,18 +255,35 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
    I frame gA/gB sono indici nella VAT texture di QUELLA variante. */
 static void emit_instance(VatLayer *vl, int slot, const VatMeta *M,
                           float x, float y, float z, float r, float *o){
-    const VatClip *ca=&M->clip[vl->clipA[slot]];
     float gA,gB,mix;
-    if(vl->blending[slot]){ const VatClip *cb=&M->clip[vl->clipB[slot]];
-        float la=floorf(vl->phaseA[slot]*ca->numFrames), lb=floorf(vl->phaseB[slot]*cb->numFrames);
-        gA=ca->startFrame+fmodf(la,(float)ca->numFrames); gB=cb->startFrame+fmodf(lb,(float)cb->numFrames);
-        mix=vl->blendF[slot]>1?1:vl->blendF[slot];
-    } else { float local=vl->phaseA[slot]*ca->numFrames; float fa=floorf(local),fb=fa+1; if(fb>=ca->numFrames)fb=0;
-        gA=ca->startFrame+fa; gB=ca->startFrame+fb; mix=local-fa; }
+    if(vl->osT[slot]>0.0f){                      /* one-shot HIT: gioca una volta, niente loop */
+        const VatClip *c=&M->clip[vl->osClip[slot]];
+        float local=vl->osPh[slot]*(float)(c->numFrames-1);
+        float fa=floorf(local), fb=fa+1; if(fb>=c->numFrames)fb=(float)(c->numFrames-1);
+        gA=c->startFrame+fa; gB=c->startFrame+fb; mix=local-fa;
+    } else {
+        const VatClip *ca=&M->clip[vl->clipA[slot]];
+        if(vl->blending[slot]){ const VatClip *cb=&M->clip[vl->clipB[slot]];
+            float la=floorf(vl->phaseA[slot]*ca->numFrames), lb=floorf(vl->phaseB[slot]*cb->numFrames);
+            gA=ca->startFrame+fmodf(la,(float)ca->numFrames); gB=cb->startFrame+fmodf(lb,(float)cb->numFrames);
+            mix=vl->blendF[slot]>1?1:vl->blendF[slot];
+        } else { float local=vl->phaseA[slot]*ca->numFrames; float fa=floorf(local),fb=fa+1; if(fb>=ca->numFrames)fb=0;
+            gA=ca->startFrame+fa; gB=ca->startFrame+fb; mix=local-fa; }
+    }
     float head=atan2f(vl->hx[slot],vl->hy[slot])+HEADING_OFFSET;
     o[0]=x; o[1]=z; o[2]=y; o[3]=head;
     o[4]=(r/0.30f)*vl->hmul[slot]; o[5]=gA; o[6]=gB; o[7]=mix; o[8]=(float)vl->outfit[slot];
     o[9]=vl->tr[slot]/255.0f; o[10]=vl->tg[slot]/255.0f; o[11]=vl->tb[slot]/255.0f;
+}
+
+/* Emette un decedente del pool (clip morte una volta, ultimo frame tenuto). */
+static void emit_decedent(VatLayer *vl, int d, const VatMeta *M, float *o){
+    const VatClip *c=&M->clip[vl->dclip[d]];
+    float local=vl->dph[d]*(float)(c->numFrames-1);
+    float fa=floorf(local), fb=fa+1; if(fb>=c->numFrames)fb=(float)(c->numFrames-1);
+    o[0]=vl->dx[d]; o[1]=vl->dz[d]; o[2]=vl->dy[d]; o[3]=vl->dhd[d];
+    o[4]=vl->dsc[d]; o[5]=c->startFrame+fa; o[6]=c->startFrame+fb; o[7]=local-fa;
+    o[8]=(float)vl->dout[d]; o[9]=vl->dtr[d]/255.0f; o[10]=vl->dtg[d]/255.0f; o[11]=vl->dtb[d]/255.0f;
 }
 
 int vat_layer_fill_variant(VatLayer *vl, const SimP *s, int variant, float *buf, int max_inst){
@@ -197,6 +297,9 @@ int vat_layer_fill_variant(VatLayer *vl, const SimP *s, int variant, float *buf,
         emit_instance(vl,slot,M,px[i],py[i],za?za[i]:0.0f,rad[i],buf+c*12);
         c++;
     }
+    /* decedenti di questa variante, in coda agli agenti vivi (stessa mesh/draw) */
+    for(int d=0; d<vl->dmax && c<max_inst; d++)
+        if(vl->dactive[d] && vl->dvar[d]==variant){ emit_decedent(vl,d,M,buf+c*12); c++; }
     return c;
 }
 

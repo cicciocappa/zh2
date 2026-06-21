@@ -6,7 +6,14 @@
  *     piroette negli ingorghi).
  *   - FSM da |v|: IDLE/WALK/RUN con isteresi; le clip di stato (walk×6, run×2,
  *     idle×2) scelte per hash(slot) → varietà. Transizioni = crossfade a 2 tap.
- *     ATTACK/SCREAM restano per gli eventi di gioco (API futura).
+ *   - ATTACK: override di condizione dal sensore d'assedio (simp_wall_pressure):
+ *     l'agente che preme un muro/struttura per il goal oltre suona la clip attack.
+ *   - HIT: one-shot d'evento (vat_layer_hit) su colpo non letale; interrompe la
+ *     FSM per la durata della clip poi riprende.
+ *   - DEATH: pool di "decedenti" renderer-side (vat_layer_die): alla morte un
+ *     visuale riproduce la clip dying/death una volta poi tiene l'ultimo frame
+ *     per un TTL, indipendente dall'agente sim già rimosso. Body senza la clip
+ *     (es. crawler) degradano: niente evento.
  *   - FASE: walk/run avanzano con la DISTANZA percorsa / stride_m (niente
  *     foot-sliding); idle col tempo. Seedata dall'handle (slot riusato = pulito).
  *   - OUTFIT/tinta: per-slot, stabili per la vita dell'agente.
@@ -52,8 +59,20 @@ void vat_layer_pin_variant(VatLayer *vl, int slot, int variant);
  * visto (mid-life). */
 void vat_layer_set_variant(VatLayer *vl, int slot, int variant);
 
-/* Avanza heading/FSM/fase. Stesso dt di simp_step (salta se in pausa). */
+/* Avanza heading/FSM/fase + il pool decessi. Stesso dt di simp_step (salta se in pausa). */
 void vat_layer_update(VatLayer *vl, const SimP *s, float dt);
+
+/* Evento HIT one-shot su un agente vivo (colpo non letale): flinch della clip
+ * hit, poi ritorno alla FSM velocità. No-op se il body non ha clip hit (crawler)
+ * o se un flinch è già in corso. slot = simp_slot_of(s, indice). */
+void vat_layer_hit(VatLayer *vl, int slot);
+
+/* Spawna un decedente (morte leggera, non gib): una visuale che riproduce la
+ * clip morte del body una volta a (x,y) poi tiene l'ultimo frame per un TTL.
+ * Snapshot di heading/variante/outfit/tinta dallo slot; radius = simp_radius del
+ * morto (scala del tank). Da chiamare alla morte, prima che lo slot sia riusato.
+ * Ring buffer: pieno = sovrascrive il più vecchio (come i cadaveri M3.3). */
+void vat_layer_die(VatLayer *vl, int slot, float x, float y, float radius);
 
 /* Riempie inst_buf (12 float/istanza: pos.xyz, heading, scala, gA, gB, mix,
  * outfit, tint.rgb) con i SOLI agenti assegnati a `variant`. Ritorna il numero

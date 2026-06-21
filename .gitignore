@@ -21,6 +21,7 @@ test_pick
 test_editor
 test_breakthrough
 test_props
+test_vat_layer
 bench_sim
 *.o
 frames/

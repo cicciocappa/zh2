@@ -63,6 +63,7 @@ struct DefGame {
     float    *atk_timer;    /* per slot: siege attack accumulator            */
     int       lost;         /* 1 once the core has collapsed                 */
     int       budget;       /* §8 placement budget                          */
+    DefEventFn ev_cb; void *ev_user;  /* render hook: hit/death events        */
 };
 
 /* deterministic per-slot hash (no RNG state: same slot -> same roll) */
@@ -140,6 +141,7 @@ static void die_light(DefGame *g, int i, int slot) {
     uint32_t h = hash_u32((uint32_t)slot * 2654435761u ^ 0x00C0FFEEu);
     if ((h & 1023u) < (uint32_t)(P_CORPSE * 1024.0f))
         simp_corpse_add(g->s, x, y, r * 0.9f, CORPSE_TTL);
+    if (g->ev_cb) g->ev_cb(g->ev_user, slot, i, (DefBody)g->body[slot], DEF_EV_DEATH);
     simp_kill(g->s, i);
     g->kills++;
 }
@@ -165,7 +167,10 @@ static void apply_damage(DefGame *g, SimPHandle h, const DefTurret *t) {
     } else {
         g->hp[slot] -= (int)t->damage;
         if (g->hp[slot] <= 0) die_light(g, i, slot);
-        else if (g->wound[slot] == DW_NONE) wound_roll(g, i, slot);
+        else {
+            if (g->wound[slot] == DW_NONE) wound_roll(g, i, slot);
+            if (g->ev_cb) g->ev_cb(g->ev_user, slot, i, (DefBody)g->body[slot], DEF_EV_HIT);
+        }
     }
 }
 
@@ -322,6 +327,10 @@ void def_update(DefGame *g, float dt) {
 /* ---- §8 placement budget ---- */
 
 void def_set_budget(DefGame *g, int budget) { g->budget = budget; }
+
+void def_set_event_cb(DefGame *g, DefEventFn cb, void *user) {
+    g->ev_cb = cb; g->ev_user = user;
+}
 int  def_budget(const DefGame *g) { return g->budget; }
 int  def_spend(DefGame *g, int cost) {
     if (cost < 0 || g->budget < cost) return 0;

@@ -88,6 +88,15 @@ static void on_director_spawn(void *user, SimPHandle h, DefBody body, unsigned r
     vat_layer_pin_variant(c->vl, simp_slot_of(c->s,i), body_variant(body, roll>>7));
 }
 
+// hook eventi defense → animazioni one-shot del render layer: HIT = flinch su
+// colpo non letale; DEATH = decedente (clip morte) prima che lo slot sia riusato.
+static void on_def_event(void *user, int slot, int i, DefBody body, DefEvent ev){
+    SpawnCtx *c=(SpawnCtx*)user; (void)body;
+    if(ev==DEF_EV_HIT) vat_layer_hit(c->vl, slot);
+    else if(ev==DEF_EV_DEATH)
+        vat_layer_die(c->vl, slot, simp_px(c->s)[i], simp_py(c->s)[i], simp_radius_arr(c->s)[i]);
+}
+
 // Benchmark prefill: popola il campo a `target` agenti su un lattice jitterato
 // (passo = sqrt(area/target), clampato per non sovrapporre) → niente transitorio
 // PBD da spawn denso. Ritorna quanti effettivamente piazzati (free_at salta muri
@@ -445,6 +454,7 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
             printf("statici terreno: %d celle-muro (tier palazzo) dai buchi ZHM2\n", hc.n); } }
 
     DefGame *g = def_create(s, MAXA);
+    def_set_event_cb(g, on_def_event, spctx);   // hit/death -> animazioni one-shot
     float bcx=sc->world_w*0.5f, bcy=sc->world_h*0.5f;
     if(sc->n_goal>0){ float sx=0,sy=0; for(int k=0;k<sc->n_goal;k++){
             sx+=sc->goal[k].x+sc->goal[k].w*0.5f; sy+=sc->goal[k].y+sc->goal[k].h*0.5f; }

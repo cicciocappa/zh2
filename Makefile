@@ -35,7 +35,7 @@ endif
 all: test_particles test_impulse test_dormant test_handles test_query test_corpses \
      test_types test_density_route test_jam test_scene test_siege test_turret \
      test_defense test_base test_director test_terrain test_pick test_editor \
-     test_breakthrough test_props
+     test_breakthrough test_props test_vat_layer
 
 test_particles: test_particles.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_particles.c sim_particles.c $(LDLIBS)
@@ -92,6 +92,10 @@ test_terrain: test_terrain.c terrain.c terrain.h
 test_props: test_props.c props.c props.h
 	$(CC) $(CFLAGS) -o $@ test_props.c props.c $(LDLIBS)
 
+# VAT render-layer animation bookkeeping (headless, no GL): hit one-shot + death pool
+test_vat_layer: test_vat_layer.c vat/vat_layer.c sim_particles.c vat/vat_layer.h sim_particles.h
+	$(CC) $(CFLAGS) -I. -o $@ test_vat_layer.c vat/vat_layer.c sim_particles.c $(LDLIBS)
+
 # editor picking math (headless, zero deps): EDITOR_DESIGN §6 verifica (b)
 test_pick: test_pick.c vat/edit_pick.h
 	$(CC) $(CFLAGS) -o $@ test_pick.c $(LDLIBS)
@@ -146,11 +150,12 @@ test: all
 	./test_editor
 	./test_breakthrough
 	./test_props
+	./test_vat_layer
 
 clean:
 	rm -rf test_particles test_impulse test_dormant test_handles test_query \
 	       test_corpses test_types test_density_route test_jam test_scene \
-	       test_siege test_turret test_defense test_base test_director test_terrain bench_sim test_pick test_editor test_breakthrough test_props \
+	       test_siege test_turret test_defense test_base test_director test_terrain bench_sim test_pick test_editor test_breakthrough test_props test_vat_layer \
 	       sandbox sprite_view vat_view vat_horde frames *.exe vat/*.o
 
 .PHONY: all test clean

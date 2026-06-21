@@ -359,22 +359,26 @@ statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
       = EMA per slot nel renderer). Prossimo passo: scelta dello stack
       (SDL_GPU vs GL 4.3, decide il lato compute di M5) e upgrade del
       sandbox a rendering instanced — che è anche il banco di prova di M4.
-- [ ] **Zombie bloccati contro un ostacolo → animazione attack, non idle**
-      (renderer-side, prossima sessione). I pezzi esistono già tutti:
-      lo stato "stuck" con isteresi è nel layer (sprite_layer.c), la
-      prossimità al muro è `simp_sample_sdf(x,y) < r + margine`, il facing
-      verso l'ostacolo è il gradiente dell'SDF (campionamento a differenze
-      centrali, come fa il core per le collisioni), la sheet attack è già
-      renderizzata e il playback a tempo (ZSP3 `duration_s`) già supportato.
-      Da decidere: ri-renderizzare attack a più frame (ora 4); i CADAVERI
-      non stanno nell'SDF, quindi gli ammassati contro una barricata di
-      corpi resterebbero in idle (accettabile? altrimenti check sulla
-      lista corpse). Più avanti si fonde con lo stato "attacking" vero
-      del gameplay (muri con HP, drain→DPS, vedi questioni aperte): il
-      sensore è già pronto — `simp_wall_pressure[i] > 0` dice quali
-      slot stanno premendo un muro per davvero (verso il goal), più
-      pulito del check SDF generico perché esclude lo sfioramento
-      tangente. Vedi `SIEGE_DESIGN.md` §5.
+- [x] **Animazioni evento: attack / hit / death** (VAT path, `vat_layer`,
+      22 giu 2026). Le 3 clip esistono già nel bake (commit 8f9c912); cablate
+      tutte come stato renderer-side (GFX §7), core intoccato:
+      - **ATTACK**: override di condizione dal sensore d'assedio
+        `simp_wall_pressure[i] > 0.006` (allineato ad `ATTACK_MIN_P` di
+        defense.c → animazione ⇔ assedio reale; più pulito del check SDF, esclude
+        lo sfioramento tangente). Loop finché preme, esce quando smette.
+      - **HIT**: one-shot `vat_layer_hit(slot)` su colpo leggero non letale;
+        interrompe la FSM per la durata della clip, poi riprende.
+      - **DEATH**: pool "decedenti" renderer-side (`vat_layer_die`): alla morte
+        leggera snapshot pos/heading/variante/outfit/tinta → riproduce dying/death
+        una volta, tiene l'ultimo frame per un TTL, poi libera (ring buffer come
+        i cadaveri M3.3). Indipendente dall'agente sim già rimosso; gib pesanti
+        NON riportati (sistema gore §5 futuro).
+      - Evento defense→render via callback `DefEventFn` (come `on_spawn`),
+        `vat_horde` la inoltra a `vat_layer`. Crawler (solo walk/run/idle)
+        degrada con grazia (niente clip evento). `test_vat_layer` (hit one-shot +
+        pool decessi) PASS; verificato a video su `scenes/base.scn` (decedenti
+        stesi, assedio animato). RESTA (futuro): fondere death-clip↔cadavere
+        fisico + gib volanti/decal (GFX §5).
 - [ ] **Idle poco animata → effetto copia-incolla nei gruppi bloccati**
       (prossima sessione). La clip idle Mixamo attuale è quasi statica:
       i frame sono indistinguibili, quindi la desincronizzazione di fase

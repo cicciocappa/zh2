@@ -102,6 +102,16 @@ int   def_lost(const DefGame *g);                   /* 1 once the core has falle
  * Call after simp_step. */
 void def_update(DefGame *g, float dt);
 
+/* ---- render hook: hit/death events ----
+ * Fired during def_update so the renderer can play one-shot animations. HIT =
+ * a non-lethal light hit landed (agent survives). DEATH = a light kill, fired
+ * just BEFORE the agent is removed (index i still valid → read px/py/radius).
+ * Heavy gibs are NOT reported (future gore system). Core-agnostic: defense.c
+ * never touches the renderer; the host wires this to vat_layer_hit/_die. */
+typedef enum { DEF_EV_HIT, DEF_EV_DEATH } DefEvent;
+typedef void (*DefEventFn)(void *user, int slot, int i, DefBody body, DefEvent ev);
+void def_set_event_cb(DefGame *g, DefEventFn cb, void *user);
+
 /* ---- §8 placement budget ----
  * A static per-level pot the player spends to place turrets. Slice 1: a plain
  * counter; the game sets a turret's cost. def_spend deducts if affordable. */
