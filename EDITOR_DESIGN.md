@@ -371,11 +371,24 @@ il primo colpo ombra il suolo sotto. Va bene per palazzi/rocce solidi.
   già fatto (commit e34d143, `test_breakthrough`).
 - **Stadio 5a FATTO** — veto piazzamento editor sopra uno statico (`ter_blocked`,
   cursore rosso).
-- **Stadio 5b DA FARE** — prop di DECORO puro (cartelli/carretti/tavolini/
-  cassonetti): no SDF/no nav, render-only seatati su `terrain_z`. Richiede:
-  entità `prop <tipo> x y rot` in `scene.c`, un CATALOGO (tipo→mesh, dati
-  gioco/editor), render per-istanza, tool editor con scelta tipo. È un
-  sottosistema a sé (decisione aperta: formato catalogo + approccio render).
+- **Stadio 5b FATTO** (22 giu 2026) — prop di DECORO puro (panchine/cartelli/
+  carretti/cassonetti): no SDF/no nav, render-only seatati su `terrain_z`. Il
+  core non li vede (`scene_instantiate` li ignora). Pezzi:
+  - entità `prop <key> x y rot` in `scene.h/.c` (parse/save + roundtrip in
+    `test_scene`); `SceneProp` array nella `Scene`.
+  - CATALOGO **testo esterno** `props/catalog.txt` (`props.h/.c`, zero-dep:
+    `key mesh scale label`; `-` o file mancante = placeholder). `test_props`
+    PASS. Path override via `VAT_HORDE_PROPS`.
+  - render per-istanza in `vat_horde` (`build_prop_mesh`): finché manca l'arte
+    ogni prop è un PLACEHOLDER procedurale (corpo + montante = facing leggibile),
+    scalato dal catalogo, colorato per tipo, seatato sul terreno; flat shader,
+    sempre visibile (play+edit), ribakato a ogni edit.
+  - tool editor `ED_PROP` (tasto 8): LMB piazza (decoro LIBERO, no snap, GFX §6),
+    `[ ]` cicla il tipo, `,`/`.` ruota ±15°, RMB cancella; overlay marker+facing.
+    `test_editor` esteso (place/hit/delete/roundtrip).
+  Demo: `prop` in `scenes/terrain.scn`, verificato headless (6 prop seatati sul
+  terreno). RESTA (con l'arte): un `.glb` per tipo nel catalogo → il render
+  carica la mesh vera invece del placeholder (path già nel formato catalogo).
 
 ### Stato (giugno 2026)
 - **Slice 1 FATTO** — formato `.zhm` + `terrain.h/.c` (`terrain_z` bilineare,

@@ -76,6 +76,20 @@ int main(void){
     CHECK(ed_delete_at(&sc,35,27)==1 && sc.n_poly==0, "delete poly at point");
     CHECK(ed_delete_at(&sc,5,40)==0, "delete nothing on empty spot");
 
+    /* --- pure-decor props (stadio 5b): free-form place + hit + delete --- */
+    ed.tool=ED_PROP; strcpy(ed.prop_key,"bench"); ed.prop_rot=90.0f; ed.snap=1;
+    CHECK(ed_place_prop(&ed,&sc,12.34f,8.0f)==1, "place prop");
+    CHECK(sc.n_prop==1 && strcmp(sc.prop[0].key,"bench")==0, "prop key stored");
+    CHECK(sc.prop[0].x==12.34f && fabsf(sc.prop[0].rot-90.0f)<1e-4f, "prop free-form (no snap) + rot");
+    strcpy(ed.prop_key,"sign"); ed_place_prop(&ed,&sc,40,40);
+    CHECK(sc.n_prop==2, "second prop");
+    CHECK(ed_prop_hit(&sc,12.4f,8.05f,0.6f)==0, "prop hit nearest");
+    CHECK(ed_prop_hit(&sc,80,60,0.6f)==-1, "prop miss far away");
+    CHECK(ed_delete_at(&sc,12.3f,8.0f)==1 && sc.n_prop==1, "delete prop at point");
+    ed.prop_key[0]='\0';
+    CHECK(ed_place_prop(&ed,&sc,1,1)==0 && sc.n_prop==1, "no key -> no placement");
+    strcpy(ed.prop_key,"bench");
+
     /* --- overlay builder smoke: produces some geometry, stays within bounds --- */
     { static float buf[4096*9]; ed.have_cursor=1; ed.curx=50; ed.cury=30;
       int v=ed_overlay(&sc,&ed,buf,4096);
@@ -88,6 +102,7 @@ int main(void){
     Scene rl; memset(&rl,0,sizeof rl);
     CHECK(scene_load(path,&rl)==0, "scene_load");
     CHECK(rl.n_cost==sc.n_cost && rl.n_spawn==sc.n_spawn && rl.n_pack==sc.n_pack, "counts survive roundtrip");
+    CHECK(rl.n_prop==sc.n_prop && strcmp(rl.prop[0].key,"sign")==0, "props survive roundtrip");
     CHECK(fabsf(rl.cost[0].weight-7.0f)<1e-4f, "cost weight survives");
     CHECK(rl.world_w==100 && rl.world_h==70 && fabsf(rl.cell-0.5f)<1e-4f, "world/cell survive");
 

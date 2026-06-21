@@ -18,9 +18,9 @@
 #include <math.h>
 
 typedef enum { ED_SELECT=0, ED_GOAL, ED_SPAWN, ED_COST, ED_PACK,
-               ED_WALL, ED_COSTPOLY, ED_NTOOLS } EdTool;
+               ED_WALL, ED_COSTPOLY, ED_PROP, ED_NTOOLS } EdTool;
 static const char *ED_TOOL_NAME[ED_NTOOLS] =
-    { "select", "goal", "spawn", "cost", "pack", "wall", "costpoly" };
+    { "select", "goal", "spawn", "cost", "pack", "wall", "costpoly", "prop" };
 
 typedef struct {
     int    active;          /* edit mode on/off */
@@ -33,6 +33,9 @@ typedef struct {
     float  poly_h;          /* height for new wall/cost polys */
     float  poly_cost;       /* cost weight for new cost poly */
     float  rect_cost;       /* cost weight for new cost rect */
+    int    prop_idx;        /* current prop type (index into host catalog) */
+    char   prop_key[SCENE_PROP_KEY_LEN];  /* catalog key the host resolved */
+    float  prop_rot;        /* Y-rotation (deg) for the next prop placed */
     float  curx, cury;      /* last picked cursor (world) */
     int    have_cursor;
     int    dirty;           /* scene changed since last instantiate/save */
@@ -96,6 +99,28 @@ static int ed_poly_close(Editor *e, Scene *sc) {
     e->npoly = 0; e->dirty = 1; return 1;
 }
 
+/* place a pure-decor prop at (x,y) with the editor's current key + rotation.
+ * Decor is FREE-FORM (GFX_DESIGN §6: buildings snap, decor doesn't) -> the raw
+ * cursor position is used, ignoring the cell snap. Returns 1 if appended. */
+static int ed_place_prop(Editor *e, Scene *sc, float x, float y) {
+    if (sc->n_prop >= SCENE_MAX_PROP || e->prop_key[0] == '\0') return 0;
+    SceneProp *p = &sc->prop[sc->n_prop++];
+    memcpy(p->key, e->prop_key, SCENE_PROP_KEY_LEN);   /* same-size buffers, NUL incl. */
+    p->key[SCENE_PROP_KEY_LEN - 1] = '\0';
+    p->x = x; p->y = y; p->rot = e->prop_rot;
+    e->dirty = 1; return 1;
+}
+
+/* index of the nearest prop within `radius` meters of (x,y), or -1 */
+static int ed_prop_hit(const Scene *sc, float x, float y, float radius) {
+    int best = -1; float bd2 = radius * radius;
+    for (int i = 0; i < sc->n_prop; i++) {
+        float dx = sc->prop[i].x - x, dy = sc->prop[i].y - y, d2 = dx*dx + dy*dy;
+        if (d2 <= bd2) { bd2 = d2; best = i; }
+    }
+    return best;
+}
+
 /* even-odd point-in-polygon (meters) */
 static int ed_pt_in_poly(const ScenePoly *p, float x, float y) {
     int in = 0;
@@ -120,6 +145,7 @@ static void ed_rect_del(SceneRect *a, int *n, int i) { a[i] = a[--(*n)]; }
  * tool's RMB / Del. Returns 1 if something was removed. */
 static int ed_delete_at(Scene *sc, float x, float y) {
     int i;
+    if ((i = ed_prop_hit(sc, x, y, 0.6f)) >= 0) { sc->prop[i] = sc->prop[--sc->n_prop]; return 1; }
     if ((i = ed_rect_hit(sc->goal,  sc->n_goal,  x, y)) >= 0) { ed_rect_del(sc->goal,  &sc->n_goal,  i); return 1; }
     if ((i = ed_rect_hit(sc->spawn, sc->n_spawn, x, y)) >= 0) { ed_rect_del(sc->spawn, &sc->n_spawn, i); return 1; }
     if ((i = ed_rect_hit(sc->pack,  sc->n_pack,  x, y)) >= 0) { ed_rect_del(sc->pack,  &sc->n_pack,  i); return 1; }
@@ -181,6 +207,12 @@ static int ed_overlay(const Scene *sc, const Editor *e, float *buf, int maxv) {
         v=ed_push_bar(buf,v,e->pvx[e->npoly-1],e->pvy[e->npoly-1],e->curx,e->cury, 0.20f, 0.6f,0.95f,0.95f);
     for (int i=0;i<e->npoly && ROOM;i++)
         v=ed_push_marker(buf,v,e->pvx[i],e->pvy[i], 0.5f, 0.95f,0.95f,0.95f);
+    /* pure-decor props: a small teal marker + a facing bar (Y-rotation) */
+    for (int i=0;i<sc->n_prop && ROOM;i++) {
+        float px=sc->prop[i].x, py=sc->prop[i].y, a=sc->prop[i].rot*0.01745329f;
+        v=ed_push_marker(buf,v,px,py, 0.4f, 0.15f,0.85f,0.80f);
+        if (ROOM) v=ed_push_bar(buf,v,px,py,px+cosf(a)*0.6f,py+sinf(a)*0.6f, 0.12f, 0.15f,0.85f,0.80f);
+    }
     /* cursor crosshair */
     if (e->have_cursor && ROOM) v=ed_push_marker(buf,v,e->curx,e->cury, 0.4f, 1.0f,1.0f,1.0f);
     #undef ROOM

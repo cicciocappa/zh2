@@ -25,10 +25,14 @@
  *     cost  20 30 8 8 5.0             # rect x y w h weight (Dijkstra cost)
  *     poly  4.0 solid     30 20 40 20 40 35 30 35    # building (wall, h=4m)
  *     poly  0.4 cost 6.0  60 40 70 40 65 50           # hazard (cost 6, h=0.4m)
+ *     prop  bench 24 30 90                            # decor: catalog key x y rot(deg)
  *
  * A `poly` line is: height, then `solid` OR `cost <weight>`, then >=3 vertex
  * pairs (convex, CCW or CW both fine). Grid size is round(world/cell).
- * scene_save writes the same format back.
+ * A `prop` line is a PURE-DECOR instance (EDITOR_DESIGN §10 stadio 5b): a
+ * catalog key (props/catalog.txt, host-side), world position and Y-rotation in
+ * degrees. Render + terrain seating ONLY: no SDF, no nav — the sim core never
+ * sees props (scene_instantiate ignores them). scene_save writes the format back.
  */
 #ifndef SCENE_H
 #define SCENE_H
@@ -39,6 +43,8 @@
 #define SCENE_MAX_POLY       256
 #define SCENE_POLY_MAX_VERTS 16
 #define SCENE_MAX_RECT       64
+#define SCENE_MAX_PROP       256
+#define SCENE_PROP_KEY_LEN   24
 
 typedef struct {
     float vx[SCENE_POLY_MAX_VERTS], vy[SCENE_POLY_MAX_VERTS];  /* meters */
@@ -49,6 +55,10 @@ typedef struct {
 } ScenePoly;
 
 typedef struct { float x, y, w, h, weight; } SceneRect;  /* meters; weight = cost only */
+
+/* Pure-decor prop instance: catalog key + world position + Y-rotation (deg).
+ * Render-only (no sim effect); resolved against props/catalog.txt by the host. */
+typedef struct { char key[SCENE_PROP_KEY_LEN]; float x, y, rot; } SceneProp;
 
 typedef struct {
     float cell;                 /* meters per cell */
@@ -63,6 +73,7 @@ typedef struct {
     SceneRect spawn[SCENE_MAX_RECT];  int n_spawn;
     SceneRect pack[SCENE_MAX_RECT];   int n_pack;
     SceneRect cost[SCENE_MAX_RECT];   int n_cost;   /* rect cost patches */
+    SceneProp prop[SCENE_MAX_PROP];   int n_prop;   /* pure-decor instances (render-only) */
 } Scene;
 
 /* Load/save/free. Return 0 on success, negative on error (file or format). */

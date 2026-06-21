@@ -13,10 +13,12 @@
 //            centro camera)  F11=fullscreen  TAB=modalità EDIT  ESC=esci
 // EDITOR (EDITOR_DESIGN fase 1, VAT_HORDE_EDIT=1 per partire in EDIT): la sim si
 //   ferma, si edita la Scene e si re-instanzia tornando in PLAY (TAB). Tool a
-//   tastiera: 1=select 2=goal 3=spawn 4=cost 5=pack 6=muro 7=costo-poly.
+//   tastiera: 1=select 2=goal 3=spawn 4=cost 5=pack 6=muro 7=costo-poly 8=prop.
 //   Mouse: LMB drag = rect (goal/spawn/cost/pack); LMB click = vertice poligono
+//   (o piazza un prop col tool 8)
 //   (Invio chiude, Backspace/RMB toglie l'ultimo); RMB su un'entità = cancella.
-//   G=snap on/off  [ ]=altezza poly / peso costo  F2=salva la .scn caricata.
+//   G=snap on/off  [ ]=altezza poly / peso costo / TIPO prop  ,.=ruota prop
+//   F2=salva la .scn caricata.
 // Headless:  VAT_HORDE_SHOT="<frames>" ./vat_horde  -> simula N step, screenshot
 //            vat_horde_shot.bmp, esce. VAT_HORDE_CAM="cx,cz,hh,az,el".
 //            VAT_HORDE_BLAST="frame,x,y[,str,up]" -> esplosione+lancio a quel frame.
@@ -28,6 +30,7 @@
 #include "defense.h"
 #include "cgltf.h"
 #include "terrain.h"
+#include "props.h"
 #include "edit_pick.h"
 #include "editor.h"
 
@@ -111,6 +114,9 @@ static Terrain gTer; static int gTerOn = 0;
 static float ter_z(float x, float y){ return gTerOn ? terrain_z(&gTer, x, y) : 0.0f; }
 // veto editor (§10): non si piazza nulla su una cella-statico (buco palazzo).
 static int ter_blocked(float x, float y){ return gTerOn && terrain_hole(&gTer, x, y); }
+
+// catalogo prop di decoro (§10 stadio 5b): tipo->mesh+scala+label, render-only.
+static PropCatalog gCatalog; static int gCatN = 0;
 
 typedef struct { GLuint vao, vbo, ebo, tex; int nidx, hasTex; } Ground;
 
@@ -264,6 +270,75 @@ static float *build_obstacle_mesh(const Scene *sc, int with_ground, int *out_nve
 #undef PUSH
     *out_nverts = c;
     return buf;
+}
+
+// --- mesh statica dei prop di decoro (§10 stadio 5b): render-only, NESSUN effetto
+// sim. Finché non c'è l'arte (un .glb per tipo nel catalogo), ogni prop è un
+// PLACEHOLDER procedurale: un corpo basso + un montante sottile su un lato, così
+// la rotazione Y si legge. Seatato sul terreno (ter_z), scalato dal catalogo,
+// colorato per tipo (slot del catalogo → palette; chiave sconosciuta = magenta).
+// Stesso layout 9-float del flat shader (pos, normal, color), coord di mondo.
+static const float PROP_PAL[8][3] = {
+    {0.80f,0.55f,0.30f},{0.40f,0.62f,0.80f},{0.55f,0.75f,0.40f},{0.78f,0.72f,0.40f},
+    {0.70f,0.45f,0.55f},{0.45f,0.70f,0.68f},{0.72f,0.58f,0.42f},{0.60f,0.55f,0.72f} };
+
+// box ruotato attorno a (cx,cz): footprint [±hx,±hz] traslato di (ox,oz) nel
+// frame locale, base zb, altezza hy, normali ruotate. Ritorna il nuovo conteggio.
+static int prop_box(float *buf, int c, float cx, float cz, float ox, float oz,
+                    float zb, float hx, float hz, float hy, float ca, float sa,
+                    float r, float g, float b) {
+    float lx[4]={ox-hx,ox+hx,ox+hx,ox-hx}, lz[4]={oz-hz,oz-hz,oz+hz,oz+hz};
+    float wx[4],wz[4], bx=0,bz=0;
+    for(int i=0;i<4;i++){ wx[i]=cx+lx[i]*ca-lz[i]*sa; wz[i]=cz+lx[i]*sa+lz[i]*ca; bx+=wx[i]; bz+=wz[i]; }
+    bx*=0.25f; bz*=0.25f;
+    float y0=zb, y1=zb+hy;
+#define PP(X,Y,Z,NX,NY,NZ) do{ float*o=buf+c*9; o[0]=(X);o[1]=(Y);o[2]=(Z); \
+    o[3]=(NX);o[4]=(NY);o[5]=(NZ); o[6]=r;o[7]=g;o[8]=b; c++; }while(0)
+    PP(wx[0],y1,wz[0],0,1,0); PP(wx[1],y1,wz[1],0,1,0); PP(wx[2],y1,wz[2],0,1,0);
+    PP(wx[0],y1,wz[0],0,1,0); PP(wx[2],y1,wz[2],0,1,0); PP(wx[3],y1,wz[3],0,1,0);
+    for(int k=0;k<4;k++){ int k1=(k+1)&3;
+        float ex=wx[k1]-wx[k], ez=wz[k1]-wz[k], nx=ez, nz=-ex;
+        float l=sqrtf(nx*nx+nz*nz); if(l>1e-6f){ nx/=l; nz/=l; }
+        float mx=(wx[k]+wx[k1])*0.5f-bx, mz=(wz[k]+wz[k1])*0.5f-bz;
+        if(nx*mx+nz*mz<0){ nx=-nx; nz=-nz; }
+        float s=0.85f, wr=r*s, wg=g*s, wb=b*s; (void)wr;(void)wg;(void)wb;
+        PP(wx[k],y1,wz[k],nx,0,nz); PP(wx[k1],y1,wz[k1],nx,0,nz); PP(wx[k1],y0,wz[k1],nx,0,nz);
+        PP(wx[k],y1,wz[k],nx,0,nz); PP(wx[k1],y0,wz[k1],nx,0,nz); PP(wx[k],y0,wz[k],nx,0,nz);
+    }
+#undef PP
+    return c;
+}
+
+#define PROP_VERTS_EACH 60   // corpo (30) + montante (30)
+static float *build_prop_mesh(const Scene *sc, const PropCatalog *cat, int *out_nv) {
+    int nv = sc->n_prop * PROP_VERTS_EACH;
+    float *buf = malloc((size_t)(nv>0?nv:1) * 9 * sizeof(float));
+    int c = 0;
+    for (int i = 0; i < sc->n_prop; i++) {
+        const SceneProp *pr = &sc->prop[i];
+        const PropDef *d = prop_catalog_find(cat, pr->key);
+        float sc_m = d ? d->scale : 1.0f;
+        float r,g,b;
+        if (d) { int idx = (int)(d - cat->defs) & 7; r=PROP_PAL[idx][0]; g=PROP_PAL[idx][1]; b=PROP_PAL[idx][2]; }
+        else   { r=0.90f; g=0.10f; b=0.85f; }            // chiave sconosciuta = magenta
+        float a = pr->rot * 0.01745329f, ca = cosf(a), sa = sinf(a);
+        float zb = ter_z(pr->x, pr->y);
+        // corpo: 0.7×0.4 m, alto 0.45 m
+        c = prop_box(buf, c, pr->x, pr->y, 0,0, zb, 0.35f*sc_m, 0.20f*sc_m, 0.45f*sc_m, ca,sa, r,g,b);
+        // montante sul lato frontale (+x locale): 0.1×0.1 m, alto 1.0 m (segnale di facing)
+        c = prop_box(buf, c, pr->x, pr->y, 0.30f*sc_m,0, zb, 0.06f*sc_m, 0.06f*sc_m, 1.0f*sc_m, ca,sa,
+                     r*0.8f, g*0.8f, b*0.8f);
+    }
+    *out_nv = c;
+    return buf;
+}
+
+// ricarica la mesh prop nel VBO (i prop della Scene cambiano in EDIT).
+static int upload_prop_mesh(GLuint vbo, const Scene *sc, const PropCatalog *cat){
+    int nv=0; float *m=build_prop_mesh(sc,cat,&nv);
+    glBindBuffer(GL_ARRAY_BUFFER,vbo);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)(nv>0?nv:1)*9*sizeof(float),m,GL_STATIC_DRAW);
+    free(m); return nv;
 }
 
 // --- mesh statica delle torrette: un pilastrino per torretta (arancio = leggera,
@@ -436,9 +511,15 @@ int main(int argc, char **argv){
     const char *scene_path = argc > 1 ? argv[1] : "scenes/obstacles.scn";
     Scene sc;
     if (scene_load(scene_path, &sc) != 0) { fprintf(stderr, "scene load fail: %s\n", scene_path); return 1; }
-    printf("scene %s: %dx%d cell=%g (%gx%g m) poly=%d spawn=%d goal=%d\n",
+    printf("scene %s: %dx%d cell=%g (%gx%g m) poly=%d spawn=%d goal=%d prop=%d\n",
            scene_path, sc.gw, sc.gh, (double)sc.cell, (double)sc.world_w, (double)sc.world_h,
-           sc.n_poly, sc.n_spawn, sc.n_goal);
+           sc.n_poly, sc.n_spawn, sc.n_goal, sc.n_prop);
+
+    // catalogo prop di decoro (§10 stadio 5b): tipo->mesh+scala+label. Render-only.
+    const char *cpath = getenv("VAT_HORDE_PROPS") ? getenv("VAT_HORDE_PROPS") : "props/catalog.txt";
+    gCatN = prop_catalog_load(cpath, &gCatalog);
+    if (gCatN > 0) printf("prop catalog: %s (%d tipi)\n", cpath, gCatN);
+    else { gCatN = 0; printf("prop catalog: %s assente -> tool prop disabilitato\n", cpath); }
 
     // terreno render-only (§9): glb dalla scena (o VAT_HORDE_TERRAIN), heightmap
     // .zhm a fianco (stesso path, estensione .zhm). Il .zhm è CPU-only → caricato
@@ -562,6 +643,18 @@ int main(int argc, char **argv){
     glBindVertexArray(0); free(obMesh);
     printf("ostacoli: %d triangoli\n",obNV/3);
 
+    // prop di decoro (§10 stadio 5b): mesh placeholder bakata dalla Scene, flat
+    // shader. Render-only (play+edit), ricostruita su ogni edit dei prop.
+    int prNV=0; float *prMesh=build_prop_mesh(&sc,&gCatalog,&prNV);
+    GLuint prVao,prVbo; glGenVertexArrays(1,&prVao);glBindVertexArray(prVao);
+    glGenBuffers(1,&prVbo);glBindBuffer(GL_ARRAY_BUFFER,prVbo);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)(prNV>0?prNV:1)*9*sizeof(float),prMesh,GL_STATIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
+    glBindVertexArray(0); free(prMesh);
+    printf("prop: %d istanze (%d triangoli)\n",sc.n_prop,prNV/3);
+
     // overlay editor (rect/poly/cursore): stesso layout del flat shader, dinamico.
     GLuint ovVao,ovVbo; glGenVertexArrays(1,&ovVao);glBindVertexArray(ovVao);
     glGenBuffers(1,&ovVbo);glBindBuffer(GL_ARRAY_BUFFER,ovVbo);
@@ -574,6 +667,7 @@ int main(int argc, char **argv){
     // stato editor (EDITOR_DESIGN fase 1): VAT_HORDE_EDIT=1 parte in EDIT, TAB
     // commuta. In EDIT la sim NON steppa, si edita la Scene e si salva (F2).
     Editor ed; ed_init(&ed); ed.active = getenv("VAT_HORDE_EDIT")?1:0;
+    if(gCatN>0){ snprintf(ed.prop_key,sizeof ed.prop_key,"%s",gCatalog.defs[0].key); }
 
     // torrette (statico) + tracer di fuoco (dinamico), stesso flat shader.
     int turNV=0; float *turMesh=build_turret_mesh(g,&turNV);
@@ -699,11 +793,14 @@ int main(int argc, char **argv){
                             ed.dragging=1; ed.ax=ed.bx=wx; ed.ay=ed.by=wy;
                         } else if(ed.tool==ED_WALL||ed.tool==ED_COSTPOLY){
                             ed_poly_vertex(&ed,&sc,wx,wy);
+                        } else if(ed.tool==ED_PROP){
+                            if(ed_place_prop(&ed,&sc,wx,wy)) prNV=upload_prop_mesh(prVbo,&sc,&gCatalog);
                         }
                     } else if(e.button.button==SDL_BUTTON_RIGHT){
                         if(ed.npoly>0) ed.npoly--;                 // annulla ultimo vertice
                         else if(ed_delete_at(&sc,wx,wy)){ ed.dirty=1;
-                            obNV=upload_obstacle_mesh(obVbo,&sc,!groundOn); }
+                            obNV=upload_obstacle_mesh(obVbo,&sc,!groundOn);
+                            prNV=upload_prop_mesh(prVbo,&sc,&gCatalog); }
                     }
                 } else if(motion && ed.dragging && hit){ ed.bx=wx; ed.by=wy; }
                 else if(e.type==SDL_EVENT_MOUSE_BUTTON_UP &&
@@ -721,7 +818,8 @@ int main(int argc, char **argv){
                     if(ed.active){
                         if(ed.dirty){ free_world(s,g,dir);        // re-instanzia dalla Scene editata
                             if(build_world(&sc,vl,fillN,&spctx,&s,&g,&dir)!=0){running=0;break;}
-                            obNV=upload_obstacle_mesh(obVbo,&sc,!groundOn); ed.dirty=0; }
+                            obNV=upload_obstacle_mesh(obVbo,&sc,!groundOn);
+                            prNV=upload_prop_mesh(prVbo,&sc,&gCatalog); ed.dirty=0; }
                         ed.active=0;
                     } else ed.active=1;
                     break;
@@ -735,6 +833,7 @@ int main(int argc, char **argv){
                 case SDLK_5: ed.tool=ED_PACK;   break;
                 case SDLK_6: ed.tool=ED_WALL;   break;
                 case SDLK_7: ed.tool=ED_COSTPOLY; break;
+                case SDLK_8: if(gCatN>0) ed.tool=ED_PROP; break;
                 case SDLK_G: ed.snap=!ed.snap;  break;
                 case SDLK_RETURN:
                     if((ed.tool==ED_WALL||ed.tool==ED_COSTPOLY) && ed_poly_close(&ed,&sc))
@@ -742,15 +841,21 @@ int main(int argc, char **argv){
                     break;
                 case SDLK_BACKSPACE: if(ed.npoly>0) ed.npoly--; break;
                 case SDLK_LEFTBRACKET:
-                    if(ed.tool==ED_WALL) ed.poly_h=fmaxf(0.2f,ed.poly_h-0.5f);
+                    if(ed.tool==ED_PROP){ if(gCatN>0){ ed.prop_idx=(ed.prop_idx+gCatN-1)%gCatN;
+                        snprintf(ed.prop_key,sizeof ed.prop_key,"%s",gCatalog.defs[ed.prop_idx].key); } }
+                    else if(ed.tool==ED_WALL) ed.poly_h=fmaxf(0.2f,ed.poly_h-0.5f);
                     else if(ed.tool==ED_COSTPOLY) ed.poly_cost=fmaxf(0.0f,ed.poly_cost-1.0f);
                     else ed.rect_cost=fmaxf(0.0f,ed.rect_cost-1.0f);
                     break;
                 case SDLK_RIGHTBRACKET:
-                    if(ed.tool==ED_WALL) ed.poly_h+=0.5f;
+                    if(ed.tool==ED_PROP){ if(gCatN>0){ ed.prop_idx=(ed.prop_idx+1)%gCatN;
+                        snprintf(ed.prop_key,sizeof ed.prop_key,"%s",gCatalog.defs[ed.prop_idx].key); } }
+                    else if(ed.tool==ED_WALL) ed.poly_h+=0.5f;
                     else if(ed.tool==ED_COSTPOLY) ed.poly_cost+=1.0f;
                     else ed.rect_cost+=1.0f;
                     break;
+                case SDLK_COMMA:  if(ed.tool==ED_PROP) ed.prop_rot=fmodf(ed.prop_rot-15.0f+360.0f,360.0f); break;
+                case SDLK_PERIOD: if(ed.tool==ED_PROP) ed.prop_rot=fmodf(ed.prop_rot+15.0f,360.0f); break;
                 case SDLK_F2:
                     if(scene_save(scene_path,&sc)==0) printf("salvato %s\n",scene_path);
                     else fprintf(stderr,"save fail %s\n",scene_path);
@@ -836,6 +941,8 @@ int main(int argc, char **argv){
         // ostacoli + suolo (statici)
         glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
         glBindVertexArray(obVao);glDrawArrays(GL_TRIANGLES,0,obNV);
+        // prop di decoro (placeholder render-only, §10 stadio 5b)
+        if(prNV){ glBindVertexArray(prVao);glDrawArrays(GL_TRIANGLES,0,prNV); }
         // torrette (pilastrini statici)
         glBindVertexArray(turVao);glDrawArrays(GL_TRIANGLES,0,turNV);
         // tracer di fuoco (linee, una per torretta che ha sparato di recente)
@@ -912,10 +1019,11 @@ int main(int argc, char **argv){
 
         // HUD: medie mobili sim/layer/render nel titolo
         acc_sim+=sim_ms; acc_lay+=lay_ms; acc_ren+=ren_ms; acc_n++;
-        if(ed.active && acc_n>=30){ char t[256];
-            snprintf(t,sizeof t,"vat_horde EDIT — tool:%s%s | poly h%.1f cost%.0f | rect cost%.0f | cur(%.1f,%.1f) | g=%d goal%d spawn%d cost%d pack%d poly%d%s | TAB=play F2=save",
-                ED_TOOL_NAME[ed.tool], ed.dragging?"*":"", (double)ed.poly_h,(double)ed.poly_cost,(double)ed.rect_cost,
-                (double)ed.curx,(double)ed.cury, ed.snap, sc.n_goal,sc.n_spawn,sc.n_cost,sc.n_pack,sc.n_poly,
+        if(ed.active && acc_n>=30){ char t[320];
+            char pinfo[64]=""; if(ed.tool==ED_PROP) snprintf(pinfo,sizeof pinfo," | prop:%s rot%.0f ([]=tipo ,.=ruota)", ed.prop_key, (double)ed.prop_rot);
+            snprintf(t,sizeof t,"vat_horde EDIT — tool:%s%s | poly h%.1f cost%.0f | rect cost%.0f%s | cur(%.1f,%.1f) | g=%d goal%d spawn%d cost%d pack%d poly%d prop%d%s | TAB=play F2=save",
+                ED_TOOL_NAME[ed.tool], ed.dragging?"*":"", (double)ed.poly_h,(double)ed.poly_cost,(double)ed.rect_cost, pinfo,
+                (double)ed.curx,(double)ed.cury, ed.snap, sc.n_goal,sc.n_spawn,sc.n_cost,sc.n_pack,sc.n_poly,sc.n_prop,
                 ed.dirty?" *":"");
             SDL_SetWindowTitle(win,t); acc_sim=acc_lay=acc_ren=0; acc_n=0; }
         else if(acc_n>=30){ char title[384]; double S=acc_sim/acc_n,L=acc_lay/acc_n,R=acc_ren/acc_n;

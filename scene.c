@@ -145,6 +145,19 @@ int scene_load(const char *path, Scene *sc) {
             } else { err = -2; break; }
             if (parse_poly_verts(&save, p) != 0) { err = -2; break; }
             sc->n_poly++;
+        } else if (!strcmp(key, "prop")) {
+            if (sc->n_prop >= SCENE_MAX_PROP) { err = -2; break; }
+            char *k = strtok_r(NULL, " \t", &save);
+            char *x = strtok_r(NULL, " \t", &save);
+            char *y = strtok_r(NULL, " \t", &save);
+            char *r = strtok_r(NULL, " \t", &save);   /* rotation optional, default 0 */
+            if (!k || !x || !y) { err = -2; break; }
+            SceneProp *pr = &sc->prop[sc->n_prop];
+            strncpy(pr->key, k, SCENE_PROP_KEY_LEN - 1);
+            pr->key[SCENE_PROP_KEY_LEN - 1] = '\0';
+            pr->x = (float)atof(x); pr->y = (float)atof(y);
+            pr->rot = r ? (float)atof(r) : 0.0f;
+            sc->n_prop++;
         } else {
             err = -2;                              /* unknown directive */
         }
@@ -189,6 +202,9 @@ int scene_save(const char *path, const Scene *sc) {
             fprintf(f, " %g %g", (double)p->vx[v], (double)p->vy[v]);
         fputc('\n', f);
     }
+    for (int k = 0; k < sc->n_prop; k++)
+        fprintf(f, "prop %s %g %g %g\n", sc->prop[k].key, (double)sc->prop[k].x,
+                (double)sc->prop[k].y, (double)sc->prop[k].rot);
     int bad = ferror(f);
     fclose(f);
     return bad ? -1 : 0;

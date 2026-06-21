@@ -20,6 +20,7 @@ test_terrain
 test_pick
 test_editor
 test_breakthrough
+test_props
 bench_sim
 *.o
 frames/

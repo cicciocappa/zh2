@@ -1,0 +1,10 @@
+# horde prop catalog — pure decor (EDITOR_DESIGN §10 stadio 5b)
+# Render + terrain seating only: NO sim/nav effect. See props.h for the format.
+# mesh "-" (or a missing .glb) -> procedural placeholder drawn by the host.
+#
+# key    mesh                      scale  label
+bench    -                         1.0    Bench
+sign     -                         1.0    Sign
+cart     -                         1.2    Cart
+bin      -                         0.7    Bin
+crate    -                         0.8    Crate

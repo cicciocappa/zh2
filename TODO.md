@@ -91,6 +91,14 @@ poi scala, poi gioco.
         lanciato a cavallo del gradino, agenti in aria con ombre a terra
         staccate/ridotte, rientro a quota. MANCA: sorgente terreno
         urbana/procedurale (§9 fase 2).
+  - [x] **Statici + decoro (EDITOR_DESIGN §10, stadi 1-5)**: terreno con buchi
+        (ZHM2) → muri tier palazzo; glb#2 mesh visiva statici; barricate tier
+        distruttibili; veto piazzamento sopra gli statici. **Stadio 5b FATTO**
+        (22 giu 2026): prop di DECORO puro (render-only, no SDF/no nav) —
+        entità `prop <key> x y rot` (`scene.c`), catalogo testo `props/catalog.txt`
+        (`props.h/.c`, `test_props`), render placeholder per-istanza seatato su
+        `terrain_z` (`vat_horde`), tool editor `ED_PROP` (tasto 8, `[ ]` tipo,
+        `,`/`.` rota). RESTA (con l'arte): un `.glb` per tipo nel catalogo.
 
 ## Subito (prossima sessione)
 

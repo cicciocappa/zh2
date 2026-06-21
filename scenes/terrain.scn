@@ -22,3 +22,12 @@ poly 6.0 solid   0 33  30 33  30 37   0 37
 poly 6.0 solid  40 33  62 33  62 37  40 37
 poly 6.0 solid  72 33 100 33 100 37  72 37
 poly 5.0 solid  50 14  60 22  50 30  40 22
+
+# pure-decor props (stadio 5b): render-only, seated on the terrain elevation.
+# key x y rot(deg) — placeholder geometry until the per-type art lands.
+prop bench 20 48 0
+prop bench 28 48 0
+prop sign  24 44 90
+prop cart  34 50 30
+prop bin   38 46 0
+prop crate 30 52 45

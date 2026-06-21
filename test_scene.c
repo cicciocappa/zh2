@@ -32,6 +32,9 @@ static int roundtrip(void) {
         .vx = { 12, 18, 18, 12 }, .vy = { 6, 6, 12, 12 } };
     a.poly[1] = (ScenePoly){ .nverts = 3, .height = 0.4f, .solid = false, .cost = 6.0f,
         .vx = { 20, 26, 23 }, .vy = { 4, 4, 9 } };
+    a.n_prop = 2;
+    strcpy(a.prop[0].key, "bench"); a.prop[0].x = 7.5f; a.prop[0].y = 12.0f; a.prop[0].rot = 90.0f;
+    strcpy(a.prop[1].key, "sign");  a.prop[1].x = 3.0f; a.prop[1].y = 4.5f;  a.prop[1].rot = 0.0f;
 
     int ok = scene_save(TMP, &a) == 0;
     Scene b;
@@ -48,8 +51,12 @@ static int roundtrip(void) {
     ok = ok && !b.poly[1].solid && fabsf(b.poly[1].cost - 6.0f) < 1e-6f &&
          b.poly[1].nverts == 3;
     ok = ok && strcmp(b.terrain, "meshes/level1.glb") == 0;
-    printf("roundtrip: %dx%d set=%d poly=%d goal=%d | %s\n",
-           b.gw, b.gh, b.n_set, b.n_poly, b.n_goal, ok ? "ok" : "BAD");
+    ok = ok && b.n_prop == 2 &&
+         strcmp(b.prop[0].key, "bench") == 0 && fabsf(b.prop[0].x - 7.5f) < 1e-6f &&
+         fabsf(b.prop[0].rot - 90.0f) < 1e-6f &&
+         strcmp(b.prop[1].key, "sign") == 0 && fabsf(b.prop[1].y - 4.5f) < 1e-6f;
+    printf("roundtrip: %dx%d set=%d poly=%d goal=%d prop=%d | %s\n",
+           b.gw, b.gh, b.n_set, b.n_poly, b.n_goal, b.n_prop, ok ? "ok" : "BAD");
     scene_free(&a); scene_free(&b);
     return ok;
 }
@@ -65,7 +72,8 @@ static int parse_and_instantiate(void) {
           "spawn 1 2 1 1\n"
           "cost 2 2 2 2 5.0\n"
           "pack 4 1 2 2\n"
-          "poly 4.0 solid  3 0 5 0 5 1 3 1\n",   /* wall band: cells (3,0),(4,0) */
+          "poly 4.0 solid  3 0 5 0 5 1 3 1\n"     /* wall band: cells (3,0),(4,0) */
+          "prop cart 6 3 45\n",                   /* pure decor: ignored by sim */
           f);
     fclose(f);
 
@@ -73,6 +81,7 @@ static int parse_and_instantiate(void) {
     int ok = scene_load(TMP, &sc) == 0;
     ok = ok && sc.gw == 10 && sc.gh == 6 && fabsf(sc.cell - 1.0f) < 1e-6f;
     ok = ok && sc.n_spawn == 1 && fabsf(sc.spawn[0].x - 1.0f) < 1e-6f;
+    ok = ok && sc.n_prop == 1 && strcmp(sc.prop[0].key, "cart") == 0;
     SimP *s = ok ? scene_instantiate(&sc, 256) : NULL;
     ok = ok && s != NULL;
     if (ok) {
