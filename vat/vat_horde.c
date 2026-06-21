@@ -451,6 +451,12 @@ int main(int argc, char **argv){
             printf("terreno: %s + %s (%dx%d @ %.1f px/m)\n",terrain_glb,zhm,gTer.w,gTer.h,(double)gTer.px_per_m); }
         else printf("terreno: %s ma .zhm mancante (%s) -> sprite su z=0\n",terrain_glb,zhm);
     }
+    // glb#2: mesh visiva degli statici indistruttibili (palazzi/rocce, §9-§10).
+    // Solo render (sempre, play+edit), zero effetto sim: il footprint nav è già
+    // nei buchi del terreno (glb#1). Path da VAT_HORDE_STATICS o dalla scena.
+    char statics_glb[256]=""; const char *se=getenv("VAT_HORDE_STATICS");
+    if(se) snprintf(statics_glb,sizeof statics_glb,"%s",se);
+    else if(sc.statics[0]) snprintf(statics_glb,sizeof statics_glb,"%s",sc.statics);
     // Modalità benchmark: VAT_HORDE_FILL=N prefilla il campo; VAT_HORDE_BENCH=
     // "warmup,measure" scalda poi misura medie sim/render su `measure` step.
     int fillN = getenv("VAT_HORDE_FILL") ? atoi(getenv("VAT_HORDE_FILL")) : 0;
@@ -511,6 +517,16 @@ int main(int argc, char **argv){
         uHasGnd=glGetUniformLocation(progGnd,"uHasTex");
         uColGnd=glGetUniformLocation(progGnd,"uColor");
         glUniform1i(glGetUniformLocation(progGnd,"uTex"),0); }
+    // glb#2 statici: stessa mesh/shader del terreno, disegnato sempre. Se manca
+    // il terreno (no progGnd) compiliamo comunque lo shader per disegnarlo.
+    Ground gStat; int staticsOn=0;
+    if(statics_glb[0] && load_ground_glb(statics_glb,&gStat)==0){ staticsOn=1;
+        if(!progGnd){ progGnd=vg_shader("vat/ground.vs","vat/ground.fs");
+            uVPgnd=glGetUniformLocation(progGnd,"uVP");
+            uHasGnd=glGetUniformLocation(progGnd,"uHasTex");
+            uColGnd=glGetUniformLocation(progGnd,"uColor");
+            glUniform1i(glGetUniformLocation(progGnd,"uTex"),0); }
+        printf("statici: %s (%d idx)%s\n",statics_glb,gStat.nidx,gStat.hasTex?" texturizzato":""); }
 
     // --- ombre a terra: un disco unitario instanziato sotto ogni agente alla
     // quota del terreno (blob morbido, blend). Ground reale (terrain_z) anche
@@ -807,6 +823,12 @@ int main(int argc, char **argv){
             glUniform1i(uHasGnd, useTex && gnd.hasTex); glUniform3f(uColGnd,0.30f,0.32f,0.26f);
             glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,gnd.tex);
             glBindVertexArray(gnd.vao);glDrawElements(GL_TRIANGLES,gnd.nidx,GL_UNSIGNED_INT,0); }
+        // glb#2 statici (palazzi/rocce): sempre, stesso shader. Tinta neutra se
+        // privo di texture (placeholder flat finché non è texturizzato).
+        if(staticsOn){ glUseProgram(progGnd);glUniformMatrix4fv(uVPgnd,1,GL_FALSE,vp);
+            glUniform1i(uHasGnd, useTex && gStat.hasTex); glUniform3f(uColGnd,0.45f,0.45f,0.48f);
+            glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,gStat.tex);
+            glBindVertexArray(gStat.vao);glDrawElements(GL_TRIANGLES,gStat.nidx,GL_UNSIGNED_INT,0); }
 
         // ostacoli + suolo (statici)
         glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);

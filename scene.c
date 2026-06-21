@@ -99,6 +99,11 @@ int scene_load(const char *path, Scene *sc) {
             if (!v) err = -2;
             else { strncpy(sc->terrain, v, sizeof sc->terrain - 1);
                    sc->terrain[sizeof sc->terrain - 1] = '\0'; }
+        } else if (!strcmp(key, "statics")) {
+            char *v = strtok_r(NULL, " \t", &save);
+            if (!v) err = -2;
+            else { strncpy(sc->statics, v, sizeof sc->statics - 1);
+                   sc->statics[sizeof sc->statics - 1] = '\0'; }
         } else if (!strcmp(key, "set")) {
             char *n = strtok_r(NULL, " \t", &save), *v = strtok_r(NULL, " \t", &save);
             if (n && v && param_find(n) && sc->n_set < SCENE_MAX_SET) {
@@ -161,6 +166,7 @@ int scene_save(const char *path, const Scene *sc) {
     fprintf(f, "cell %g\n", (double)sc->cell);
     fprintf(f, "world %g %g\n", (double)sc->world_w, (double)sc->world_h);
     if (sc->terrain[0]) fprintf(f, "terrain %s\n", sc->terrain);
+    if (sc->statics[0]) fprintf(f, "statics %s\n", sc->statics);
     for (int k = 0; k < sc->n_set; k++)
         fprintf(f, "set %s %g\n", sc->set[k].name, (double)sc->set[k].value);
     for (int k = 0; k < sc->n_goal; k++)
