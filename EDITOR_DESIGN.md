@@ -91,10 +91,11 @@ exit 12 40 2 2  rate 5 ramp 0 delay 180 pool 300
 turret 50 30  range 45 arc -1 1 heavy 0 pierce 1
 
 # --- terreno mesh + props (NUOVO, §9-§10) ---
-terrain meshes/level1.glb            # mesh suolo texturizzata; .zhm baked a fianco
-prop bus      40 22 90              # istanza di catalogo: tipo x y rot(gradi)
+terrain meshes/level1.glb            # glb#1: suolo CON buchi; .zhm/ZHM2 baked a fianco
+statics meshes/level1_statics.glb    # glb#2: mesh visiva statici indistruttibili (palazzi/rocce)
+prop bus      40 22 90              # istanza di catalogo (dinamico): tipo x y rot(gradi)
 prop edicola  55 30 0
-prop palazzo  20 60 0               # footprint/hp/flag/attrito vengono dal catalogo
+# i palazzi/rocce NON sono prop: stanno in glb#1 (buco) + glb#2 (visiva), vedi §9-§10
 ```
 
 ### Cosa guadagna la struct `Scene`
@@ -306,6 +307,57 @@ Bake di un terrain con un gradino (marciapiede + scalinata) → caricato in
 `vat_horde` via cgltf → `SANDBOX_SHOT` headless con sprite che **seguono la
 quota**. Test della math di sampling separato dal render.
 
+### Statici indistruttibili vs distruttibili: due glb + maschera buchi (DECISO, 21 giu 2026)
+
+Tutto lo scenario **statico indistruttibile** (palazzi, rocce) si modella in
+**Blender**, non nell'editor; nell'editor si aggiunge SOLO il **dinamico** (muri/
+barriere distruttibili, autobus, decoro). Il problema da risolvere: passare alla
+nav i footprint invalicabili **senza perdere la quota del terreno dove servirà**.
+
+**Distinzione chiave (motiva tutta la pipeline).** Dal punto di vista dell'SDF
+muri e palazzi sono **identici** (planare, dal solo `solid[]`). Ma:
+- di un **palazzo/roccia** la quota *sotto* non serve mai → è permanente, nessuno
+  ci cammina;
+- di un **muro distruttibile** la quota sotto **serve** → quando crolla gli zombie
+  transitano lì e vanno posati su quella quota.
+
+→ **i palazzi sono BUCHI nel terreno** (quota sotto irrilevante); **i muri NO**
+(stanno su terreno intatto, quota nota), e si piazzano nell'editor.
+
+**Due glb per livello (stessa scena Blender, due collection → allineamento
+automatico):**
+1. **glb #1 — terreno (CON buchi)**: `terrain_bake.py` lo raycasta →
+   **heightmap** `Z(x,y)` **+ maschera dei buchi**. Il raycast già distingue
+   colpito/mancato (array `valid[]`/`misses`); oggi i buchi vengono backfillati,
+   da estendere per **emetterli**: bump `.zhm`→**`ZHM2`** (W×H byte-mask in coda,
+   loader retro-compatibile con `ZHM1`). I buchi = footprint indistruttibili →
+   a `scene_instantiate`: cella **`solid` + tier `palazzo`** (alto) del costo-muro
+   per-cella (`simp_set_wall_cost`, già nel core), **permanente**. Z sotto = 0/
+   irrilevante (coperta dalla mesh visiva).
+2. **glb #2 — mesh visiva degli statici**: solo **render + riferimento
+   nell'editor** (mostra dove sono i palazzi mentre piazzi il resto). Porta la sua
+   Z da Blender (**self-seated**), **non** viene raycastata.
+
+**Elementi dell'editor — entrambe le famiglie su terreno intatto (Z nota da
+glb#1):**
+- **barriere SDF** (muri, autobus, recinzioni): footprint `solid`/`cost`, tier
+  `barricata` (basso, vedi `SIMULAZIONE.md §I.4`), distruttibili o no. Al crollo
+  `simp_set_wall(false)` → reroute, gli zombie passano e si posano sulla **Z nota**;
+- **decoro puro** (cartelli, carretti, tavolini, cassonetti): niente SDF, niente
+  nav, solo render + seating su `terrain_z`.
+
+**Invariante che fa quadrare tutto:** il terreno ha Z **ignota SOLO nei buchi di
+glb#1**; *tutto* ciò che si piazza nell'editor sta su suolo a **quota nota** — ed
+è esattamente la proprietà che permette ai distruttibili di reinstradare
+correttamente al crollo.
+
+**Da decidere all'implementazione:** regola di downsample `.zhm`
+(~4 px/m = 0.25 m) → cella nav (0.5 m): cella = muro se il centro è buco, o se
+≥metà/almeno-un campione lo è (conservativo per non far sfiorare gli angoli);
+allineamento origine `.zhm` (AABB min) = origine `world` della scena.
+**Limite noto:** raycast mono-strato → niente passaggi SOTTO (archi/ponti):
+il primo colpo ombra il suolo sotto. Va bene per palazzi/rocce solidi.
+
 ### Stato (giugno 2026)
 - **Slice 1 FATTO** — formato `.zhm` + `terrain.h/.c` (`terrain_z` bilineare,
   zero deps) + `gfx/terrain_bake.py` (raycast Blender → `.zhm`, backfill bordi).
@@ -343,8 +395,17 @@ quota**. Test della math di sampling separato dal render.
 
 ## 10. Catalogo prop: tre assi ortogonali
 
-Un **prop** è un oggetto di scenario (palazzo, edicola, autobus, roccia, albero,
-semaforo, segmento di muro/recinzione…). Modello = **catalogo** (il *tipo*,
+> **AGGIORNATO (21 giu 2026): gli statici indistruttibili NON sono più prop
+> dell'editor.** Palazzi e rocce si modellano in **Blender** (vedi §9: glb#1
+> buco → footprint invalicabile tier `palazzo`; glb#2 mesh visiva). Il catalogo
+> prop dell'editor si restringe al **dinamico**: barriere SDF (muri/autobus/
+> recinzioni, tier `barricata`, distruttibili o no) + decoro puro (no SDF/no nav).
+> Tutti i prop editor stanno su **terreno intatto a quota nota** (§9 invariante).
+> Gli assi qui sotto restano validi per i prop editor; la riga "Edificio
+> (palazzo)" è spostata in §9 (Blender).
+
+Un **prop** è un oggetto di scenario dinamico (autobus, edicola, semaforo,
+segmento di muro/recinzione, carretto…). Modello = **catalogo** (il *tipo*,
 autorato una volta) + **istanze** nel `.scn` (`prop <tipo> x y rot`). Il catalogo
 NON sta nel core: è dati del gioco/editor; `scene.c` parsa solo le istanze e
 rasterizza il footprint (come per i `poly`), il layer di gioco agisce hp/attrito.
@@ -375,8 +436,11 @@ imprevedibilità (fronte che cambia da solo). **Non fondamentale** — implement
 dopo il resto del catalogo, o ignorabile.
 
 ### Categorie derivate (combinazioni degli assi)
-- **Edificio** (palazzo): `solid` + hp altissimo (≈ indistruttibile) o `core`.
-- **Barricata/muro**: `solid` + hp medio + stati di danno (mesh rovinate).
+- **Edificio/roccia** (statico indistruttibile): **NON un prop editor** → Blender,
+  glb#1 buco (tier `palazzo`) + glb#2 visiva (§9).
+- **Barricata/muro** (distruttibile): `solid` + tier `barricata` + hp medio +
+  stati di danno (mesh rovinate). Su terreno intatto → al crollo reroute + zombie
+  posati sulla quota nota.
 - **Light prop** (tavolino, carretto hotdog): footprint `none`, **despawn al
   contatto** col fronte (flavour, ~zero nav).
 - **Draggable** (cassonetto, auto): asse draggable; footprint dinamico mentre si
