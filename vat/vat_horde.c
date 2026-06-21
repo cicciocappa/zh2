@@ -109,6 +109,8 @@ typedef struct { GLuint vao, texP, texN, texD; int ni, hasTex; const VatMeta *M;
 // heightmap .zhm per posare sprite/strutture sulla quota. Zero effetto sim.
 static Terrain gTer; static int gTerOn = 0;
 static float ter_z(float x, float y){ return gTerOn ? terrain_z(&gTer, x, y) : 0.0f; }
+// veto editor (§10): non si piazza nulla su una cella-statico (buco palazzo).
+static int ter_blocked(float x, float y){ return gTerOn && terrain_hole(&gTer, x, y); }
 
 typedef struct { GLuint vao, vbo, ebo, tex; int nidx, hasTex; } Ground;
 
@@ -691,7 +693,8 @@ int main(int argc, char **argv){
                 float wx=0,wy=0; int hit=pick_y0(vp,mxf,myf,SW,SH,&wx,&wy);
                 if(hit){ ed.curx=wx; ed.cury=wy; ed.have_cursor=1; }
                 if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN && hit){
-                    if(e.button.button==SDL_BUTTON_LEFT){
+                    // veto: niente piazzamento sopra uno statico (palazzo/roccia)
+                    if(e.button.button==SDL_BUTTON_LEFT && !ter_blocked(wx,wy)){
                         if(ed.tool==ED_GOAL||ed.tool==ED_SPAWN||ed.tool==ED_COST||ed.tool==ED_PACK){
                             ed.dragging=1; ed.ax=ed.bx=wx; ed.ay=ed.by=wy;
                         } else if(ed.tool==ED_WALL||ed.tool==ED_COSTPOLY){
@@ -856,6 +859,9 @@ int main(int argc, char **argv){
 
         // overlay editor (rect/poly-in-corso/cursore) sopra il terreno, flat shader.
         if(ed.active){ int ov=ed_overlay(&sc,&ed,edovl,EDOVL_MAXV);
+            // cursore rosso sopra uno statico: feedback del veto di piazzamento
+            if(ed.have_cursor && ter_blocked(ed.curx,ed.cury) && ov+6<=EDOVL_MAXV)
+                ov=ed_push_marker(edovl,ov,ed.curx,ed.cury,0.7f, 0.95f,0.15f,0.15f);
             if(ov){ glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
                 glBindVertexArray(ovVao);glBindBuffer(GL_ARRAY_BUFFER,ovVbo);
                 glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)ov*9*sizeof(float),edovl);
