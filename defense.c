@@ -239,11 +239,21 @@ int def_add_structure(DefGame *g, float hp_max, int is_core) {
     return id;
 }
 
+/* Destructible structures (player barricades / base) sit at the BARRICATA tier
+ * of the per-cell breakthrough cost (SIMULAZIONE.md §I.4): the base wall toll,
+ * deliberately CHEAPER than the palazzo tier the terrain holes use (10x, see
+ * vat_horde) so the horde prefers sfondare these over pressing indestructible
+ * buildings. 1.0 = the tuning knob (raise to make barricades less attractive
+ * than open detours, lower for more). Equals the default, so applying it is
+ * intent, not a behaviour change. */
+#define BARRICADE_WALL_TIER 1.0f
+
 void def_struct_cell(DefGame *g, int id, int cx, int cy) {
     if (id < 0 || id >= g->nstructs) return;
     if (cx < 0 || cy < 0 || cx >= g->gw || cy >= g->gh) return;
     g->cell_struct[cy * g->gw + cx] = (int16_t)id;
     simp_set_wall(g->s, cx, cy, true);
+    simp_set_wall_cost(g->s, cx, cy, BARRICADE_WALL_TIER * simp_wall_base_cost());
 }
 
 /* HP hit zero: free the structure's cells and recommit the nav so the horde
