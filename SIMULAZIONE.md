@@ -123,7 +123,21 @@ muri) → gli agenti premono contro la parete → il PBD li blocca lì → un *s
 (§II.10) misura chi preme e dove → il gioco assegna HP alle strutture e le fa
 crollare → al crollo la rotta si ricalcola e l'orda dilaga.
 
-> **PIANIFICATO: costo di sfondamento PER-CELLA (non `WALL_ENTER` uniforme).**
+> **IMPLEMENTATO (giugno 2026): costo di sfondamento PER-CELLA.** Aggiunto al
+> core `wall_cost[gw*gh]` (default `WALL_ENTER` → comportamento identico a prima),
+> usato nel drain del Dijkstra al posto della costante: l'arco verso una cella
+> solida paga `wall_cost[j]` (e il corner-cut diagonale il pedaggio del corner
+> solido più caro). API: `simp_set_wall_cost(s,cx,cy,cost)` (clamp ≥0, marca nav
+> dirty), `simp_wall_base_cost()` (= baseline su cui il gioco costruisce i tier:
+> palazzo = N× base, barricata = 1× base), `simp_wall_cost_arr()` per overlay/
+> editor. La collisione SDF resta indipendente (entrambi i tier sono solidi).
+> `test_breakthrough.c`: muro sigillato, banda barricata (tier basso) fuori
+> centro → l'orda devia e ci concentra il 53% dell'assedio; col tier uniforme la
+> stessa banda prende ~0% (l'orda assedia ma sparsa). Determinismo + no-NaN.
+> Resta da AGGANCIARE i tier lato gioco: palazzi (buchi Blender/heightmap) =
+> tier alto, barricate distruttibili (editor/`defense.c`) = tier basso.
+>
+> **PIANIFICATO (testo originale): costo di sfondamento PER-CELLA (non `WALL_ENTER` uniforme).**
 > Oggi ogni muro ha lo *stesso* costo d'ingresso (`WALL_ENTER` costante), quindi
 > la Dijkstra non distingue un palazzo da una barricata: l'orda preme il muro
 > geometricamente più vicino sul percorso — e *potrebbe* premere un palazzo

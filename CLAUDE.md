@@ -26,7 +26,12 @@ Il progetto ha DUE modelli di simulazione complementari:
      e smussato (1 passata), campionato bilineare dagli agenti. Lazy via `nav_dirty`.
      I muri sono attraversabili a costo enorme (`WALL_ENTER`, come nel core continuo):
      le rotte aperte vincono sempre, ma un goal completamente murato continua ad
-     attrarre l'orda, che va a premere contro le mura (assedio).
+     attrarre l'orda, che va a premere contro le mura (assedio). Il costo
+     d'ingresso è PER-CELLA (`wall_cost[]`, default `WALL_ENTER`;
+     `simp_set_wall_cost`): tier alto = palazzo/roccia (l'orda devia via), tier
+     basso-ma-≫aperto = barricata (bersaglio d'assedio preferito). La collisione
+     SDF è indipendente: entrambi i tier sono solidi, il costo decide solo DOVE
+     si preme. Vedi `SIMULAZIONE.md` §I.4 e `test_breakthrough.c`.
      Gli archi sono pesati per cella destinazione (M3.5+3.6+3.7):
      `dist · clamp(1 + k_density·min(rho/rho_max,1) + k_jam·min(jam/rho_max,1)
      + cost_user, ≥0.2)`.
@@ -188,6 +193,9 @@ Il progetto ha DUE modelli di simulazione complementari:
   dentro `test_impulse.c`.
 - `test_types.c` / `test_density_route.c` / `test_jam.c` — verifica tipi +
   costo utente (M3.5), densità→costo (M3.6) e ingorgo→costo (M3.7).
+- `test_breakthrough.c` — verifica del costo di sfondamento PER-CELLA
+  (`simp_set_wall_cost`): l'orda concentra l'assedio sul tier barricata (basso)
+  invece dei palazzi (alto), 53% vs ~0% col tier uniforme.
 - `test_siege.c` — verifica del sensore d'assedio (`SIEGE_DESIGN.md`):
   selettività into-wall vs tangente + la meccanica completa lato gioco
   (attacchi discreti → crollo → reroute → drain).

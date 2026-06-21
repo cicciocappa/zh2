@@ -294,7 +294,14 @@ statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
 - [ ] Muri/strutture costruite dal giocatore (collisione già SDF: funziona oggi).
       Barricate runtime che chiudono le strade e instradano l'orda sotto le
       torrette. Richiede il **costo di sfondamento per-cella** (sotto).
-- [ ] **[CORE NAV] Costo di sfondamento PER-CELLA** (oggi `WALL_ENTER` è una
+- [x] **[CORE NAV] Costo di sfondamento PER-CELLA** — FATTO (2026-06-21):
+      `wall_cost[gw*gh]` (default `WALL_ENTER`), usato nel drain Dijkstra al posto
+      della costante; API `simp_set_wall_cost` / `simp_wall_base_cost` /
+      `simp_wall_cost_arr`; `test_breakthrough.c` (l'orda concentra l'assedio sul
+      tier barricata, 53% vs ~0% col tier uniforme). RESTA l'aggancio dei tier
+      lato gioco (palazzi da heightmap/Blender = tier alto, barricate editor =
+      tier basso). Testo originale del task qui sotto.
+      (oggi `WALL_ENTER` era una
       costante globale → tutti i muri allo stesso peso). Promuoverlo a campo
       per-cella per gerarchizzare i muri per appetibilità di sfondamento:
       `palazzo` altissimo ≫ `barricata` alto-ma-minore. La Dijkstra instrada la

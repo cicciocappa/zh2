@@ -157,6 +157,16 @@ int   simp_threads(const SimP *s);
 void  simp_set_wall(SimP *s, int cx, int cy, bool solid);
 void  simp_set_goal(SimP *s, int cx, int cy, bool goal);
 bool  simp_is_wall(const SimP *s, int cx, int cy);
+/* Per-cell wall breakthrough toll (Dijkstra entry cost for a solid cell),
+ * default simp_wall_base_cost(). The horde presses the CHEAPEST wall on the
+ * path, so a high tier (palazzo, rock) routes it AWAY while a lower tier
+ * (player barricade) becomes the preferred siege target — even on a detour.
+ * Only consulted when the cell is also solid; collision (SDF) is independent
+ * (both tiers physically block). Build tiers relative to simp_wall_base_cost
+ * (e.g. palazzo = 10x, barricade = 1x) and keep them >> open path lengths. */
+void  simp_set_wall_cost(SimP *s, int cx, int cy, float cost);
+float simp_wall_base_cost(void);                 /* the uniform default toll */
+const float *simp_wall_cost_arr(const SimP *s);  /* gw*gh, for overlays/editor */
 /* Force recompute of phi/flow/SDF now (otherwise done lazily on next step). */
 void  simp_terrain_commit(SimP *s);
 

@@ -47,6 +47,13 @@ struct SimP {
     float inv_cell;
     float world_w, world_h;
     uint8_t *solid;        /* gw*gh, 1 = wall */
+    float   *wall_cost;    /* gw*gh per-cell Dijkstra entry toll for wall cells;
+                              default WALL_ENTER. Higher = the horde routes AWAY
+                              and won't press here (palazzo/rock, indestructible);
+                              lower-but-still >> open routes = the preferred siege
+                              target (barricade). Only consulted when solid[i].
+                              Collision (SDF) is independent of this — both tiers
+                              are solid; this picks only WHERE the horde presses. */
     uint8_t *goal;         /* gw*gh, 1 = goal/drain cell */
     float   *phi;          /* cost-to-goal */
     float   *flow_x;       /* normalized direction field (0,0 in walls) */
@@ -260,10 +267,15 @@ static void nav_phi_drain(SimP *s, int budget) {
             if (nx < 0 || ny < 0 || nx >= s->gw || ny >= s->gh) continue;
             int j = ny * s->gw + nx;
             float nc = nd.c + DC[k] * s->cost_mult[j];
-            if (s->solid[j]) nc += WALL_ENTER;
-            /* diagonal corner-cutting through walls pays the wall toll too */
-            else if (k >= 4 && (s->solid[cy * s->gw + nx] || s->solid[ny * s->gw + cx]))
-                nc += WALL_ENTER;
+            if (s->solid[j]) nc += s->wall_cost[j];   /* per-cell breakthrough toll */
+            /* diagonal corner-cutting through walls pays the dearer corner's toll */
+            else if (k >= 4) {
+                int ca = cy * s->gw + nx, cb = ny * s->gw + cx;
+                float toll = 0.0f;
+                if (s->solid[ca]) toll = s->wall_cost[ca];
+                if (s->solid[cb] && s->wall_cost[cb] > toll) toll = s->wall_cost[cb];
+                nc += toll;
+            }
             if (nc < s->phi[j]) { s->phi[j] = nc; heap_push(&h, nc, j); }
         }
     }
@@ -523,6 +535,8 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
 
     const size_t n = (size_t)gw * gh;
     s->solid  = (uint8_t *)calloc(n, 1);
+    s->wall_cost = (float *)malloc(n * sizeof(float));
+    for (size_t i = 0; i < n; i++) s->wall_cost[i] = WALL_ENTER;
     s->goal   = (uint8_t *)calloc(n, 1);
     s->phi    = (float *)malloc(n * sizeof(float));
     s->flow_x = (float *)calloc(n, sizeof(float));
@@ -627,7 +641,7 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
 
 void simp_destroy(SimP *s) {
     if (!s) return;
-    free(s->solid); free(s->goal); free(s->phi);
+    free(s->solid); free(s->wall_cost); free(s->goal); free(s->phi);
     free(s->flow_x); free(s->flow_y); free(s->sdf); free(s->wall_near);
     free(s->cost_user); free(s->rho_raw); free(s->rho_s); free(s->cost_mult);
     free(s->jam_raw); free(s->jam_s);
@@ -692,6 +706,20 @@ void simp_clear_cost(SimP *s) {
     memset(s->cost_user, 0, (size_t)s->gw * s->gh * sizeof(float));
     s->cost_dirty = true;
 }
+
+/* Per-cell wall breakthrough toll (palazzo >> barricata). Only takes effect on
+ * cells that are also solid (simp_set_wall). Clamped to >= 0; the caller keeps
+ * it >> open path lengths (use simp_wall_base_cost as the reference tier).
+ * Marks nav dirty: phi is rebuilt with the new toll. */
+void simp_set_wall_cost(SimP *s, int cx, int cy, float cost) {
+    if (cx < 0 || cy < 0 || cx >= s->gw || cy >= s->gh) return;
+    s->wall_cost[cy * s->gw + cx] = cost < 0.0f ? 0.0f : cost;
+    s->nav_dirty = true;
+}
+/* Default/uniform wall toll: the game builds its palazzo/barricata tiers
+ * relative to this (e.g. palazzo = 10x, barricata = 1x). */
+float        simp_wall_base_cost(void)         { return WALL_ENTER; }
+const float *simp_wall_cost_arr(const SimP *s) { return s->wall_cost; }
 
 const float *simp_user_cost(const SimP *s)   { return s->cost_user; }
 const float *simp_density_arr(const SimP *s) { return s->rho_s; }

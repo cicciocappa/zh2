@@ -34,10 +34,14 @@ endif
 
 all: test_particles test_impulse test_dormant test_handles test_query test_corpses \
      test_types test_density_route test_jam test_scene test_siege test_turret \
-     test_defense test_base test_director test_terrain test_pick test_editor
+     test_defense test_base test_director test_terrain test_pick test_editor \
+     test_breakthrough
 
 test_particles: test_particles.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_particles.c sim_particles.c $(LDLIBS)
+
+test_breakthrough: test_breakthrough.c sim_particles.c sim_particles.h
+	$(CC) $(CFLAGS) -o $@ test_breakthrough.c sim_particles.c $(LDLIBS)
 
 test_impulse: test_impulse.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_impulse.c sim_particles.c $(LDLIBS)
@@ -136,11 +140,12 @@ test: all
 	./test_terrain
 	./test_pick
 	./test_editor
+	./test_breakthrough
 
 clean:
 	rm -rf test_particles test_impulse test_dormant test_handles test_query \
 	       test_corpses test_types test_density_route test_jam test_scene \
-	       test_siege test_turret test_defense test_base test_director test_terrain bench_sim test_pick test_editor \
+	       test_siege test_turret test_defense test_base test_director test_terrain bench_sim test_pick test_editor test_breakthrough \
 	       sandbox sprite_view vat_view vat_horde frames *.exe vat/*.o
 
 .PHONY: all test clean
