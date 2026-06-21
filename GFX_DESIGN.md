@@ -130,6 +130,63 @@ Nota di design: il tono comico ha una funzione tecnica — copre gli artefatti
 di simulazione. Lo zombie espulso a velocità ridicola è un highlight, non un
 bug report.
 
+### 5.1 Campo cadaveri visivo: height-decal + impostor cross-fade (parere, giu 2026)
+
+Ragionamento su *come* renderizzare i mucchi di cadaveri di massa (decine di
+migliaia, visti da lontano, poche decine di pixel a schermo). Tecnica valutata:
+**"dynamic texture baking"** — alla morte si timbra sul terreno la **height-map**
+in scala di grigi del cadavere visto dall'alto (non la silhouette piatta), e uno
+shader ricalcola la **normal** dalla height (Sobel/`dFdx`). L'accumulo a mucchio si
+ottiene **sommando le height** con **compressione** dell'esistente (×0.7 prima di
+sommare) + **decay** nel tempo + bordi netti dello stamp. È esattamente §5.2 sopra.
+
+**Verdetto: tecnica sana, è già la nostra roadmap. Quattro precisazioni.**
+
+1. **Il discriminante è la CAMERA.** Funziona "invisibile" SOLO a camera ad angolo
+   fisso. Se la camera orbita, i cadaveri diventano "tatuaggi spalmati" senza
+   volume né silhouette. Coerente con la decisione §4 (ortografico 3/4 WC2,
+   *niente prospettiva*, 16 direzioni, viewport scorrevole = **angolo fisso**):
+   la tecnica è perfetta per il gioco. ⚠️ La camera libera di `vat_horde`
+   (pan/rotate/zoom) è un **comfort da editor/debug**, NON il regime di gioco —
+   da mettere nero su bianco: *il gioco gira a camera bloccata sull'iso*.
+
+2. **Si salda col pool decedenti (M6) via Impostor cross-fade.** Il pool
+   `vat_layer_die` (clip morte in 3D vero, regge a ogni angolo, "vende"
+   l'uccisione) È GIÀ la fase 3D dell'impostor. A TTL scaduto, invece di sparire,
+   il decedente **stampa la sua height sul terreno e svanisce** (fade-out 3D ⇄
+   fade-in decal). Non sono due sistemi: sono le due metà. Chiude il "RESTA:
+   fondere death-clip ↔ cadavere fisico" del TODO M6.
+
+3. **Due concetti di cadavere, distinti (già così).** (a) **Campo visivo di massa**
+   = height-decal, NIENTE collisione, il "carpet of bodies" lontano. (b)
+   **Cadaveri-ostacolo M3.3** (`simp_corpse_*`) = pochi, collisione vera,
+   barricano i varchi (§5.3 + `CORPSE_DESIGN.md`); questi vogliono un **blob
+   rialzato** (mesh o height marcata) perché il giocatore deve *leggere* la
+   barricata. Il campo decal NON fa collisione: responsabilità separate.
+
+4. **80/20: parti dal colore, aggiungi l'height solo per i mucchi.** A poche
+   decine di pixel, parallax/displacement/SSS sono sprecati: l'unica cosa che
+   guadagna è height→normal, e SOLO perché vende il **rilievo del mucchio** che
+   cresce. Se i corpi sono un tappeto per lo più piatto, un **decal di solo
+   colore già pre-ombreggiato** (AO/luce bakati nello sprite dall'alto) nell'
+   albedo del terreno legge benissimo senza RT di height né ricalcolo normali.
+   Aggiungere height+normali-da-Sobel **solo** quando l'accumulo a mucchio è una
+   feature voluta e non si legge col colore.
+
+**Trappole d'implementazione (C + OpenGL, non Three.js).**
+- La compressione "×0.7 esistente poi somma" è **read-modify-write**: non un blend
+  additivo (sa solo sommare) → **ping-pong di due RT** o `imageLoad/imageStore`
+  (GL 4.3, che serve già per i compute di M8).
+- **Ricalcola le normali solo sulla regione sporcata** da una morte (pochi pixel),
+  NON a schermo intero ogni frame: un Sobel sulla height al momento dello stamp.
+- **Evita il clamp→blob:** compressione, oppure height in RT a più precisione
+  (R16F) tonemappata in vista. Senza, dopo 3-4 corpi è la "collina di carne".
+- **Chunking obbligatorio** (mondi fino a 512×384 m): height RT per chunk a
+  ~4-8 px/m.
+
+In una riga: idea giusta, già in §5.2, si salda pulita col pool decedenti via
+impostor; la abilita una sola decisione — **camera di gioco bloccata sull'iso**.
+
 ## 6. Asset ambientali e muri obliqui
 
 Decisione: **doppio regime**, che scioglie il dilemma griglia-vs-obliquo.
