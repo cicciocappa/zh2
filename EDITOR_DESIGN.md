@@ -358,6 +358,25 @@ allineamento origine `.zhm` (AABB min) = origine `world` della scena.
 **Limite noto:** raycast mono-strato → niente passaggi SOTTO (archi/ponti):
 il primo colpo ombra il suolo sotto. Va bene per palazzi/rocce solidi.
 
+**Stato implementazione (21 giu 2026, branch `opus`):**
+- **Stadio 1 FATTO** — `terrain_bake.py` emette la maschera buchi; `.zhm`→`ZHM2`;
+  `terrain.h/.c` carica/salva + `terrain_hole`; `test_terrain` esteso.
+- **Stadio 2 FATTO** — `terrain_each_hole_cell` (callback, terrain.c disaccoppiato
+  dal core) + `vat_horde build_world`: buchi → `set_wall` + tier palazzo (10×)
+  prima di prefill/base. Verificato (quadrato vuoto nella folla).
+- **Stadio 3 FATTO** — `Scene.statics` (glb#2) parse/save; `vat_horde` lo carica
+  col loader/shader del terreno e lo disegna SEMPRE. Verificato (edificio sul buco).
+- **Stadio 4 FATTO** — tier barricata esplicito su `def_struct_cell`
+  (`BARRICADE_WALL_TIER`=1× base ≪ palazzo). Prerequisito core (`simp_set_wall_cost`)
+  già fatto (commit e34d143, `test_breakthrough`).
+- **Stadio 5a FATTO** — veto piazzamento editor sopra uno statico (`ter_blocked`,
+  cursore rosso).
+- **Stadio 5b DA FARE** — prop di DECORO puro (cartelli/carretti/tavolini/
+  cassonetti): no SDF/no nav, render-only seatati su `terrain_z`. Richiede:
+  entità `prop <tipo> x y rot` in `scene.c`, un CATALOGO (tipo→mesh, dati
+  gioco/editor), render per-istanza, tool editor con scelta tipo. È un
+  sottosistema a sé (decisione aperta: formato catalogo + approccio render).
+
 ### Stato (giugno 2026)
 - **Slice 1 FATTO** — formato `.zhm` + `terrain.h/.c` (`terrain_z` bilineare,
   zero deps) + `gfx/terrain_bake.py` (raycast Blender → `.zhm`, backfill bordi).
