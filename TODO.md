@@ -333,10 +333,15 @@ statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
       in `SimPParams` (default on). `test_corpse_pile` PASS (pivot: pressione
       barricata 0→11 jam→114 cadaveri; decay→non permanenza; clear riapre il
       varco; determinismo + no-NaN). `test_jam` pinna `k_corpse=0` per isolarsi.
-      RESTA (sotto-meccaniche separate, fuori da questa fetta): **massa finita**
-      §3 (cedimento "rallentano ma non fermano", romperebbe `test_corpses`; il
-      packing è già cablato ma DORMIENTE finché la massa è infinita), **tabella
-      armi** §6 (`defense.c`: chi PRODUCE vs chi RIMUOVE cadaveri), overlay
+      **MASSA FINITA §3 FATTA** (2026-06-23): `corpse_weight` (unità walker,
+      default 40, `<=0`=sigillo infinito legacy) → `invm=1/(weight·r0²)`, l'orda
+      shova la pila e sfonda ("rallentano ma non fermano"); posizioni spinte
+      riscritte nel pool (step 3b), coppie cadavere-cadavere saltate.
+      `test_corpses` aggiornato (sigillo infinito vs leak §3, drain 0 vs 44 su
+      164 aperto). I test col tappo idealizzato (`test_jam`, `test_corpse_pile`)
+      pinnano `corpse_weight=0`. RESTA: scaling `corpse_pack`→`invm` (cedimento
+      progressivo "più pestati→più cedevoli"; oggi il pack agisce solo sul costo
+      nav), **tabella armi** §6 (`defense.c`: chi PRODUCE vs chi RIMUOVE), overlay
       `corpse_height` in `vat_horde`. **RAMPA §4 TAGLIATA** (decisione 23 giu
       2026): due vettori di sconfitta sullo stesso muro = troppo carico di
       leggibilità, e l'anti-degenere è già coperto dal reroute + decay; lo stallo

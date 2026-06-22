@@ -80,13 +80,17 @@ Il progetto ha DUE modelli di simulazione complementari:
      l'agente finisce nel buffer `simp_landed` come HANDLE (drain-safe), per
      il danno da caduta. Lancio con `simp_apply_impulse_ex(..., up_ratio)`.
      Il drain vale anche in volo (semplificazione annotata).
-   - **Cadaveri** (M3.3): dischi statici a massa infinita nella stessa griglia
+   - **Cadaveri** (M3.3 + §3): dischi nella stessa griglia di collisione
      (`simp_corpse_add`, pool fisso 4096, TTL; pieno = rimpiazza il più vicino
      a scadenza). Implementati come "ghost" appesi in coda agli agenti negli
-     array SoA prima del binning, con `invm = 0`: il kernel PBD non ha casi
-     speciali (solo guardia coppia ghost-ghost). Bloccano `simp_free_at`,
-     invisibili a query e impulsi, MAI marcati nel nav grid: la deviazione
-     del flusso attorno ai mucchi emerge dal solo PBD (barricate ai varchi).
+     array SoA prima del binning; il kernel PBD non ha casi speciali (solo
+     guardia coppia ghost-ghost, per indice `>= count`). **Massa finita (§3,
+     `corpse_weight` unità walker, default 40, `<=0` = sigillo infinito legacy):
+     `invm = 1/(weight·r0²)` → l'orda che spinge SHOVA la pila a valle e sfonda
+     ("rallentano ma non fermano"); le posizioni spinte dal PBD sono riscritte
+     nel pool a fine PBD (step 3b di `simp_step`).** Bloccano `simp_free_at`,
+     invisibili a query e impulsi, MAI marcati nel nav grid: la deviazione del
+     flusso attorno ai mucchi emerge da PBD + costo nav cadaveri (sotto).
    - **Accumulo cadaveri → costo nav** (CORPSE_DESIGN.md §7-bis, perno
      anti-imbuto, giugno 2026): tre campi per CELLA nav accanto a `rho`/`jam`.
      `corpse_mass` += π·r² a ogni `simp_corpse_add` (decay lento `corpse_mass_hl`,
@@ -100,14 +104,14 @@ Il progetto ha DUE modelli di simulazione complementari:
      il Dijkstra devia l'orda a sfondarla (il varco-killzone intasato si scopre
      da solo). Resta SOTTO `WALL_ENTER`: palazzi e assedi a goal murati intatti.
      `simp_corpse_clear(x,y,r)` = fuoco/acido (rimuove corpi fisici + azzera i
-     campi). Default ON. NOTA: massa cadaveri ancora INFINITA → il packing è
-     cablato ma DORMIENTE (l'agente non entra in una cella 0.5 m sigillata da un
-     disco); la non-permanenza viene dal solo decay. Massa finita §3 e tabella
-     armi §6 = sotto-meccaniche rimandate; la RAMPA §4 è TAGLIATA (decisione
-     23 giu 2026: due vettori di sconfitta sullo stesso muro = troppo carico di
-     leggibilità, l'anti-degenere è già dato da reroute+decay, lo stallo su muro
-     indistruttibile lo rompono i flyer; "scavalcano i cadaveri" resta solo come
-     fiction visiva). Vedi TODO M5b e CORPSE_DESIGN §4/§7.
+     campi). Default ON. Con la **massa finita §3** ora attiva, il traffico che
+     sfonda una pila la calpesta → `pack` sale e abbassa height/costo nav; il
+     decay resta la garanzia di non-permanenza. RESTA: lo scaling
+     `pack`→`invm` (cedimento fisico progressivo) e la tabella armi §6. La RAMPA
+     §4 è TAGLIATA (decisione 23 giu 2026: due vettori di sconfitta sullo stesso
+     muro = troppo carico di leggibilità, l'anti-degenere è già dato da
+     reroute+decay, lo stallo su muro indistruttibile lo rompono i flyer;
+     "scavalcano i cadaveri" resta solo fiction visiva). Vedi CORPSE_DESIGN.
    - **Spawn senza burst**: `simp_free_at(x,y,r)` dice se un disco ci sta senza
      sovrapporsi ad agenti o muri (griglia se attuale, altrimenti brute force).
      Emettere solo dove è libero elimina l'espulsione PBD allo spawn e fa
@@ -210,8 +214,9 @@ Il progetto ha DUE modelli di simulazione complementari:
 - `test_impulse.c` — smoke test esplosione (picco + assestamento).
 - `test_dormant.c` — verifica stato dormiente, `simp_free_at`, risvegli.
 - `test_handles.c` / `test_query.c` — verifica handle (M3.1) e query (M3.4).
-- `test_corpses.c` — verifica cadaveri-ostacolo (M3.3); il volo (M3.2) è
-  dentro `test_impulse.c`.
+- `test_corpses.c` — verifica cadaveri-ostacolo (M3.3) + massa finita (§3):
+  sigillo infinito (`corpse_weight=0`) vs rallentamento §3 (default 40, la pila
+  leaka e i corpi vengono shovati); il volo (M3.2) è in `test_impulse.c`.
 - `test_corpse_pile.c` — verifica del perno accumulo cadaveri→costo nav
   (CORPSE_DESIGN §7-bis): pivot anti-imbuto (pressione barricata 0→11 jam→114
   cadaveri: il jam da solo non batte una barricata, il termine cadaveri sì),

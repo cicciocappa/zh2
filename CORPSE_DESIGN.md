@@ -4,10 +4,12 @@
 > `corpse_mass`/`corpse_pack` per cella + `corpse_height` derivata + termine
 > d'arco `k_corpse·min(height/wall_h,1)` a scala-muro; API `simp_corpse_height`
 > / `simp_corpse_clear`; 6 param in `SimPParams`, default on; `test_corpse_pile`
-> PASS). Massa dei cadaveri ancora INFINITA: il **cedimento per calpestio §3**
-> (massa finita) è RIMANDATO, e il packing §2 è cablato ma dormiente (un agente
-> non entra in una cella sigillata da un disco infinito) → la non-permanenza
-> viene dal solo decay. La tabella armi §6 vive lato gioco.
+> PASS). **Massa finita §3 (a) IMPLEMENTATA** (2026-06-23, `corpse_weight`
+> default 40): l'orda shova la pila e sfonda invece di restare sigillata —
+> "rallentano ma non fermano". RESTA lo scaling per `corpse_pack` (cedimento
+> progressivo, l'`invm` non dipende ancora dal pack) e la tabella armi §6 (lato
+> gioco). Il packing §2 alimenta già il costo nav (height §7-bis); il decay tiene
+> le pile non-permanenti.
 >
 > **DECISIONE DI DESIGN (2026-06-23): la RAMPA §4 è TAGLIATA come meccanica.**
 > Due vettori di sconfitta sullo stesso muro (assedio HP→0 *e* scavalco
@@ -115,25 +117,41 @@ chokepoint. A un *killzone tenuto* gli zombie vengono falciati ma il flusso non
 scorre: poco calpestio passante, `pack` basso, `mass` che cresce coi kill →
 la pila resta alta → il **costo nav** sale e l'orda **devia** verso il fianco più
 debole. La meccanica prende di mira esattamente i punti dove accumuli i kill,
-senza casi speciali: emerge dalla geometria. (NB: il packing pieno richiede la
-massa finita §3 — con la massa infinita attuale l'appiattimento è dormiente e la
-non-permanenza viene dal decay.)
+senza casi speciali: emerge dalla geometria. (Con la massa finita §3 ora attiva,
+il traffico che sfonda una pila la calpesta davvero → `pack` sale e abbassa la
+height/costo nav; il decay resta la garanzia di non-permanenza. Il pack non
+modifica ancora l'`invm` fisico — cedimento progressivo = prossimo sotto-passo.)
 
-## 3. Rallentare senza fermare: massa finita
+## 3. Rallentare senza fermare: massa finita — FATTO (2026-06-23)
 
-Per il rimedio "rallentano ma non fermano" bisogna mollare la **massa infinita**
-attuale. Opzioni (da verificare in sandbox):
+> **STATO: opzione (a) IMPLEMENTATA, massa finita FISSA.** Param `corpse_weight`
+> (unità walker, default **40**, `<=0` = sigillo infinito legacy). I cadaveri
+> ghost passano da `invm = 0` a `invm = 1/(corpse_weight·r0²)` (come
+> `simp_spawn_desc`): l'orda che spinge li SHOVA a valle e sfonda. Le posizioni
+> spinte dal PBD sono riscritte nel pool a ogni step (step 3b di `simp_step`); le
+> coppie cadavere-cadavere sono saltate (sennò una pila di dischi sovrapposti si
+> farebbe esplodere). `test_corpses` aggiornato: B = sigillo infinito (drain 0,
+> moved 0), C = §3 finito (drain 44 vs 164 aperto → rallenta molto ma LEAKA,
+> moved 9). Suite 22/22 verde. Lo SCALING per `corpse_pack` ("più pestati → più
+> cedevoli", curva di cedimento progressiva) è il **prossimo sotto-passo**:
+> oggi il pack agisce già sul costo nav (height §7-bis) ma non sull'`invm`.
 
-- **(a) Massa grande ma finita** sui cadaveri (`invm` piccolo non-zero, scalato da
-  `corpse_pack`: più pestati → più cedevoli). Il PBD già lavora a rapporti di
-  massa (M3.5): l'orda che spinge da dietro lentamente *sfonda* il mucchio invece
-  di fermarsi netta. Cambio rispetto a `test_corpses` (dove sigillano del tutto):
-  **da mettere in conto**, il test va aggiornato (sigillo → rallentamento).
+Per il rimedio "rallentano ma non fermano" bisogna mollare la **massa infinita**:
+
+- **(a) Massa grande ma finita** sui cadaveri (`invm` piccolo non-zero, in
+  prospettiva scalato da `corpse_pack`: più pestati → più cedevoli). Il PBD già
+  lavora a rapporti di massa (M3.5): l'orda che spinge da dietro lentamente
+  *sfonda* il mucchio invece di fermarsi netta. **SCELTA e implementata** (vedi
+  banner). Cambio rispetto a `test_corpses` (dove sigillavano del tutto): test
+  aggiornato (sigillo legacy + rallentamento §3 affiancati).
 - **(b) Raggio che cala con `pack`**: i corpi calpestati si "spalmano" e lasciano
-  filtrare. Più semplice, ma meno fisico del momento che sfonda.
+  filtrare. Più semplice, ma meno fisico del momento che sfonda. **Scartata.**
 
-Raccomando **(a)**: si appoggia al sistema di masse esistente e dà il
-comportamento "spinta della folla che sfonda" coerente con il resto del core.
+NOTA fisica: i cadaveri shovati NON ricevono la proiezione sui muri (il
+`job_wall` gira solo sugli agenti `< count`): un corpo spinto contro un muro
+laterale può restarci incastrato invece di scorrere. Accettabile (la pila si
+sposta lungo il varco, in apertura); irrigidire = wall-projection anche per i
+ghost, se servisse.
 
 ## 4. La rampa di scavalco — ~~meccanica~~ TAGLIATA (solo fiction visiva)
 
@@ -257,8 +275,9 @@ pathfinding sui *pochi* screamer — più avanti).
 
 ## 8. Verifica — `test_corpse_pile.c` (FATTO, PASS)
 
-Headless, sulla falsariga di `test_jam`/`test_corpses`. Quattro parti
-implementate (la massa resta infinita → niente test di cedimento/rampa qui):
+Headless, sulla falsariga di `test_jam`/`test_corpses`. Quattro parti (il pivot
+nav è isolato pinnando `corpse_weight=0`, sigillo idealizzato, così la §3 non
+interferisce). Il cedimento §3 vive invece in `test_corpses` (parte C):
 
 1. **PIVOT anti-imbuto.** Muro con un varco diretto APERTO (intasato da una pila
    di cadaveri scriptata) e una BARRICATA (banda solida a `wall_cost` basso) come
@@ -274,20 +293,18 @@ implementate (la massa resta infinita → niente test di cedimento/rampa qui):
    riapre il varco: drain ~0 da intasato → >0 dopo il clear.
 4. **Determinismo** (due run pivot identiche: stessa pressione/drain) + **zero NaN**.
 
-NOTA: il **cedimento per calpestio** (rimedio §3) e la **rampa** (§4, tagliata)
-NON sono testati: il primo richiede la massa finita (rimandata), la seconda è
-stata rimossa come meccanica. Il packing è cablato ma dormiente sotto massa
-infinita. Sweep futuri (`k_h`/`k_pack`/half-life) quando arriva §3. Overlay
-`corpse_height` in `vat_horde` = follow-up visivo.
+NOTA: il **cedimento §3** (massa finita) è verificato in `test_corpses` parte C
+(sigillo→leak). La **rampa** (§4) è tagliata. Lo scaling `corpse_pack`→`invm`
+(cedimento progressivo) e l'overlay `corpse_height` in `vat_horde` = follow-up.
 
 ## 9. Note, trappole, mappatura GPU
 
 - **Indici stabili non servono qui**: i campi sono per *cella nav*, non per agente —
   niente trappola degli indici densi (a differenza dell'assedio). I cadaveri non
   hanno handle per design (M3.3): il gioco non li punta.
-- **Cambio rispetto a `test_corpses`**: SOLO quando arriverà la massa finita (§3)
-  il sigillo totale verificato lì si romperà (sigillo → rallentamento). In questa
-  fetta la massa resta infinita → `test_corpses` è intatto.
+- **Cambio rispetto a `test_corpses`**: con la massa finita §3 (default) il sigillo
+  totale non vale più (sigillo → rallentamento). Il test ora copre ENTRAMBI: parte
+  B = sigillo infinito (`corpse_weight=0`, legacy), parte C = leak §3 (default 40).
 - **`CORPSE_RHO` resta**: i corpi pesano già su `rho`/`jam` (deviazione fra strade
   aperte). Il termine `k_corpse` su `height` è ortogonale e sale fino a scala-muro
   (battendo le barricate), non sostituisce il costo di densità.

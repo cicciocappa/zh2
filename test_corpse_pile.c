@@ -92,6 +92,8 @@ static Pivot run_pivot(float k_corpse, float k_jam) {
     simp_params(s)->k_density = 0.0f;     /* isolate: only the term under test */
     simp_params(s)->k_jam     = k_jam;
     simp_params(s)->k_corpse  = k_corpse;
+    simp_params(s)->corpse_weight = 0.0f; /* idealized seal: isolate the NAV term
+                                             from the §3 finite-mass shove */
     build_pivot_world(s);
     pile_gap(s);
 
@@ -139,6 +141,7 @@ static Pivot run_pivot(float k_corpse, float k_jam) {
 static int test_decay(void) {
     SimP *s = simp_create(GW, GH, CELL, 16);
     simp_params(s)->corpse_mass_hl = 4.0f;     /* short half-life to keep it brisk */
+    simp_params(s)->corpse_weight = 0.0f;      /* no crowd here; keep it idealized */
     const float *ch = simp_corpse_height(s);
     int cell = 50 * GW + 50;
     for (int k = 0; k < 8; k++) simp_corpse_add(s, 25.0f, 25.0f, 0.4f, 1e9f);
@@ -165,6 +168,8 @@ static int test_clear(void) {
     simp_params(s)->k_density = 0.0f;
     simp_params(s)->k_jam     = 0.0f;
     simp_params(s)->k_corpse  = 300.0f;
+    simp_params(s)->corpse_weight = 0.0f;  /* idealized seal: the clog must hold
+                                              until simp_corpse_clear removes it */
     /* single corridor: spawn left, one open gap at the wall, goal right */
     for (int x = 0; x < GW; x++) { simp_set_wall(s, x, 0, true); simp_set_wall(s, x, GH - 1, true); }
     for (int y = 0; y < GH; y++) { simp_set_wall(s, 0, y, true); simp_set_wall(s, GW - 1, y, true); }

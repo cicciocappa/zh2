@@ -567,6 +567,7 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->params.corpse_mass_hl = 30.0f;
     s->params.corpse_pack_hl = 10.0f;
     s->params.pack_inc  = 1.0f;
+    s->params.corpse_weight = 40.0f;
 
     const size_t n = (size_t)gw * gh;
     s->solid  = (uint8_t *)calloc(n, 1);
@@ -1342,14 +1343,19 @@ static void reorder_agents(SimP *s) {
 
 static void rebuild_grid(SimP *s) {
     const int nc = s->cgw * s->cgh;
-    /* corpse ghosts: copy the pool past the live agents as invm=0 discs so
-     * the PBD kernel treats them like any other (immovable) body */
+    /* corpse ghosts: copy the pool past the live agents as discs the PBD treats
+     * like any other body. §3: a large-but-FINITE mass (corpse_weight walker
+     * units, invm = 1/(weight*r0^2) as in simp_spawn_desc) so a pushing crowd
+     * shoves the pile; corpse_weight <= 0 = the legacy infinite seal (invm 0). */
     const int ng = s->corpse_count;
+    const float cw = s->params.corpse_weight;
+    const float r0 = s->params.radius;
+    const float cinvm = (cw > 0.0f) ? 1.0f / (cw * r0 * r0) : 0.0f;
     for (int j = 0; j < ng; j++) {
         int g = s->count + j;
         s->px[g] = s->cpx[j]; s->py[g] = s->cpy[j];
         s->rad[g] = s->crad[j];
-        s->invm[g] = 0.0f;
+        s->invm[g] = cinvm;
         s->seed[g] = 0xC0FF1234u + (uint32_t)j;   /* determinism (d==0 path) */
     }
     const int total = s->count + ng;
@@ -1414,7 +1420,11 @@ static inline void pbd_cell(SimP *s, int cx, int cy, double *dsum, long *dn) {
                 float d2 = dx * dx + dy * dy;
                 if (d2 >= rsum * rsum) continue;
                 float wj = s->invm[j];
-                if (wi + wj <= 0.0f) continue;  /* corpse vs corpse */
+                /* corpse-corpse (both ghosts, index >= count): skip, or a pile
+                 * built from overlapping discs would blow itself apart. Also
+                 * covers both-immovable (invm 0) under the legacy infinite mass. */
+                if (i >= s->count && j >= s->count) continue;
+                if (wi + wj <= 0.0f) continue;  /* both immovable (infinite) */
                 float d = sqrtf(d2);
                 float nxv, nyv;
                 if (d > 1e-5f) { nxv = dx / d; nyv = dy / d; }
@@ -1683,6 +1693,16 @@ int simp_step(SimP *s, float dt) {
         s->diag_overlap_sum += (float)s->diag_sum_w[w];
         s->diag_overlap_n   += (int)s->diag_n_w[w];
     }
+
+    /* 3b) §3: persist the shoved corpse positions back to the pool. Finite-mass
+     * ghosts were moved by the crowd during the PBD; the next rebuild reloads
+     * ghost positions from cpx/cpy, so write them now — BEFORE the drain changes
+     * `count` (ghosts live at index count+j). No-op under infinite mass. */
+    if (s->params.corpse_weight > 0.0f)
+        for (int j = 0; j < s->corpse_count; j++) {
+            s->cpx[j] = s->px[s->count + j];
+            s->cpy[j] = s->py[s->count + j];
+        }
 
     /* 4) recover effective velocity from positional change (parallel). Flyers
      * keep their integrated velocity (no projections; clamping would cut hard

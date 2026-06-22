@@ -100,15 +100,19 @@
  *     usual dirty flag). Agents read a slightly stale field in between:
  *     invisible in practice, and it keeps the Dijkstra off the hot path.
  *
- * CORPSES — passive infinite-mass discs in the same collision grid (the
- * living shove around them: emergent barricades at chokepoints). Fixed-size
- * pool, TTL-based; when full, the closest-to-expiry corpse is replaced, so
- * capacity is a cost guarantee, not an error. Corpses block simp_free_at
- * (no spawning into a pile) but are invisible to queries and impulses, and
- * never marked in the nav grid: the flow detour around piles emerges from
- * PBD alone. Internally they ride along as "ghost" entries appended past
- * the live agents before binning, with inverse mass 0 — the PBD kernel
- * needs no special cases.
+ * CORPSES — passive discs in the same collision grid (the living shove around
+ * them: emergent barricades at chokepoints). Fixed-size pool, TTL-based; when
+ * full, the closest-to-expiry corpse is replaced, so capacity is a cost
+ * guarantee, not an error. Corpses block simp_free_at (no spawning into a pile)
+ * but are invisible to queries and impulses, and never marked in the nav grid:
+ * the flow detour around piles emerges from PBD + the corpse-pile nav cost.
+ * Internally they ride along as "ghost" entries appended past the live agents
+ * before binning — the PBD kernel needs no special cases beyond skipping
+ * corpse-corpse pairs (piles must not blow themselves apart). Mass (§3): with
+ * corpse_weight > 0 a corpse is a large-but-FINITE mass, so a pushing crowd
+ * slowly SHOVES the pile downstream and breaks through (the shoved positions are
+ * written back to the pool each step); corpse_weight <= 0 restores the legacy
+ * INFINITE-mass seal (used by idealized tests that need a hard plug).
  *
  * Data layout is SoA; position/velocity arrays are public so the renderer
  * can upload them directly as instance buffers. Agents are removed with
@@ -150,6 +154,9 @@ typedef struct {
     float corpse_mass_hl; /* corpse_mass half-life (s)             default 30.0 */
     float corpse_pack_hl; /* corpse_pack half-life (s)             default 10.0 */
     float pack_inc;     /* pack added per trampling agent per recompute  default 1.0 */
+    float corpse_weight;/* corpse mass in walker units (§3): the crowd SHOVES a
+                         * large-but-finite pile instead of being sealed out.
+                         * <= 0 = infinite (legacy idealized seal). default 40.0 */
 } SimPParams;
 
 typedef struct SimP SimP;
