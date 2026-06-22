@@ -1,0 +1,21 @@
+# turret_test — livello diagnostico per osservare i colpi della torretta sul
+# singolo zombie (ferita -> insanguinamento -> morte / gib futuri).
+# Mondo piccolo, UNO spawn a ovest, goal al centro: pochi zombie attraversano
+# il campo verso il goal e la torretta li colpisce uno alla volta.
+#
+# Esegui (1 torretta leggera lenta, spawn rado):
+#   VAT_HORDE_TURRETS=1 VAT_HORDE_RATE=1 VAT_HORDE_TFIRE=1.0 ./vat_horde scenes/turret_test.scn
+# - TURRETS=1  : una sola torretta (anello -> a est del goal centrale)
+# - RATE=1     : ~1 zombie/s (alza/abbassa per più o meno traffico)
+# - TFIRE=1.0  : la torretta spara ogni 1 s (rallentata per VEDERE la sequenza
+#                colpo->sangue->colpo->morte; il default 0.10 s uccide troppo in fretta)
+#   aggiungi VAT_HORDE_TDMG=40 per più colpi prima della morte (uomo 100 HP).
+
+cell 0.5
+world 40 24
+
+# goal al centro: la torretta singola viene piazzata ad est di qui (anello)
+goal 18 11 4 2
+
+# un solo spawn, banda stretta a ovest
+spawn 1 9 2 6

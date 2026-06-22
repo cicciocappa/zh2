@@ -89,12 +89,16 @@ static void on_director_spawn(void *user, SimPHandle h, DefBody body, unsigned r
 }
 
 // hook eventi defense → animazioni one-shot del render layer: HIT = flinch su
-// colpo non letale; DEATH = decedente (clip morte) prima che lo slot sia riusato.
+// colpo non letale; DEATH = decedente (clip morte) prima che lo slot sia riusato;
+// GIB = morte esplosiva, burst di pezzi balistici (niente cadavere).
 static void on_def_event(void *user, int slot, int i, DefBody body, DefEvent ev){
     SpawnCtx *c=(SpawnCtx*)user; (void)body;
     if(ev==DEF_EV_HIT) vat_layer_hit(c->vl, slot);
     else if(ev==DEF_EV_DEATH)
         vat_layer_die(c->vl, slot, simp_px(c->s)[i], simp_py(c->s)[i], simp_radius_arr(c->s)[i]);
+    else if(ev==DEF_EV_GIB)
+        vat_layer_gib(c->vl, slot, simp_px(c->s)[i], simp_py(c->s)[i],
+                      simp_radius_arr(c->s)[i], simp_handle_of(c->s,i));
 }
 
 // Benchmark prefill: popola il campo a `target` agenti su un lattice jitterato
@@ -474,6 +478,11 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
         t.sweep_dir=1; t.sweep_speed=3.0f; t.range=55.0f;
         t.heavy=(i%4==2); t.piercing=(i%4==0);
         t.fire_period=t.heavy?0.5f:0.10f; t.damage=t.heavy?0.0f:55.0f;
+        // override per livelli di test (es. rallentare per osservare ferita->morte,
+        // o forzare pesante per vedere i gib)
+        if(getenv("VAT_HORDE_THEAVY")) t.heavy=atoi(getenv("VAT_HORDE_THEAVY"));
+        if(getenv("VAT_HORDE_TFIRE")) t.fire_period=atof(getenv("VAT_HORDE_TFIRE"));
+        if(getenv("VAT_HORDE_TDMG"))  t.damage=atof(getenv("VAT_HORDE_TDMG"));
         def_add_turret(g,&t); placed++; }
     printf("torrette: %d piazzate (anello r=%.1f m attorno alla base (%.1f,%.1f))\n",
            placed,(double)TR_R,(double)bcx,(double)bcy);
@@ -567,6 +576,10 @@ int main(int argc, char **argv){
     for(int v=0;v<NVAR;v++){ const VatMeta *M=vat_layer_meta_variant(vl,v);
         if(M->nclips<=0){fprintf(stderr,"meta vuoto: %s\n",PREFIX[v]);return 1;} }
     vat_layer_set_random_count(vl,NCOSMETIC);   /* crawler e tank solo via pin, non a caso */
+    /* il tank ha raggio grosso per la massa fisica (collisione), ma e' alto
+       ~2 m, non ~3 m come darebbe raggio/0.30: scala fissa 1.90-2.05 m
+       (scala 1.0 = altezza-modello 1.8 m). */
+    vat_layer_set_variant_scale(vl,TANK_VAR, 1.90f/1.8f, 2.05f/1.8f);
     printf("varianti=%d (di cui %d cosmetiche + crawler + tank)\n",NVAR,NCOSMETIC);
 
     // Mondo vivo derivato dalla Scene (build_world): sim + torrette + base +
@@ -639,6 +652,23 @@ int main(int argc, char **argv){
     glVertexAttribPointer(1,4,GL_FLOAT,0,4*sizeof(float),(void*)0);glEnableVertexAttribArray(1);glVertexAttribDivisor(1,1);
     glBindVertexArray(0);
 
+    // --- decal di sangue (GFX §5.2): disco unitario instanziato (riusa la geom
+    // del disco ombra shDisc), shader proprio (rosso, colore per-istanza),
+    // persistenti. Pool renderer-side in vat_layer.
+#define DECALMAX 8192
+    static float decalraw[DECALMAX*6];           // x,y,size,r,g,b (da vat_layer)
+    static float decalinst[DECALMAX*7];          // cx,gy,cz,radius,r,g,b (istanza GL)
+    GLuint progDc=vg_shader("vat/decal.vs","vat/decal.fs");
+    GLint uVPdc=glGetUniformLocation(progDc,"uVP");
+    GLuint dcVao,dcInst; glGenVertexArrays(1,&dcVao);glBindVertexArray(dcVao);
+    glBindBuffer(GL_ARRAY_BUFFER,shDisc);        // condivide la geom del disco
+    glVertexAttribPointer(0,2,GL_FLOAT,0,2*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glGenBuffers(1,&dcInst);glBindBuffer(GL_ARRAY_BUFFER,dcInst);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)DECALMAX*7*sizeof(float),NULL,GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(1,4,GL_FLOAT,0,7*sizeof(float),(void*)0);glEnableVertexAttribArray(1);glVertexAttribDivisor(1,1);
+    glVertexAttribPointer(2,3,GL_FLOAT,0,7*sizeof(float),(void*)(4*sizeof(float)));glEnableVertexAttribArray(2);glVertexAttribDivisor(2,1);
+    glBindVertexArray(0);
+
     // --- ostacoli: programma flat + mesh statica estrusa dalla scena (il quad
     // suolo flat si salta quando c'è il terreno glb).
     GLuint progFlat=vg_shader("vat/flat.vs","vat/flat.fs");
@@ -669,6 +699,20 @@ int main(int argc, char **argv){
     GLuint ovVao,ovVbo; glGenVertexArrays(1,&ovVao);glBindVertexArray(ovVao);
     glGenBuffers(1,&ovVbo);glBindBuffer(GL_ARRAY_BUFFER,ovVbo);
     glBufferData(GL_ARRAY_BUFFER,sizeof edovl,NULL,GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
+    glBindVertexArray(0);
+
+    // --- gib (GFX §5 gore): mesh dinamica di pezzi-box, ricostruita CPU ogni
+    // frame (come tracer/overlay), flat shader. Pool renderer-side in vat_layer.
+#define GIBMAX 2048
+#define GIB_VERTS_EACH 30            // prop_box: top(6) + 4 pareti(24)
+    static float gibparam[GIBMAX*10];               // x,y,z,hx,hy,hz,ang,r,g,b
+    float *gibmesh = malloc((size_t)GIBMAX*GIB_VERTS_EACH*9*sizeof(float));
+    GLuint gibVao,gibVbo; glGenVertexArrays(1,&gibVao);glBindVertexArray(gibVao);
+    glGenBuffers(1,&gibVbo);glBindBuffer(GL_ARRAY_BUFFER,gibVbo);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)GIBMAX*GIB_VERTS_EACH*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
     glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
     glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
     glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
@@ -715,8 +759,7 @@ int main(int argc, char **argv){
         char pos[256],norm[256],mesh[256],diff[256];
         snprintf(pos,256,"%s_pos.raw",PREFIX[v]);snprintf(norm,256,"%s_norm.raw",PREFIX[v]);
         snprintf(mesh,256,"%s_mesh.bin",PREFIX[v]);
-        // il tank condivide UVMap/topologia con zombie_man -> riusa la sua diffuse
-        snprintf(diff,256,"%s_diffuse.png", v==TANK_VAR ? "vat/assets/zombie_man" : PREFIX[v]);
+        snprintf(diff,256,"%s_diffuse.png", PREFIX[v]);
 
         FILE*mf=fopen(mesh,"rb"); if(!mf){fprintf(stderr,"no mesh %s\n",mesh);return 1;}
         int nv,ni; if(fread(&nv,4,1,mf)){}if(fread(&ni,4,1,mf)){}
@@ -905,9 +948,11 @@ int main(int argc, char **argv){
                 simp_step(s,FIXED_DT);
                 Uint64 t1=SDL_GetPerformanceCounter();
                 def_update(g,FIXED_DT);
-                // i feriti maimed_legs passano alla mesh crawler (a runtime)
+                // i feriti si insanguinano (outfit+16); i maimed_legs passano
+                // anche alla mesh crawler (a runtime)
                 { const uint8_t *wnd=def_wound(g); int nn=simp_count(s);
                   for(int i=0;i<nn;i++){ int slot=simp_slot_of(s,i);
+                      if(wnd[slot]!=DW_NONE) vat_layer_make_bloody(vl,slot);
                       if(wnd[slot]==DW_CRAWLING) vat_layer_set_variant(vl,slot,CRAWLER_VAR); } }
                 vat_layer_update(vl,s,FIXED_DT);
                 Uint64 t2=SDL_GetPerformanceCounter();
@@ -968,11 +1013,33 @@ int main(int argc, char **argv){
               glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)tc*9*sizeof(float),trbuf);
               glLineWidth(2.5f); glDrawArrays(GL_LINES,0,tc); } }
 
+        // gib (GFX §5): pezzi balistici, un box per pezzo, mesh ogni frame
+        { int ng=vat_layer_fill_gibs(vl,gibparam,GIBMAX); int gc=0;
+          for(int gi=0;gi<ng;gi++){ float *p=gibparam+gi*10;
+              float zb=ter_z(p[0],p[1])+p[2];
+              gc=prop_box(gibmesh,gc, p[0],p[1], 0.0f,0.0f, zb, p[3],p[5],p[4],
+                          cosf(p[6]),sinf(p[6]), p[7],p[8],p[9]); }
+          if(gc){ glBindVertexArray(gibVao);glBindBuffer(GL_ARRAY_BUFFER,gibVbo);
+              glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)gc*9*sizeof(float),gibmesh);
+              glDrawArrays(GL_TRIANGLES,0,gc); } }
+
         // strutture della base (rebuild dallo stato vivo: celle crollate spariscono)
         if(gBaseOn){ int sv=build_struct_mesh(g,sc.cell,stBuf);
             if(sv){ glBindVertexArray(stVao);glBindBuffer(GL_ARRAY_BUFFER,stVbo);
                 glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)sv*9*sizeof(float),stBuf);
                 glDrawArrays(GL_TRIANGLES,0,sv); } }
+
+        // decal di sangue persistenti (a terra, blended): sotto orda e ombre
+        { int nd=vat_layer_fill_decals(vl,decalraw,DECALMAX);
+          for(int i=0;i<nd;i++){ float *r=decalraw+i*6,*o=decalinst+i*7;
+              o[0]=r[0]; o[1]=ter_z(r[0],r[1])+0.03f; o[2]=r[1];
+              o[3]=r[2]; o[4]=r[3]; o[5]=r[4]; o[6]=r[5]; }
+          if(nd){ glUseProgram(progDc);glUniformMatrix4fv(uVPdc,1,GL_FALSE,vp);
+              glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);
+              glBindVertexArray(dcVao);glBindBuffer(GL_ARRAY_BUFFER,dcInst);
+              glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)nd*7*sizeof(float),decalinst);
+              glDrawArraysInstanced(GL_TRIANGLE_FAN,0,SHADN,nd);
+              glDepthMask(GL_TRUE);glDisable(GL_BLEND); } }
 
         // overlay editor (rect/poly-in-corso/cursore) sopra il terreno, flat shader.
         if(ed.active){ int ov=ed_overlay(&sc,&ed,edovl,EDOVL_MAXV);

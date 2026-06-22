@@ -379,8 +379,10 @@ statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
         pool decessi) PASS; verificato a video su `scenes/base.scn` (decedenti
         stesi, assedio animato). RESTA (futuro): fondere death-clip↔cadavere
         fisico + gib volanti/decal (GFX §5).
-- [ ] **Idle poco animata → effetto copia-incolla nei gruppi bloccati**
-      (prossima sessione). La clip idle Mixamo attuale è quasi statica:
+- [x] **Idle poco animata → effetto copia-incolla nei gruppi bloccati**
+      RISOLTO dall'utente (altro PC, può non essere in git su questo branch).
+      NON è più un problema aperto. Testo originale sotto per storia.
+      La clip idle Mixamo attuale è quasi statica:
       i frame sono indistinguibili, quindi la desincronizzazione di fase
       (che ESISTE già: fase seedata per slot + continuità dal walk) non
       basta a rompere l'uniformità. Opzioni: (a) clip idle più pronunciata,
@@ -389,8 +391,10 @@ statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
       sheet), (c) in più, velocità di playback per-agente ±20% da hash
       (una riga, desincronizza anche a parità di clip). Candidate nel
       pack: scream/biting come "struggle" alternativi.
-- [ ] **Zombie bloccati nel mucchio che ruotano all'impazzata** (prossima
-      sessione). Causa: dentro l'ingorgo il PBD produce velocità di
+- [x] **Zombie bloccati nel mucchio che ruotano all'impazzata** RISOLTO
+      dall'utente (altro PC, può non essere in git su questo branch). NON è
+      più un problema aperto. Testo originale sotto per storia.
+      Causa: dentro l'ingorgo il PBD produce velocità di
       assestamento (0.1–0.3 m/s) con direzione che gira vorticosamente;
       sopra la soglia di 0.05 m/s l'EMA dell'heading le insegue. Due fix
       complementari: (1) congelare l'aggiornamento dell'heading in stato

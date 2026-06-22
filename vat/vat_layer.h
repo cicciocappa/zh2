@@ -53,6 +53,13 @@ void vat_layer_set_random_count(VatLayer *vl, int n);
  * PRIMA che vat_layer_update veda l'agente; consumata al primo update (lo slot
  * riusato torna libero). slot = simp_slot_of(s, indice_spawnato). */
 void vat_layer_pin_variant(VatLayer *vl, int slot, int variant);
+/* Fissa la scala di render di una VARIANTE, disaccoppiandola dal raggio: gli
+ * slot di `variant` rendono a una scala uniforme casuale in [smin,smax] (stabile
+ * per slot, scala 1.0 = altezza-modello 1.8 m) invece di raggio/0.30. Per i body
+ * con proporzioni proprie — es. il tank: raggio grande per la massa fisica, ma
+ * alto ~2 m, non ~3 m come darebbe il raggio. smin<=0 = default da raggio. */
+void vat_layer_set_variant_scale(VatLayer *vl, int variant, float smin, float smax);
+
 /* Cambia il body model di uno slot VIVO (es. zombie ferito → mesh crawler).
  * No-op se è già quella variante; altrimenti ri-sceglie una clip valida per il
  * layout del nuovo body. A differenza di pin_variant agisce su un agente già
@@ -61,6 +68,11 @@ void vat_layer_set_variant(VatLayer *vl, int slot, int variant);
 
 /* Avanza heading/FSM/fase + il pool decessi. Stesso dt di simp_step (salta se in pausa). */
 void vat_layer_update(VatLayer *vl, const SimP *s, float dt);
+
+/* Ferita visiva di uno slot: l'outfit passa alla versione INSANGUINATA (atlante
+ * 4x8: outfit += 16). Idempotente; vale per ogni body (tank incluso). Da chiamare
+ * quando il gioco marca lo zombie ferito. slot = simp_slot_of(s, indice). */
+void vat_layer_make_bloody(VatLayer *vl, int slot);
 
 /* Evento HIT one-shot su un agente vivo (colpo non letale): flinch della clip
  * hit, poi ritorno alla FSM velocità. No-op se il body non ha clip hit (crawler)
@@ -73,6 +85,21 @@ void vat_layer_hit(VatLayer *vl, int slot);
  * morto (scala del tank). Da chiamare alla morte, prima che lo slot sia riusato.
  * Ring buffer: pieno = sovrascrive il più vecchio (come i cadaveri M3.3). */
 void vat_layer_die(VatLayer *vl, int slot, float x, float y, float radius);
+
+/* Gib (GFX §5 gore): burst di pezzi frattaglia balistici renderer-side a (x,y)
+ * alla morte esplosiva (gib pesante). Solo visuali (niente collisione, come il
+ * volo M3.2): parabola + spin, atterrano e si posano fino al TTL. Mescola rosso
+ * sangue + tint dello zombie (slot). radius = taglia del corpo. seed dà varietà. */
+void vat_layer_gib(VatLayer *vl, int slot, float x, float y, float radius, unsigned int seed);
+/* Emette i gib attivi: 10 float/pezzo (x, y, z_sul_suolo, hx, hy, hz, ang, r,g,b).
+ * Il chiamante somma terrain_z(x,y) a z e costruisce un box per pezzo. Ritorna n. */
+int  vat_layer_fill_gibs(VatLayer *vl, float *out, int max_out);
+/* Decal di sangue PERSISTENTI (GFX §5.2): macchie a terra dove i corpi si posano
+ * (fine vita del decedente) o esplodono (gib). Generati internamente; il pool è
+ * un ring buffer cappato (niente decay, niente collisione). Emette 6 float/decal
+ * (x, y, size, r,g,b): il chiamante somma terrain_z(x,y) e disegna un disco
+ * blended a terra. Ritorna il numero di decal. */
+int  vat_layer_fill_decals(VatLayer *vl, float *out, int max_out);
 
 /* Riempie inst_buf (12 float/istanza: pos.xyz, heading, scala, gA, gB, mix,
  * outfit, tint.rgb) con i SOLI agenti assegnati a `variant`. Ritorna il numero

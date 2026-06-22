@@ -19,7 +19,8 @@ out vec3 vNormal;   // world space
 out vec2 vUV;
 out vec3 vTint;
 
-const float ATLAS_N = 4.0;   // griglia 4x4 di outfit (migrazione_3d.md)
+const float ATLAS_NX = 4.0;  // colonne
+const float ATLAS_NY = 8.0;  // righe: 0..15 outfit normali, 16..31 insanguinati (+16)
 
 vec2 vatUV(float id, float frame) {
     float rowL = floor((id + 0.1) / texSize.x);
@@ -54,8 +55,8 @@ void main() {
     // Atlante outfit: UV modello / N + offset cella. 0 = alto-sx, ordine di lettura.
     // (1-v): Blender ha origine UV in basso-sx, la texture NON è flippata al load.
     float outfit = iOutfitTint.x;
-    float col = mod(outfit, ATLAS_N);
-    float row = floor(outfit / ATLAS_N);
-    vUV = (vec2(aUV.x, 1.0 - aUV.y) + vec2(col, row)) / ATLAS_N;
+    float col = mod(outfit, ATLAS_NX);
+    float row = floor(outfit / ATLAS_NX);
+    vUV = (vec2(aUV.x, 1.0 - aUV.y) + vec2(col, row)) / vec2(ATLAS_NX, ATLAS_NY);
     vTint = iOutfitTint.yzw;
 }

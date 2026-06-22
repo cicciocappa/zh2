@@ -106,9 +106,10 @@ void def_update(DefGame *g, float dt);
  * Fired during def_update so the renderer can play one-shot animations. HIT =
  * a non-lethal light hit landed (agent survives). DEATH = a light kill, fired
  * just BEFORE the agent is removed (index i still valid → read px/py/radius).
- * Heavy gibs are NOT reported (future gore system). Core-agnostic: defense.c
- * never touches the renderer; the host wires this to vat_layer_hit/_die. */
-typedef enum { DEF_EV_HIT, DEF_EV_DEATH } DefEvent;
+ * DEF_EV_GIB = morte esplosiva (kill pesante): il renderer spawna i gib volanti
+ * (GFX §5), nessun cadavere. Core-agnostic: defense.c non tocca il renderer;
+ * l'host la collega a vat_layer_hit/_die/_gib. */
+typedef enum { DEF_EV_HIT, DEF_EV_DEATH, DEF_EV_GIB } DefEvent;
 typedef void (*DefEventFn)(void *user, int slot, int i, DefBody body, DefEvent ev);
 void def_set_event_cb(DefGame *g, DefEventFn cb, void *user);
 

@@ -131,6 +131,8 @@ static inline float wrap_pi(float a) {
 static void gib(DefGame *g, int i) {           /* heavy kill: no corpse */
     float x = simp_px(g->s)[i], y = simp_py(g->s)[i];
     simp_apply_impulse(g->s, x, y, GIB_RADIUS, GIB_PUSH);
+    if (g->ev_cb) g->ev_cb(g->ev_user, simp_slot_of(g->s, i), i,
+                           (DefBody)g->body[simp_slot_of(g->s, i)], DEF_EV_GIB);
     simp_kill(g->s, i);
     g->kills++;
 }
@@ -147,6 +149,8 @@ static void die_light(DefGame *g, int i, int slot) {
 }
 
 static void wound_roll(DefGame *g, int i, int slot) {
+    /* il tank ha UN solo modello: si insanguina ma non perde arti */
+    if (g->body[slot] == BT_TANK) { g->wound[slot] = DW_BLOODY; return; }
     uint32_t r = hash_u32((uint32_t)slot * 2654435761u + 0x9E3779B9u) % 3u;
     DefWound w = (r == 0) ? DW_BLOODY : (r == 1) ? DW_MAIMED_ARM : DW_CRAWLING;
     g->wound[slot] = (uint8_t)w;
