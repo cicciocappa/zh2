@@ -87,6 +87,27 @@ Il progetto ha DUE modelli di simulazione complementari:
      speciali (solo guardia coppia ghost-ghost). Bloccano `simp_free_at`,
      invisibili a query e impulsi, MAI marcati nel nav grid: la deviazione
      del flusso attorno ai mucchi emerge dal solo PBD (barricate ai varchi).
+   - **Accumulo cadaveri → costo nav** (CORPSE_DESIGN.md §7-bis, perno
+     anti-imbuto, giugno 2026): tre campi per CELLA nav accanto a `rho`/`jam`.
+     `corpse_mass` += π·r² a ogni `simp_corpse_add` (decay lento `corpse_mass_hl`,
+     indipendente dal TTL del pool: il volume marcisce per conto suo);
+     `corpse_pack` += `pack_inc` per agente a terra che calpesta una cella con
+     massa (decay più rapido → le pile non calpestate si rigonfiano); derivato
+     `corpse_height = k_h·mass/(1+k_pack·pack)` (m, `simp_corpse_height`). Termine
+     d'arco `k_corpse·min(height/wall_h,1)` aggiunto a `cost_mult` in
+     `nav_phi_begin`: una pila DENSA sale a costo **scala-muro** (tetto
+     `k_corpse`=300, satura a `wall_h`) → batte il `wall_cost` di una barricata e
+     il Dijkstra devia l'orda a sfondarla (il varco-killzone intasato si scopre
+     da solo). Resta SOTTO `WALL_ENTER`: palazzi e assedi a goal murati intatti.
+     `simp_corpse_clear(x,y,r)` = fuoco/acido (rimuove corpi fisici + azzera i
+     campi). Default ON. NOTA: massa cadaveri ancora INFINITA → il packing è
+     cablato ma DORMIENTE (l'agente non entra in una cella 0.5 m sigillata da un
+     disco); la non-permanenza viene dal solo decay. Massa finita §3 e tabella
+     armi §6 = sotto-meccaniche rimandate; la RAMPA §4 è TAGLIATA (decisione
+     23 giu 2026: due vettori di sconfitta sullo stesso muro = troppo carico di
+     leggibilità, l'anti-degenere è già dato da reroute+decay, lo stallo su muro
+     indistruttibile lo rompono i flyer; "scavalcano i cadaveri" resta solo come
+     fiction visiva). Vedi TODO M5b e CORPSE_DESIGN §4/§7.
    - **Spawn senza burst**: `simp_free_at(x,y,r)` dice se un disco ci sta senza
      sovrapporsi ad agenti o muri (griglia se attuale, altrimenti brute force).
      Emettere solo dove è libero elimina l'espulsione PBD allo spawn e fa
@@ -191,6 +212,10 @@ Il progetto ha DUE modelli di simulazione complementari:
 - `test_handles.c` / `test_query.c` — verifica handle (M3.1) e query (M3.4).
 - `test_corpses.c` — verifica cadaveri-ostacolo (M3.3); il volo (M3.2) è
   dentro `test_impulse.c`.
+- `test_corpse_pile.c` — verifica del perno accumulo cadaveri→costo nav
+  (CORPSE_DESIGN §7-bis): pivot anti-imbuto (pressione barricata 0→11 jam→114
+  cadaveri: il jam da solo non batte una barricata, il termine cadaveri sì),
+  decay→non permanenza, `simp_corpse_clear` riapre il varco, determinismo+no-NaN.
 - `test_types.c` / `test_density_route.c` / `test_jam.c` — verifica tipi +
   costo utente (M3.5), densità→costo (M3.6) e ingorgo→costo (M3.7).
 - `test_breakthrough.c` — verifica del costo di sfondamento PER-CELLA

@@ -119,6 +119,16 @@ struct SimP {
     float *cpx, *cpy, *crad, *cttl;
     float corpse_rmax;     /* largest radius ever in pool (search reach) */
 
+    /* corpse pile -> cost (CORPSE_DESIGN.md §7-bis). Per nav cell, accumulated
+     * VOLUME (mass, += pi*r^2 per corpse, slow decay) and packing (pack, += per
+     * trampling agent, faster decay). Derived height = k_h*mass/(1+k_pack*pack)
+     * feeds the k_corpse nav-cost term. Independent of the TTL pool: a corpse
+     * adds volume that then rots on its own clock. */
+    float *corpse_mass;    /* gw*gh */
+    float *corpse_pack;    /* gw*gh */
+    float *corpse_height;  /* gw*gh, derived, refreshed end of step */
+    bool   corpse_active;  /* any pile field still non-negligible */
+
     /* slot map: stable handles over swap-and-pop (see header) */
     int      *slot_to_index;  /* cap : slot -> dense index, -1 if free   */
     int      *index_to_slot;  /* cap : dense index -> slot               */
@@ -226,6 +236,12 @@ static void nav_phi_begin(SimP *s) {
     const float inv_rho_max =
         (3.14159265f * r0 * r0) / (s->cell * s->cell * 0.7f);
     const float kj = s->params.k_jam;
+    /* §7-bis: a dense corpse pile climbs toward the k_corpse ceiling, saturating
+     * at wall_h (a "wall of corpses"). Stays below WALL_ENTER so palazzi/sealed
+     * sieges are untouched, but can top a barricade's per-cell breakthrough toll
+     * -> the Dijkstra reroutes the horde to break the barricade. */
+    const float kc = s->params.k_corpse;
+    const float inv_wall_h = (s->params.wall_h > 0.0f) ? 1.0f / s->params.wall_h : 0.0f;
     for (int i = 0; i < n; i++) {
         float m = 1.0f + s->cost_user[i];
         if (kd > 0.0f) {
@@ -235,6 +251,10 @@ static void nav_phi_begin(SimP *s) {
         if (kj > 0.0f) {
             float t = s->jam_s[i] * inv_rho_max;
             m += kj * (t > 1.0f ? 1.0f : t);
+        }
+        if (kc > 0.0f) {
+            float t = s->corpse_height[i] * inv_wall_h;
+            m += kc * (t > 1.0f ? 1.0f : t);
         }
         s->cost_mult[i] = m < 0.2f ? 0.2f : m;
     }
@@ -389,6 +409,15 @@ static void density_update(SimP *s) {
         float sp = sqrtf(s->vx[i] * s->vx[i] + s->vy[i] * s->vy[i]);
         float still = 1.0f - sp / s->vpref[i];
         if (still > 0.0f) s->jam_raw[cy * gw + cx] += still * still;
+        /* §7-bis: a grounded agent over a piled cell tramples it (packing rises
+         * -> pile flattens). Cheap, we already have the cell here. Per recompute
+         * (flow_period cadence), absorbed by pack_inc; decay is per-step in 5b.
+         * NOTE: with the corpses still at INFINITE mass (this slice), an agent's
+         * center can't share a 0.5 m cell with a corpse disc — PBD pushes it out
+         * — so packing rarely fires; it comes alive with the finite-mass §3 slice
+         * (agents cresting the pile). The path is wired and correct now. */
+        if (s->corpse_mass[cy * gw + cx] > 1e-4f)
+            s->corpse_pack[cy * gw + cx] += s->params.pack_inc;
     }
     for (int j = 0; j < s->corpse_count; j++) {
         int cx = clampi((int)(s->cpx[j] * s->inv_cell), 0, gw - 1);
@@ -532,6 +561,12 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->params.k_density = 2.0f;
     s->params.k_jam     = 8.0f;
     s->params.flow_period = 0.5f;
+    s->params.k_corpse  = 300.0f;
+    s->params.k_h       = 1.0f;
+    s->params.k_pack    = 0.5f;
+    s->params.corpse_mass_hl = 30.0f;
+    s->params.corpse_pack_hl = 10.0f;
+    s->params.pack_inc  = 1.0f;
 
     const size_t n = (size_t)gw * gh;
     s->solid  = (uint8_t *)calloc(n, 1);
@@ -594,6 +629,10 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->cttl = (float *)malloc(CORPSE_CAP * sizeof(float));
     s->corpse_count = 0;
     s->corpse_rmax = 0.0f;
+    s->corpse_mass   = (float *)calloc(n, sizeof(float));
+    s->corpse_pack   = (float *)calloc(n, sizeof(float));
+    s->corpse_height = (float *)calloc(n, sizeof(float));
+    s->corpse_active = false;
 
     /* slot map: all slots free, prefilled so the first pops give 0,1,2... */
     s->slot_to_index = (int *)malloc((size_t)max_agents * sizeof(int));
@@ -652,6 +691,7 @@ void simp_destroy(SimP *s) {
     free(s->aflags); free(s->z); free(s->vz); free(s->landed);
     free(s->wall_pressure); free(s->wall_cell);
     free(s->cpx); free(s->cpy); free(s->crad); free(s->cttl);
+    free(s->corpse_mass); free(s->corpse_pack); free(s->corpse_height);
     free(s->slot_to_index); free(s->index_to_slot);
     free(s->slot_gen); free(s->slot_free);
     free(s->ccount); free(s->cstart); free(s->corder);
@@ -1184,6 +1224,14 @@ int simp_corpse_add(SimP *s, float x, float y, float radius, float ttl) {
     }
     s->cpx[i] = x; s->cpy[i] = y;
     s->crad[i] = radius; s->cttl[i] = ttl;
+    /* §7-bis: accumulate the corpse VOLUME into its nav cell (height of the
+     * pile). Independent of the TTL pool: this rots on its own clock. */
+    {
+        int cx = clampi((int)(x * s->inv_cell), 0, s->gw - 1);
+        int cy = clampi((int)(y * s->inv_cell), 0, s->gh - 1);
+        s->corpse_mass[cy * s->gw + cx] += 3.14159265f * radius * radius;
+        s->corpse_active = true;
+    }
     if (radius > s->corpse_rmax) s->corpse_rmax = radius;
     /* same constraint as simp_spawn_desc: the PBD 5-cell pair search only
      * sees discs whose radius fits the grid cell */
@@ -1202,6 +1250,37 @@ int simp_corpse_count(const SimP *s) { return s->corpse_count; }
 const float *simp_corpse_px(const SimP *s)  { return s->cpx; }
 const float *simp_corpse_py(const SimP *s)  { return s->cpy; }
 const float *simp_corpse_rad(const SimP *s) { return s->crad; }
+const float *simp_corpse_height(const SimP *s) { return s->corpse_height; }
+
+void simp_corpse_clear(SimP *s, float x, float y, float radius) {
+    float r2 = radius * radius;
+    /* remove physical corpses whose center is in range (swap-and-pop, like the
+     * TTL decay path; no handles point here) */
+    for (int j = s->corpse_count - 1; j >= 0; j--) {
+        float dx = s->cpx[j] - x, dy = s->cpy[j] - y;
+        if (dx * dx + dy * dy <= r2) {
+            int last = --s->corpse_count;
+            s->cpx[j] = s->cpx[last]; s->cpy[j] = s->cpy[last];
+            s->crad[j] = s->crad[last]; s->cttl[j] = s->cttl[last];
+        }
+    }
+    if (s->corpse_count == 0) s->corpse_rmax = 0.0f;
+    s->grid_stale = true;        /* ghosts changed: rebind next step */
+    /* zero the pile fields on the cells overlapping the disc */
+    int cx0 = clampi((int)((x - radius) * s->inv_cell), 0, s->gw - 1);
+    int cx1 = clampi((int)((x + radius) * s->inv_cell), 0, s->gw - 1);
+    int cy0 = clampi((int)((y - radius) * s->inv_cell), 0, s->gh - 1);
+    int cy1 = clampi((int)((y + radius) * s->inv_cell), 0, s->gh - 1);
+    for (int cy = cy0; cy <= cy1; cy++)
+        for (int cx = cx0; cx <= cx1; cx++) {
+            float ccx = (cx + 0.5f) * s->cell, ccy = (cy + 0.5f) * s->cell;
+            float dx = ccx - x, dy = ccy - y;
+            if (dx * dx + dy * dy > r2) continue;
+            int c = cy * s->gw + cx;
+            s->corpse_mass[c] = s->corpse_pack[c] = s->corpse_height[c] = 0.0f;
+        }
+    s->cost_dirty = true;        /* force a flow recompute (the pile is gone) */
+}
 
 /* --------------------------------------------------------------- stepping */
 
@@ -1535,7 +1614,8 @@ int simp_step(SimP *s, float dt) {
             s->flow_timer = 0.0f;
             bool density_on = (P->k_density > 0.0f || P->k_jam > 0.0f) &&
                 (s->count > 0 || s->corpse_count > 0 || s->rho_active);
-            if (density_on || s->cost_dirty) {
+            bool corpse_on = P->k_corpse > 0.0f && s->corpse_active;
+            if (density_on || corpse_on || s->cost_dirty) {
                 density_update(s);
                 nav_phi_begin(s);          /* seed the heap (frozen inputs) */
                 nav_phi_drain(s, s->nav_budget);
@@ -1630,6 +1710,28 @@ int simp_step(SimP *s, float dt) {
         }
     }
     if (s->corpse_count == 0) s->corpse_rmax = 0.0f;
+
+    /* 5b') corpse-pile decay + derived height (§7-bis). Pointwise over the nav
+     * grid (cheap vs PBD; gated so it idles when no pile exists). mass rots
+     * slowly, pack faster (untrampled piles re-inflate); height = k_h * mass /
+     * (1 + k_pack * pack) drops as the pile is packed flat. */
+    if (s->corpse_active) {
+        const int n = s->gw * s->gh;
+        const float lm = expf(-0.69314718f * dt / s->params.corpse_mass_hl);
+        const float lp = expf(-0.69314718f * dt / s->params.corpse_pack_hl);
+        const float kh = s->params.k_h, kpk = s->params.k_pack;
+        float maxm = 0.0f;
+        for (int i = 0; i < n; i++) {
+            float mass = s->corpse_mass[i] * lm;
+            float pack = s->corpse_pack[i] * lp;
+            if (mass < 1e-4f) { mass = 0.0f; pack = 0.0f; }   /* settle to clean 0 */
+            s->corpse_mass[i] = mass;
+            s->corpse_pack[i] = pack;
+            s->corpse_height[i] = kh * mass / (1.0f + kpk * pack);
+            if (mass > maxm) maxm = mass;
+        }
+        if (maxm <= 0.0f) s->corpse_active = false;
+    }
 
     /* 5c) periodic cache-locality reorder (M4): permute the SoA into cell order
      * so the rebuild below and the next steps' PBD touch memory sequentially.

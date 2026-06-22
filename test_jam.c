@@ -40,6 +40,8 @@ static RunStats run(float kj) {
     RunStats st = { 0, 0, 0, 0, 0, 0 };
     SimP *s = simp_create(GW, GH, CELL, MAX_AGENTS);
     simp_params(s)->k_jam = kj;
+    simp_params(s)->k_corpse = 0.0f;   /* isolate the jam term: the slit corpse
+                                          would otherwise reroute via §7-bis */
 
     for (int x = 0; x < GW; x++) { simp_set_wall(s, x, 0, true); simp_set_wall(s, x, GH - 1, true); }
     for (int y = 0; y < GH; y++) { simp_set_wall(s, 0, y, true); simp_set_wall(s, GW - 1, y, true); }

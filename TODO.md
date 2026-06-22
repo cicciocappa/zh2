@@ -320,18 +320,31 @@ statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
       (SDF binaria: palazzo e barricata entrambi solidi; il peso decide *dove* si
       preme, gli HP *se* cade). Abilita lo scenario urbano e le barricate del
       giocatore (sopra). Dettaglio: `SIMULAZIONE.md` §I.4, `M5_DESIGN.md` §7.
-- [ ] **Accumulo cadaveri nella NAV (anti-imbuto) — GEMELLO del costo per-cella**
+- [~] **Accumulo cadaveri nella NAV (anti-imbuto) — GEMELLO del costo per-cella**
       (design completo in `CORPSE_DESIGN.md`, perno anti-degenere in §7-bis).
-      Oggi i cadaveri pesano su `rho`/`jam` (`CORPSE_RHO`) ma restano sotto
-      `WALL_ENTER` → re-instradano solo fra strade APERTE. Per il PERNO
-      anti-imbuto ("barrico una strada e ammasso le torrette sull'altra": il
-      kill-zone si intasa di corpi → reroute → l'orda sfonda la barricata
-      scoperta) serve che una pila DENSA salga a costo **scala-muro** (un "muro
-      di cadaveri" nella nav) così da competere col costo-di-sfondamento
-      per-cella della barricata. Le due feature si progettano INSIEME. Crea
-      ritmo/gioco adattivo (decay → fronte oscillante). Leve secondarie lato
-      gioco: costo nav sotto le torrette (nudge mite), torrette meno efficaci se
-      ravvicinate (safety-net), screamer "intelligenti" (counterplay, dopo).
+      **PERNO §7-bis FATTO** (2026-06-23): tre campi per cella nav
+      (`corpse_mass` += π·r² per morte, decay lento; `corpse_pack` calpestio,
+      decay rapido; `corpse_height` = `k_h·mass/(1+k_pack·pack)`) + termine
+      d'arco `k_corpse·min(height/wall_h,1)` che fa salire una pila DENSA a costo
+      **scala-muro** (tetto `k_corpse`=300, satura a `wall_h`, sotto `WALL_ENTER`
+      → palazzi/assedi murati intatti) così da battere il `wall_cost` di una
+      barricata → il Dijkstra devia l'orda a premere/sfondare la barricata.
+      API `simp_corpse_height` / `simp_corpse_clear` (fuoco/acido). 6 param nuovi
+      in `SimPParams` (default on). `test_corpse_pile` PASS (pivot: pressione
+      barricata 0→11 jam→114 cadaveri; decay→non permanenza; clear riapre il
+      varco; determinismo + no-NaN). `test_jam` pinna `k_corpse=0` per isolarsi.
+      RESTA (sotto-meccaniche separate, fuori da questa fetta): **massa finita**
+      §3 (cedimento "rallentano ma non fermano", romperebbe `test_corpses`; il
+      packing è già cablato ma DORMIENTE finché la massa è infinita), **tabella
+      armi** §6 (`defense.c`: chi PRODUCE vs chi RIMUOVE cadaveri), overlay
+      `corpse_height` in `vat_horde`. **RAMPA §4 TAGLIATA** (decisione 23 giu
+      2026): due vettori di sconfitta sullo stesso muro = troppo carico di
+      leggibilità, e l'anti-degenere è già coperto dal reroute + decay; lo stallo
+      su muro indistruttibile lo rompono i flyer (già scavalcano `wall_h`). Lo
+      "scavalcano i cadaveri" resta come pura fiction visiva. Crea ritmo/gioco
+      adattivo (decay → fronte oscillante). Leve
+      secondarie lato gioco: costo nav sotto le torrette (nudge mite), torrette
+      meno efficaci se ravvicinate (safety-net), screamer "intelligenti" (dopo).
 - [ ] **Spawn event SCRIPTATI (director-per-uscita)** — estensione del director
       §8 per lo scenario urbano (uscite metro/cancelli/portoni con flussi
       propri). Soluzione: UN `DefDirector` per uscita (oggetto già indirizzabile;

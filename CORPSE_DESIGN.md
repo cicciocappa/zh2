@@ -1,23 +1,47 @@
 # Cadaveri come fattore di gioco: design tecnico
 
-> **DESIGN / PROPOSTA** (non ancora implementato). Estende i cadaveri-ostacolo di
+> **STATO (2026-06-23):** il **perno nav §7-bis** è IMPLEMENTATO (accumulo
+> `corpse_mass`/`corpse_pack` per cella + `corpse_height` derivata + termine
+> d'arco `k_corpse·min(height/wall_h,1)` a scala-muro; API `simp_corpse_height`
+> / `simp_corpse_clear`; 6 param in `SimPParams`, default on; `test_corpse_pile`
+> PASS). Massa dei cadaveri ancora INFINITA: il **cedimento per calpestio §3**
+> (massa finita) è RIMANDATO, e il packing §2 è cablato ma dormiente (un agente
+> non entra in una cella sigillata da un disco infinito) → la non-permanenza
+> viene dal solo decay. La tabella armi §6 vive lato gioco.
+>
+> **DECISIONE DI DESIGN (2026-06-23): la RAMPA §4 è TAGLIATA come meccanica.**
+> Due vettori di sconfitta sullo stesso muro (assedio HP→0 *e* scavalco
+> altezza→`wall_h`) costano troppo in leggibilità per il guadagno: il giocatore
+> dovrebbe leggere *quale* minaccia sta vincendo, con due feedback distinti. E
+> non serve: l'anti-degenere ("difesa permanente di cadaveri", "imbuto su un solo
+> accesso") è **già coperto dal reroute** di §7-bis (la pila alza il costo nav →
+> l'orda devia a cercare un varco più economico) + dal decay. Lo stallo su un
+> muro *indistruttibile* tenuto a fuoco si rompe meglio coi **flyer** (il volo
+> balistico già scavalca `wall_h`) o nemici speciali, non con la rampa. Quindi:
+> UN solo modello mentale — *"i mucchi sono una minaccia crescente: puliscili
+> (fuoco/acido) o non crearli sotto le torrette"* — e UN solo verbo per il
+> giocatore. Lo "scavalcano i cadaveri" resta come **pura fiction visiva**
+> (render, più avanti), senza regole. Vedi §4 e §7 riscritti.
+>
+> Estende i cadaveri-ostacolo di
 > M3.3 (`simp_corpse_*`) da semplice barricata temporanea a *fattore strategico*:
-> i mucchi cedono sotto il calpestio (non sono difesa permanente) e, se crescono
-> troppo contro un muro, formano una **rampa** che lascia scavalcare — un pericolo
-> da gestire, non un alleato gratis. Apre una distinzione di gameplay fra difese
-> che **producono** cadaveri (mitragliatrici, tagliole) e difese che **non** ne
-> producono o li **rimuovono** (fuoco, acido, esplosivi).
+> i mucchi nei varchi-killzone si intasano e **deviano l'orda** (non sono difesa
+> permanente) — un pericolo da gestire, non un alleato gratis. Apre una
+> distinzione di gameplay fra difese che **producono** cadaveri (mitragliatrici,
+> tagliole) e difese che **non** ne producono o li **rimuovono** (fuoco, acido,
+> esplosivi).
 
 Principio guida (come M3 e l'assedio): **il core resta gameplay-agnostico.** Il
 core espone *fisica e campi* — quanto è alta la pila di cadaveri per cella, quanto
 è compattata — riempiti nello stesso loop in cui già esistono i cadaveri. HP delle
-strutture, tipi d'arma, politica di rimozione, soglia di scavalco e denaro vivono
-nel codice di gioco. Tutto piatto, mappabile su compute shader come gli altri campi
-per-cella (densità, jam).
+strutture, tipi d'arma, politica di rimozione e denaro vivono nel codice di gioco.
+Tutto piatto, mappabile su compute shader come gli altri campi per-cella
+(densità, jam).
 
-Meccanica sorella: l'assedio frontale (`SIEGE_DESIGN.md`) e la rampa sono **due
-vettori ortogonali di sconfitta dello stesso muro** — il muro può *cadere*
-(assedio, HP→0) o essere *scavalcato* (rampa, altezza→`wall_h`). Vedi §7.
+Rapporto con l'assedio: il muro si sconfigge per **assedio** (`SIEGE_DESIGN.md`,
+HP→0). La pila di cadaveri NON è un secondo vettore di sconfitta del muro (la
+rampa è tagliata, vedi banner e §7): è una pressione sulla **nav** che fa
+**deviare** l'orda — opera sui varchi/strade, non sul muro. Vedi §7.
 
 ---
 
@@ -43,10 +67,11 @@ Con orde da 50k–100k, i morti sono migliaia. Due derive da evitare:
 
 ## 2. Il modello: due variabili per cella, che tirano in direzioni opposte
 
-Chiave del design: **accumulo** e **compattazione** sono grandezze separate. Se le
-colleghi alla stessa variabile ottieni un comportamento confuso (calpestare
-dovrebbe sia abbassare la resistenza orizzontale *sia* costruire una rampa: sono
-effetti opposti). Due campi per **cella nav** (stessa risoluzione di `rho`/`jam`):
+Chiave del design: **accumulo** (quanti corpi) e **compattazione** (quanto
+calpestati) sono grandezze separate. Il calpestio deve poter **abbassare** la pila
+(meno costo nav / meno altezza visiva) mentre i nuovi kill la **alzano**: due
+spinte opposte sulla stessa cella → servono due variabili, o il comportamento si
+confonde. Due campi per **cella nav** (stessa risoluzione di `rho`/`jam`):
 
 ```c
 float corpse_mass[cell];   /* volume di corpi accumulato. + a ogni morte,
@@ -72,20 +97,27 @@ height = k_h * corpse_mass / (1 + k_pack * corpse_pack);
   resistenza orizzontale offerta dai corpi. Decade anch'esso (i corpi sotto
   ricominciano a "gonfiare" se smettono di calpestarli).
 
+`height` è la grandezza che il gioco/render legge: alimenta il **costo nav**
+(§7-bis: pila alta → costo scala-muro → l'orda devia) ed è esposta per overlay e
+fiction visiva. (La rampa di scavalco è tagliata: `height` NON apre più muri.)
+
 Risultato leggibile nel tempo:
 
 | Stato pila | mass | pack | Effetto |
 |---|---|---|---|
-| Fresca, alta, poco pestata | alto | basso | **rampa** (pericolo); resistenza orizz. piena |
-| Vecchia, molto pestata | alto | alto | quasi neutra orizz.; rampa bassa (schiacciata) |
+| Fresca, alta, poco pestata | alto | basso | costo nav alto (l'orda devia il varco); resistenza orizz. piena |
+| Vecchia, molto pestata | alto | alto | quasi neutra orizz.; costo nav basso (schiacciata) |
 | Smaltita | →0 | →0 | terreno libero |
 
-**Dove nasce il pericolo, da solo.** A un *varco aperto* il traffico passante
-calpesta forte → `pack` alto → si appiattisce: niente rampa permanente al
-chokepoint. A un *muro assediato* gli zombie premono ma **non passano** (il muro
-blocca): poco calpestio, `pack` basso, `mass` che cresce coi kill delle torrette
-dietro → la pila resta alta → **rampa**. La meccanica prende di mira esattamente i
-muri tenuti, senza casi speciali: emerge dalla geometria.
+**Dove la pila morde, da sola.** A un *varco aperto* il traffico passante
+calpesta forte → `pack` alto → si appiattisce: niente blocco permanente al
+chokepoint. A un *killzone tenuto* gli zombie vengono falciati ma il flusso non
+scorre: poco calpestio passante, `pack` basso, `mass` che cresce coi kill →
+la pila resta alta → il **costo nav** sale e l'orda **devia** verso il fianco più
+debole. La meccanica prende di mira esattamente i punti dove accumuli i kill,
+senza casi speciali: emerge dalla geometria. (NB: il packing pieno richiede la
+massa finita §3 — con la massa infinita attuale l'appiattimento è dormiente e la
+non-permanenza viene dal decay.)
 
 ## 3. Rallentare senza fermare: massa finita
 
@@ -103,26 +135,24 @@ attuale. Opzioni (da verificare in sandbox):
 Raccomando **(a)**: si appoggia al sistema di masse esistente e dà il
 comportamento "spinta della folla che sfonda" coerente con il resto del core.
 
-## 4. La rampa: riusa volo e reroute (quasi gratis)
+## 4. La rampa di scavalco — ~~meccanica~~ TAGLIATA (solo fiction visiva)
 
-`height[cell]` adiacente a una cella-muro che si avvicina a `wall_h` (2 m, l'altezza
-che i flyer già sorvolano) = la pila ha raggiunto la cima del muro. Due strade:
+> **DECISIONE (2026-06-23): la rampa NON è una meccanica di gameplay.** Due
+> vettori di sconfitta sullo stesso muro (assedio *e* scavalco) costano troppo in
+> leggibilità — il giocatore dovrebbe distinguere quale sta vincendo — per un
+> guadagno già coperto altrove: l'anti-degenere lo dà il **reroute** di §7-bis
+> (la pila alza il costo nav → l'orda devia), la non-permanenza il decay, e lo
+> stallo su muro indistruttibile lo rompono **flyer**/nemici speciali (il volo
+> balistico già scavalca `wall_h`). Un solo modello mentale, un solo verbo
+> ("pulisci i mucchi"). Sotto, l'idea originale, conservata solo come possibile
+> **abbellimento visivo** (gli sprite che si arrampicano), SENZA effetto sulla nav.
 
-- **(a) Livello nav (consigliato).** Quando `height ≥ wall_h` su una cella a ridosso
-  di un muro, il **gioco** rende quella cella-muro attraversabile
-  (`simp_set_wall(s, cx, cy, false)`, esattamente come una breccia d'assedio). La
-  modifica del terreno **forza il commit completo della nav** → l'orda si re-instrada
-  *sopra* la rampa da sola. Riusa interamente la macchina di reroute dell'assedio
-  (§4 di `SIEGE_DESIGN.md`). Il muro fisico resta: la "passabilità" è l'astrazione
-  nav della salita. Visivamente lo sprite mostra l'arrampicata.
-- **(b) Livello particellare (fedeltà visiva).** Gli agenti su una cella con
-  `height > 0` ricevono un offset `z = height` (camminano *sulla* pila); chi cresta
-  oltre `wall_h` può scavalcare via il percorso di volo (`SIMP_FLYING` ignora i muri
-  sopra `wall_h`). Più bello ma più stato; tenuto come evoluzione.
-
-Quando il calpestio/decadimento riabbassa `height` sotto soglia, il gioco richiude
-la cella (o l'assedio la riapre): la rampa **non è permanente**, è un timer come
-l'HP del muro.
+Se mai si volesse la sola *fiction* (nessuna regola): gli agenti su una cella con
+`height > 0` ricevono un offset di render `z = height` (camminano *sulla* pila);
+puro renderer (`vat_layer`), il core non cambia, nessun muro diventa attraversabile.
+L'idea scartata era invece di aprire la cella-muro a `height ≥ wall_h`
+(`simp_set_wall(..., false)`, come una breccia d'assedio) — **non si fa**: sarebbe
+il secondo vettore di sconfitta che vogliamo evitare.
 
 ## 5. API del core (proposta)
 
@@ -130,9 +160,9 @@ Due aggiunte, entrambe campi per-cella già naturali nel motore:
 
 ```c
 /* Altezza della pila di cadaveri per cella nav (m). Derivata da mass/pack,
- * aggiornata a fine step. Il gioco la confronta con wall_h per la rampa.
- * Indicizzata per cella nav come rho/jam (NON per agente: niente problema
- * di indici instabili qui). */
+ * aggiornata a fine step. Alimenta il costo nav §7-bis (saturazione a wall_h) ed
+ * è esposta per overlay e fiction visiva. Indicizzata per cella nav come
+ * rho/jam (NON per agente: niente problema di indici instabili qui). */
 const float *simp_corpse_height(const SimP *s);
 
 /* Rimuove cadaveri (e ne azzera mass/pack) in un cerchio: fuoco/acido che
@@ -160,26 +190,32 @@ d'arma (di gioco), nessun supporto nel core oltre `simp_corpse_add`/`clear`:
 
 Il loop di gioco si chiude: una mitragliatrice efficiente al varco *costruisce* la
 pila; il giocatore deve prevedere un emettitore di fuoco/acido a copertura per
-tenere `height` sotto `wall_h`. Trade-off reale — efficienza istantanea vs gestione
+tenere la pila bassa, o il **costo nav sale e l'orda devia** il suo killzone verso
+il fianco scoperto (§7-bis). Trade-off reale — efficienza istantanea vs gestione
 dell'accumulo — e identità alle difese. "Eliminare i mucchi" non è micro tedioso a
 parte: è uno strumento già nel kit (fuoco/acido), con doppia funzione (danno +
 pulizia).
 
-## 7. Relazione con l'assedio (due vettori sul muro)
+## 7. Relazione con l'assedio (UN vettore sul muro, niente rampa)
 
-Assedio frontale (`SIEGE_DESIGN.md`) e rampa corrono **in parallelo** sullo stesso
-muro: HP→0 lo abbatte, `height`→`wall_h` lo fa scavalcare. Rischio di **rumore**: il
-giocatore deve capire quale minaccia sta vincendo. Mitigazioni di design:
+> Versione precedente: "due vettori sul muro" (assedio HP→0 *e* rampa
+> altezza→`wall_h`). **La rampa è stata tagliata** (vedi banner e §4): troppo
+> costo di leggibilità — il giocatore avrebbe dovuto distinguere quale minaccia
+> stesse vincendo lo stesso muro — per un guadagno già coperto dal reroute §7-bis.
 
-- I due tendono a separarsi per geometria: l'assedio morde i **varchi/sezioni
-  corte** dove la pressione frontale converge; la rampa cresce sui **muri lunghi
-  tenuti** dove i kill si accumulano senza calpestio passante. Spesso non si
-  sommano sullo stesso punto.
-- Feedback visivo distinto: il muro che si **scheggia** (assedio) vs la pila che
-  **cresce e cambia** (rampa). Il GFX_DESIGN ha già gore + cadaveri come layer →
-  l'altezza della pila è renderizzabile (più corpi accatastati). Da trattare come
-  **requisito di leggibilità**, non abbellimento: la rampa è punitiva se non la
-  vedi arrivare.
+Resta **un solo** modo di sconfiggere un muro: l'**assedio frontale**
+(`SIEGE_DESIGN.md`, HP→0). La pila di cadaveri NON attacca il muro: agisce sulla
+**nav** e fa **deviare** l'orda (§7-bis), una pressione che opera sui
+varchi/strade davanti al muro, non sulla struttura. Niente ambiguità "crolla o lo
+scavalcano": il muro o lo abbatti con l'assedio, o lo tieni — e se ammassi i kill
+davanti, la pila ti **disperde l'orda** altrove (la gestisci con fuoco/acido).
+
+Leggibilità (resta un requisito, più semplice ora): muro che si **scheggia** =
+assedio; pila che **cresce** davanti a un varco = costo nav che sta per deviare
+l'orda. Il GFX_DESIGN ha già gore + cadaveri come layer → l'altezza della pila è
+renderizzabile (più corpi accatastati) e fa da segnale "questo killzone si sta
+intasando". Eventuale fiction "ci si arrampicano sopra" = puro abbellimento, senza
+effetto nav (§4).
 
 ## 7-bis. Ruolo anti-imbuto strategico (anti-degenere) — PERNO scelto
 
@@ -204,11 +240,12 @@ tarato) → premia il gioco adattivo, scoraggia il turtling.
 > densa = un "muro di cadaveri" nella nav — così da competere col **costo di
 > sfondamento per-cella** della barricata (più basso di un palazzo, vedi
 > `M5_DESIGN.md` §7 e TODO core nav): allora il Dijkstra preferisce la barricata e
-> l'orda devia lì. È la versione *continua* della leva discreta di §4(a) (rendere
-> la cella attraversabile/solida): qui `corpse_mass` alza il costo fino a soglia
-> muro. **Le due feature sono gemelle** — l'anti-imbuto via cadaveri NON funziona
-> contro un giocatore che barrica, finché il costo cadaveri non può raggiungere la
-> scala del costo-muro. Da progettare insieme.
+> l'orda devia lì. `corpse_mass` alza il costo nav fino a soglia muro (saturando
+> a `wall_h`, ma SOTTO `WALL_ENTER` → palazzi e assedi a goal murati intatti).
+> **Le due feature sono gemelle** — l'anti-imbuto via cadaveri NON funziona contro
+> un giocatore che barrica, finché il costo cadaveri non può raggiungere la scala
+> del costo-muro. (Questo è IMPLEMENTATO, vedi banner; il costo di sfondamento
+> per-cella `wall_cost` era già fatto.)
 
 Le altre leve discusse stanno **lato gioco**, complementari ma secondarie: costo
 nav additivo sotto le torrette (nudge morbido — ma se l'alternativa è *sfondare*
@@ -218,49 +255,47 @@ il puzzle spaziale); screamer "intelligenti" che cercano il path più sicuro su 
 campo di pericolo e guidano l'orda (counterplay di flavor, secondo giro di
 pathfinding sui *pochi* screamer — più avanti).
 
-## 8. Verifica — `test_corpse_pile.c` (piano)
+## 8. Verifica — `test_corpse_pile.c` (FATTO, PASS)
 
-Headless, sulla falsariga di `test_corpses`/`test_siege`. Quattro parti:
+Headless, sulla falsariga di `test_jam`/`test_corpses`. Quattro parti
+implementate (la massa resta infinita → niente test di cedimento/rampa qui):
 
-1. **Cedimento per calpestio (rimedio 1).** Corridoio con un mucchio fresco; orda
-   che spinge. Assert: il drain è ~0 nei primi N step (mucchio fresco rallenta
-   forte), poi *cresce monotòno* man mano che `corpse_pack` sale e l'orda sfonda —
-   contro il controllo a massa infinita (drain piatto a 0). Misura `corpse_pack`
-   medio che sale e `height` che cala sotto calpestio.
-2. **Rampa (rimedio 2).** Muro che sigilla il goal; torretta (kill scriptati)
-   dietro che accumula corpi contro il muro mentre l'orda preme (poco calpestio →
-   `pack` basso). Assert: `corpse_height` sulla banda cresce monotòno fino a
-   `wall_h`; allo scavalco (cella aperta + reroute) il drain passa da 0 a >0.
-   Controllo: stessa scena ma con `simp_corpse_clear` periodico (fuoco) → `height`
-   tenuto sotto soglia → 0 scavalco, assedio puro.
-3. **Decadimento → non permanenza.** Mucchio piazzato, *nessun* nuovo kill: `mass`
-   decade, `height`→0, il varco si riapre da solo (no difesa permanente).
-4. **Determinismo** (due run identiche: stessi campi, stesso step di scavalco) e
-   **zero NaN**.
+1. **PIVOT anti-imbuto.** Muro con un varco diretto APERTO (intasato da una pila
+   di cadaveri scriptata) e una BARRICATA (banda solida a `wall_cost` basso) come
+   unica alternativa. Tre run, stessa fisica, varia solo il termine nav:
+   `k_corpse=0,k_jam=0` (baseline: coda al varco, barricata intatta) ·
+   `k_jam=8,k_corpse=0` (il jam da solo NON batte la barricata) ·
+   `k_corpse=300` (la pila supera la barricata → reroute → l'orda preme la
+   barricata). Misura: `simp_wall_pressure` sommata sulla barricata = 0 → 11
+   (jam) → 114 (cadaveri). Assert: pressione cadaveri ≫ jam ≫ baseline.
+2. **Decadimento → non permanenza.** Pila, nessun nuovo kill: `corpse_height`
+   decade monotòno a ~0 (la pila marcisce, niente difesa permanente).
+3. **Clear (fuoco/acido).** `simp_corpse_clear` rimuove i corpi + azzera i campi e
+   riapre il varco: drain ~0 da intasato → >0 dopo il clear.
+4. **Determinismo** (due run pivot identiche: stessa pressione/drain) + **zero NaN**.
 
-Sweep da misurare: `k_h`/`k_pack`/half-life del decay vs (step di scavalco, % drain),
-per dimensionare le manopole. Sandbox: pennelli fuoco/acido (clear) e overlay
-ciclico `corpse_height` (sopra gli overlay densità/jam esistenti) per vedere la
-pila crescere.
+NOTA: il **cedimento per calpestio** (rimedio §3) e la **rampa** (§4, tagliata)
+NON sono testati: il primo richiede la massa finita (rimandata), la seconda è
+stata rimossa come meccanica. Il packing è cablato ma dormiente sotto massa
+infinita. Sweep futuri (`k_h`/`k_pack`/half-life) quando arriva §3. Overlay
+`corpse_height` in `vat_horde` = follow-up visivo.
 
 ## 9. Note, trappole, mappatura GPU
 
 - **Indici stabili non servono qui**: i campi sono per *cella nav*, non per agente —
   niente trappola degli indici densi (a differenza dell'assedio). I cadaveri non
   hanno handle per design (M3.3): il gioco non li punta.
-- **Cambio rispetto a `test_corpses`**: la massa finita (§3) rompe il sigillo
-  totale verificato lì. Il test va aggiornato (sigillo → rallentamento progressivo);
-  documentare la rottura voluta.
-- **`CORPSE_RHO` resta**: i corpi pesano già su `rho`/`jam` (deviazione del flow). La
-  rampa è ortogonale (verticalità via `height`), non sostituisce il costo di densità.
-- **Costo**: due float/cella nav in più (`mass`, `pack`) aggiornati nei loop già
-  esistenti (istogramma a fine step, decay in 5b). `simp_corpse_clear` = una
-  scansione del pool nel raggio (come gli impulsi brute force). Trascurabile.
-- **GPU**: `corpse_mass`/`pack` sono campi per-cella identici a `rho`/`jam` →
-  texture/SSBO, aggiornati nel kernel d'istogramma. `corpse_height` = un kernel
-  pointwise. La decisione di scavalco (soglia → edit terreno) è CPU/gioco, rara.
-- **Soglia di scavalco vs spessore del muro**: un muro di più celle non si scavalca
-  con una sola cella di rampa al piede. La logica di gioco deve richiedere `height ≥
-  wall_h` su una cella che confina con una cella-muro *e* aprire la cella di sbocco
-  oltre (o trattare il muro spesso come non scavalcabile dai cadaveri — scelta di
-  level design).
+- **Cambio rispetto a `test_corpses`**: SOLO quando arriverà la massa finita (§3)
+  il sigillo totale verificato lì si romperà (sigillo → rallentamento). In questa
+  fetta la massa resta infinita → `test_corpses` è intatto.
+- **`CORPSE_RHO` resta**: i corpi pesano già su `rho`/`jam` (deviazione fra strade
+  aperte). Il termine `k_corpse` su `height` è ortogonale e sale fino a scala-muro
+  (battendo le barricate), non sostituisce il costo di densità.
+- **Costo**: tre float/cella nav in più (`mass`, `pack`, `height`) aggiornati nei
+  loop già esistenti (istogramma + decay/height pointwise a fine step).
+  `simp_corpse_clear` = una scansione del pool nel raggio (come gli impulsi brute
+  force). Trascurabile.
+- **GPU**: `corpse_mass`/`pack`/`height` sono campi per-cella identici a
+  `rho`/`jam` → texture/SSBO, aggiornati nel kernel d'istogramma + un kernel
+  pointwise per height. Niente decisione di scavalco (rampa tagliata): solo il
+  termine d'arco nel Dijkstra, come `k_density`/`k_jam`.

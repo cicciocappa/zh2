@@ -33,6 +33,7 @@ else
 endif
 
 all: test_particles test_impulse test_dormant test_handles test_query test_corpses \
+     test_corpse_pile \
      test_types test_density_route test_jam test_scene test_siege test_turret \
      test_defense test_base test_director test_terrain test_pick test_editor \
      test_breakthrough test_props test_vat_layer
@@ -57,6 +58,9 @@ test_query: test_query.c sim_particles.c sim_particles.h
 
 test_corpses: test_corpses.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_corpses.c sim_particles.c $(LDLIBS)
+
+test_corpse_pile: test_corpse_pile.c sim_particles.c sim_particles.h
+	$(CC) $(CFLAGS) -o $@ test_corpse_pile.c sim_particles.c $(LDLIBS)
 
 test_types: test_types.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_types.c sim_particles.c $(LDLIBS)
@@ -136,6 +140,7 @@ test: all
 	./test_handles
 	./test_query
 	./test_corpses
+	./test_corpse_pile
 	./test_types
 	./test_density_route
 	./test_jam
@@ -154,7 +159,7 @@ test: all
 
 clean:
 	rm -rf test_particles test_impulse test_dormant test_handles test_query \
-	       test_corpses test_types test_density_route test_jam test_scene \
+	       test_corpses test_corpse_pile test_types test_density_route test_jam test_scene \
 	       test_siege test_turret test_defense test_base test_director test_terrain bench_sim test_pick test_editor test_breakthrough test_props test_vat_layer \
 	       sandbox sprite_view vat_view vat_horde frames *.exe vat/*.o
 

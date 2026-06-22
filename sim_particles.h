@@ -79,6 +79,22 @@
  *     Dijkstra reroutes around it; when the plug clears, the EMA decays and
  *     the direct route wins again. k_jam = 0 disables it. Stays far below
  *     WALL_ENTER, so sieges against sealed goals are unaffected.
+ *   - CORPSE PILE (CORPSE_DESIGN.md §7-bis, the anti-funnel pivot): two extra
+ *     per-cell fields track corpses as accumulated VOLUME, not just a fixed rho
+ *     weight. corpse_mass grows by pi*r^2 per corpse and decays slowly;
+ *     corpse_pack grows as grounded agents trample a piled cell and decays
+ *     faster. The derived height = k_h * mass / (1 + k_pack * pack) (meters)
+ *     falls as the pile is packed flat. The edge term k_corpse * min(height /
+ *     wall_h, 1) lets a DENSE pile climb to a "wall of corpses" cost (ceiling
+ *     k_corpse), comparable to a barricade's per-cell breakthrough toll so the
+ *     Dijkstra reroutes the horde to BREAK the barricade rather than queue at a
+ *     corpse-clogged open gap. Stays below WALL_ENTER (palazzi/sealed sieges
+ *     unaffected). An open gap trampled by through-traffic packs flat (pack up
+ *     -> height down): no permanent block; a held wall (kills pile up, no
+ *     through-traffic) keeps the pile tall. k_corpse = 0 disables it. (Packing
+ *     is wired but largely dormant while corpses are INFINITE mass — an agent
+ *     can't crest a sealed pile to trample its cell; it comes alive with the
+ *     finite-mass slice. Decay alone already keeps piles non-permanent.)
  *   - THROTTLE: phi/flow are recomputed at most every flow_period seconds
  *     (terrain edits still force an immediate full recompute through the
  *     usual dirty flag). Agents read a slightly stale field in between:
@@ -127,6 +143,13 @@ typedef struct {
     float k_density;  /* density->cost gain (0 = off)             default 2.0  */
     float k_jam;      /* stalled-crowd->cost gain (0 = off)       default 8.0  */
     float flow_period;/* min seconds between flow recomputes      default 0.5  */
+    /* corpse pile -> cost (CORPSE_DESIGN.md §7-bis) */
+    float k_corpse;     /* corpse-pile->cost ceiling (0 = off)     default 300  */
+    float k_h;          /* pile height per unit packed volume (m)  default 1.0  */
+    float k_pack;       /* packing attenuation of height/cost      default 0.5  */
+    float corpse_mass_hl; /* corpse_mass half-life (s)             default 30.0 */
+    float corpse_pack_hl; /* corpse_pack half-life (s)             default 10.0 */
+    float pack_inc;     /* pack added per trampling agent per recompute  default 1.0 */
 } SimPParams;
 
 typedef struct SimP SimP;
@@ -314,6 +337,18 @@ int   simp_corpse_count(const SimP *s);
 const float *simp_corpse_px(const SimP *s);
 const float *simp_corpse_py(const SimP *s);
 const float *simp_corpse_rad(const SimP *s);
+
+/* Per-nav-cell corpse-pile height (m), derived from accumulated mass and
+ * packing (height = k_h * mass / (1 + k_pack * pack)), refreshed at the end of
+ * each step. Drives the k_corpse nav cost; game/overlays compare it to wall_h
+ * for the future ramp. gw*gh, indexed by cell (no agent-index trap). */
+const float *simp_corpse_height(const SimP *s);
+
+/* Fire/acid: remove physical corpses whose center lies within radius of (x,y)
+ * AND zero the pile fields (mass/pack/height) on the cells in range, then force
+ * a flow recompute. The game-side "no-corpse" defenses (CORPSE_DESIGN.md §6)
+ * use this to keep a pile from climbing to wall height. */
+void  simp_corpse_clear(SimP *s, float x, float y, float radius);
 
 /* ---- stepping ------------------------------------------------------------ */
 
