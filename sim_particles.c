@@ -103,6 +103,8 @@ struct SimP {
     float *invm;           /* inverse mass (~ 1/r^2) */
     uint32_t *seed;        /* per-agent RNG state */
     uint8_t *aflags;       /* behaviour flags (SIMP_DORMANT, SIMP_FLYING) */
+    float *stun;           /* per-agent stun timer (s): >0 brakes steering to rest
+                            * (hit flinch); decays per step, no goal pull meanwhile */
     float *z, *vz;         /* fake third axis for ballistic flight */
 
     /* agents landed during the last step (handles: drain-safe) */
@@ -616,6 +618,7 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->invm  = (float *)malloc(capg * sizeof(float));
     s->seed  = (uint32_t *)malloc(capg * sizeof(uint32_t));
     s->aflags = (uint8_t *)calloc((size_t)max_agents, 1);
+    s->stun = (float *)calloc((size_t)max_agents, sizeof(float));
     s->z  = (float *)calloc((size_t)max_agents, sizeof(float));
     s->vz = (float *)calloc((size_t)max_agents, sizeof(float));
     s->landed = (SimPHandle *)malloc((size_t)max_agents * sizeof(SimPHandle));
@@ -689,7 +692,7 @@ void simp_destroy(SimP *s) {
     free(s->px); free(s->py); free(s->qx); free(s->qy);
     free(s->vx); free(s->vy);
     free(s->rad); free(s->vpref); free(s->invm); free(s->seed);
-    free(s->aflags); free(s->z); free(s->vz); free(s->landed);
+    free(s->aflags); free(s->stun); free(s->z); free(s->vz); free(s->landed);
     free(s->wall_pressure); free(s->wall_cell);
     free(s->cpx); free(s->cpy); free(s->crad); free(s->cttl);
     free(s->corpse_mass); free(s->corpse_pack); free(s->corpse_height);
@@ -782,6 +785,7 @@ static int spawn_common(SimP *s, float x, float y) {
     s->seed[i] = st ^ 0xA511E9B3u ^ (uint32_t)i * 2654435761u;
     if (s->seed[i] == 0) s->seed[i] = 1;
     s->aflags[i] = 0;
+    s->stun[i] = 0.0f;
     s->z[i] = 0.0f; s->vz[i] = 0.0f;
     /* count < cap guarantees the free stack is non-empty */
     int slot = s->slot_free[--s->slot_free_top];
@@ -845,6 +849,14 @@ void simp_set_vpref(SimP *s, int i, float v_pref) {
     s->vpref[i] = v_pref < 0.0f ? 0.0f : v_pref;
 }
 
+void simp_stun(SimP *s, int i, float duration) {
+    if (i < 0 || i >= s->count) return;
+    if (s->aflags[i] & SIMP_FLYING) return;        /* airborne: nothing to plant */
+    if (duration <= 0.0f) { s->stun[i] = 0.0f; return; }
+    s->stun[i] = duration;
+    s->vx[i] = 0.0f; s->vy[i] = 0.0f;              /* drop self-momentum at once */
+}
+
 void simp_kill(SimP *s, int i) {
     int slot = s->index_to_slot[i];
     s->slot_gen[slot]++;                       /* wrap is fine (12 bits used) */
@@ -859,6 +871,7 @@ void simp_kill(SimP *s, int i) {
     s->rad[i] = s->rad[last]; s->vpref[i] = s->vpref[last];
     s->invm[i] = s->invm[last]; s->seed[i] = s->seed[last];
     s->aflags[i] = s->aflags[last];
+    s->stun[i] = s->stun[last];
     s->z[i] = s->z[last]; s->vz[i] = s->vz[last];
     s->wall_pressure[i] = s->wall_pressure[last];   /* keep siege sensor in sync */
     s->wall_cell[i] = s->wall_cell[last];
@@ -1332,6 +1345,7 @@ static void reorder_agents(SimP *s) {
     permute_arr(s->vz, sizeof(float), perm, n, tmp);
     permute_arr(s->seed, sizeof(uint32_t), perm, n, tmp);
     permute_arr(s->aflags, sizeof(uint8_t), perm, n, tmp);
+    permute_arr(s->stun, sizeof(float), perm, n, tmp);
     permute_arr(s->wall_pressure, sizeof(float), perm, n, tmp);
     permute_arr(s->wall_cell, sizeof(int), perm, n, tmp);
     /* handle map: permute index->slot, then rebuild slot->index from it
@@ -1560,12 +1574,17 @@ static void job_wall(void *arg, int worker, int begin, int end) {
 static void job_steering(void *arg, int worker, int begin, int end) {
     (void)worker;
     StepCtx *ctx = arg; SimP *s = ctx->s; const SimPParams *P = &s->params;
-    const float amax_dt = ctx->amax_dt, damp = ctx->damp;
+    const float amax_dt = ctx->amax_dt, damp = ctx->damp, dt = ctx->dt;
     for (int i = begin; i < end; i++) {
         uint8_t fl = s->aflags[i];
         if (fl & SIMP_FLYING) continue;
+        /* hit stun: decay the timer and brake to rest (no goal pull) while it
+         * runs — keeps the agent planted under its flinch animation instead of
+         * sliding forward. Still collides and absorbs crowd pushes (PBD). */
+        bool stunned = false;
+        if (s->stun[i] > 0.0f) { s->stun[i] -= dt; stunned = true; }
         float fx = 0.0f, fy = 0.0f;
-        if (!(fl & SIMP_DORMANT)) {
+        if (!(fl & SIMP_DORMANT) && !stunned) {
             simp_sample_flow(s, s->px[i], s->py[i], &fx, &fy);
             if (P->noise_ang > 0.0f && (fx != 0.0f || fy != 0.0f)) {
                 float a = P->noise_ang * rng_fsym(&s->seed[i]);

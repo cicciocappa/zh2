@@ -6,10 +6,11 @@
 > / `simp_corpse_clear`; 6 param in `SimPParams`, default on; `test_corpse_pile`
 > PASS). **Massa finita §3 (a) IMPLEMENTATA** (2026-06-23, `corpse_weight`
 > default 40): l'orda shova la pila e sfonda invece di restare sigillata —
-> "rallentano ma non fermano". RESTA lo scaling per `corpse_pack` (cedimento
-> progressivo, l'`invm` non dipende ancora dal pack) e la tabella armi §6 (lato
-> gioco). Il packing §2 alimenta già il costo nav (height §7-bis); il decay tiene
-> le pile non-permanenti.
+> "rallentano ma non fermano". Lo scaling `pack→invm` (cedimento progressivo) è
+> stato valutato e **SCARTATO** (2026-06-23, vedi §3): inerte in pratica (`corpse_pack`
+> non si accumula — il PBD tiene i centri agente fuori dalle celle cadavere) e
+> comunque ridondante, l'anti-imbuto è già dato dal costo nav §7-bis. RESTA solo
+> la tabella armi §6 (lato gioco). Il decay tiene le pile non-permanenti.
 >
 > **DECISIONE DI DESIGN (2026-06-23): la RAMPA §4 è TAGLIATA come meccanica.**
 > Due vettori di sconfitta sullo stesso muro (assedio HP→0 *e* scavalco
@@ -117,10 +118,12 @@ chokepoint. A un *killzone tenuto* gli zombie vengono falciati ma il flusso non
 scorre: poco calpestio passante, `pack` basso, `mass` che cresce coi kill →
 la pila resta alta → il **costo nav** sale e l'orda **devia** verso il fianco più
 debole. La meccanica prende di mira esattamente i punti dove accumuli i kill,
-senza casi speciali: emerge dalla geometria. (Con la massa finita §3 ora attiva,
-il traffico che sfonda una pila la calpesta davvero → `pack` sale e abbassa la
-height/costo nav; il decay resta la garanzia di non-permanenza. Il pack non
-modifica ancora l'`invm` fisico — cedimento progressivo = prossimo sotto-passo.)
+senza casi speciali: emerge dalla geometria. Il decay resta la garanzia di
+non-permanenza. (NOTA 2026-06-23: in pratica `pack` resta ≈0 nelle scene
+realistiche — incrementa solo se il *centro* di un agente a terra occupa una
+cella cadavere, ma il PBD separa i dischi → height/costo nav sono guidati dal
+solo `mass`, che è la grandezza che conta. Il `pack` è quindi un termine latente;
+il cedimento fisico `pack→invm` è stato scartato per questo, vedi §3.)
 
 ## 3. Rallentare senza fermare: massa finita — FATTO (2026-06-23)
 
@@ -132,18 +135,30 @@ modifica ancora l'`invm` fisico — cedimento progressivo = prossimo sotto-passo
 > coppie cadavere-cadavere sono saltate (sennò una pila di dischi sovrapposti si
 > farebbe esplodere). `test_corpses` aggiornato: B = sigillo infinito (drain 0,
 > moved 0), C = §3 finito (drain 44 vs 164 aperto → rallenta molto ma LEAKA,
-> moved 9). Suite 22/22 verde. Lo SCALING per `corpse_pack` ("più pestati → più
-> cedevoli", curva di cedimento progressiva) è il **prossimo sotto-passo**:
-> oggi il pack agisce già sul costo nav (height §7-bis) ma non sull'`invm`.
+> moved 9). Suite 22/22 verde.
+>
+> **Lo SCALING `pack→invm` ("più pestati → più cedevoli") è SCARTATO (2026-06-23).**
+> Prototipato (`corpse_yield`, `invm = cinvm·(1+yield·pack)` con tetto al floor
+> walker) e misurato: **inerte**. `corpse_pack` non si accumula nelle scene reali —
+> incrementa solo quando il *centro* di un agente a terra cade in una cella con
+> `corpse_mass`, ma il PBD separa i dischi agente da quelli cadavere, quindi i
+> centri non ci entrano quasi mai; e dove la pila viene travolta, i corpi vengono
+> shovati *fuori* dalla cella-deposito della massa. Risultato: drain bit-identico
+> con yield on/off su tutti i pesi 4→32 (verificato). Ed è comunque **ridondante**:
+> l'anti-imbuto/anti-degenere ("percorso libero pieno di torrette") è già coperto
+> dal **costo nav §7-bis** (`mass→height→Dijkstra→reroute`, l'orda preferisce
+> premere una barricata che insistere nel varco intasato). Stessa logica del taglio
+> della rampa §4: un secondo vettore sullo stesso muro non vale il tuning/leggibilità.
+> Il rimedio fisico resta la **massa finita FISSA** (sopra): rallenta senza fermare.
 
 Per il rimedio "rallentano ma non fermano" bisogna mollare la **massa infinita**:
 
-- **(a) Massa grande ma finita** sui cadaveri (`invm` piccolo non-zero, in
-  prospettiva scalato da `corpse_pack`: più pestati → più cedevoli). Il PBD già
-  lavora a rapporti di massa (M3.5): l'orda che spinge da dietro lentamente
-  *sfonda* il mucchio invece di fermarsi netta. **SCELTA e implementata** (vedi
-  banner). Cambio rispetto a `test_corpses` (dove sigillavano del tutto): test
-  aggiornato (sigillo legacy + rallentamento §3 affiancati).
+- **(a) Massa grande ma finita** sui cadaveri (`invm` piccolo non-zero, FISSA —
+  lo scaling per `corpse_pack` "più pestati → più cedevoli" è stato scartato, vedi
+  banner). Il PBD già lavora a rapporti di massa (M3.5): l'orda che spinge da
+  dietro lentamente *sfonda* il mucchio invece di fermarsi netta. **SCELTA e
+  implementata** (vedi banner). Cambio rispetto a `test_corpses` (dove sigillavano
+  del tutto): test aggiornato (sigillo legacy + rallentamento §3 affiancati).
 - **(b) Raggio che cala con `pack`**: i corpi calpestati si "spalmano" e lasciano
   filtrare. Più semplice, ma meno fisico del momento che sfonda. **Scartata.**
 

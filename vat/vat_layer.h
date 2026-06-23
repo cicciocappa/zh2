@@ -24,7 +24,10 @@
 #include "sim_particles.h"
 
 #define VAT_MAX_CLIPS 64
-#define VAT_MAX_VARIANTS 8
+#define VAT_MAX_VARIANTS 16   /* deve coprire TUTTI i body (cosmetici + tipi di gioco):
+                               * create_multi clampa a questo limite -> se NVAR lo supera
+                               * le varianti in coda (es. il tank) vengono perse e i loro
+                               * agenti ripiegano sulla scala da raggio (= giganti). */
 typedef struct { char name[32]; int startFrame, numFrames; float duration, stride; } VatClip;
 typedef struct { int texW, texH, rowsPerFrame; float fps, scale; int total;
                  VatClip clip[VAT_MAX_CLIPS]; int nclips; } VatMeta;
@@ -76,8 +79,10 @@ void vat_layer_make_bloody(VatLayer *vl, int slot);
 
 /* Evento HIT one-shot su un agente vivo (colpo non letale): flinch della clip
  * hit, poi ritorno alla FSM velocità. No-op se il body non ha clip hit (crawler)
- * o se un flinch è già in corso. slot = simp_slot_of(s, indice). */
-void vat_layer_hit(VatLayer *vl, int slot);
+ * o se un flinch è già in corso. slot = simp_slot_of(s, indice). Ritorna la
+ * DURATA del flinch avviato (s), 0 se nessuno: il chiamante la passa a
+ * simp_stun per piantare l'agente sotto l'animazione (niente foot-sliding). */
+float vat_layer_hit(VatLayer *vl, int slot);
 
 /* Spawna un decedente (morte leggera, non gib): una visuale che riproduce la
  * clip morte del body una volta a (x,y) poi tiene l'ultimo frame per un TTL.

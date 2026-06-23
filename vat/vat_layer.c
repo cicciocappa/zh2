@@ -30,8 +30,12 @@ struct VatLayer {
     float *hx, *hy, *spd, *phaseA, *phaseB, *blendF, *hmul;
     int   *clipA, *clipB, *pin;              /* pin[slot] = variante+1 forzata, 0 = libera */
     unsigned char *state, *target, *blending, *outfit, *var, *tr, *tg, *tb;
-    /* one-shot HIT overlay (interrompe la FSM per la durata della clip, poi torna) */
-    float *osT, *osPh; int *osClip;          /* osT[slot]>0 = flinch in corso */
+    /* one-shot HIT overlay (interrompe la FSM per la durata della FINESTRA, poi
+       torna). Si riproduce solo un sotto-intervallo casuale della clip hit
+       ([osF0, osF0+osLen) frame): flinch piu' corto + varieta' (ogni colpo una
+       fetta diversa). hit_ctr desincronizza colpi sullo stesso slot. */
+    float *osT, *osPh; int *osClip, *osF0, *osLen;   /* osT[slot]>0 = flinch in corso */
+    unsigned hit_ctr;
     /* pool decessi renderer-side: visuali che riproducono la clip morte una volta
        e poi tengono l'ultimo frame, indipendenti dall'agente sim gia' rimosso. */
     int dmax, dwrite;
@@ -103,6 +107,7 @@ VatLayer *vat_layer_create_multi(const char *const *meta_paths, int nvariants, i
     vl->state=calloc(n,1); vl->target=calloc(n,1); vl->blending=calloc(n,1);
     vl->outfit=calloc(n,1); vl->var=calloc(n,1); vl->tr=calloc(n,1); vl->tg=calloc(n,1); vl->tb=calloc(n,1);
     vl->osT=calloc(n,4); vl->osPh=calloc(n,4); vl->osClip=calloc(n,sizeof(int));
+    vl->osF0=calloc(n,sizeof(int)); vl->osLen=calloc(n,sizeof(int));
     /* pool decessi: dimensionato a ~min(max,4096) come i cadaveri (M3.3) */
     vl->dmax = max_slots<4096?max_slots:4096; vl->dwrite=0;
     int d=vl->dmax;
@@ -129,7 +134,7 @@ void vat_layer_destroy(VatLayer *vl){ if(!vl)return;
     free(vl->seen);free(vl->hx);free(vl->hy);free(vl->spd);free(vl->phaseA);free(vl->phaseB);
     free(vl->blendF);free(vl->hmul);free(vl->clipA);free(vl->clipB);free(vl->pin);free(vl->state);free(vl->target);
     free(vl->blending);free(vl->outfit);free(vl->var);free(vl->tr);free(vl->tg);free(vl->tb);
-    free(vl->osT);free(vl->osPh);free(vl->osClip);
+    free(vl->osT);free(vl->osPh);free(vl->osClip);free(vl->osF0);free(vl->osLen);
     free(vl->dx);free(vl->dy);free(vl->dz);free(vl->dhd);free(vl->dsc);free(vl->dph);free(vl->dttl);
     free(vl->dvar);free(vl->dclip);free(vl->dout);free(vl->dtr);free(vl->dtg);free(vl->dtb);free(vl->dactive);
     free(vl->gx);free(vl->gy);free(vl->gz);free(vl->gvx);free(vl->gvy);free(vl->gvz);free(vl->gttl);
@@ -176,21 +181,40 @@ void vat_layer_set_variant(VatLayer *vl,int slot,int variant){
     if(slot<0||slot>=vl->max||variant<0||variant>=vl->nvar) return;
     if(vl->var[slot]==(unsigned char)variant) return;   /* keep animating */
     vl->var[slot]=(unsigned char)variant;
+    /* Un flinch HIT in corso indicizza il layout di clip del VECCHIO body
+       (osClip): sul nuovo body (es. il crawler, 3 clip) e' fuori range -> frame
+       sballati = posa distorta/congelata finche' osT non scade. Annullalo e
+       riparti pulito dalla WALK del nuovo body. */
+    vl->osT[slot]=0.0f;
     vl->state[slot]=ST_WALK; vl->blending[slot]=0;
-    vl->clipA[slot]=pick_clip(vl,variant,slot,ST_WALK); }
+    vl->clipA[slot]=pick_clip(vl,variant,slot,ST_WALK); vl->phaseA[slot]=0.0f; }
 
 /* One-shot HIT flinch su un agente vivo. No-op se il body non ha clip hit
    (es. crawler) o se un flinch e' gia' in corso (i colpi ravvicinati non
    ribattono il timer all'infinito). */
-void vat_layer_hit(VatLayer *vl, int slot){
-    if(slot<0||slot>=vl->max) return;
+float vat_layer_hit(VatLayer *vl, int slot){
+    if(slot<0||slot>=vl->max) return 0.0f;
     int body=vl->var[slot];
-    if(vl->group_n[body][ST_HIT]<=0) return;
-    if(vl->osT[slot]>0) return;                         /* gia' in flinch */
-    vl->osClip[slot]=pick_clip(vl,body,slot,ST_HIT);
-    vl->osPh[slot]=0;
-    vl->osT[slot]=vl->m[body].clip[vl->osClip[slot]].duration;
-    if(vl->osT[slot]<=0) vl->osT[slot]=1.0f;
+    if(vl->group_n[body][ST_HIT]<=0) return 0.0f;
+    if(vl->osT[slot]>0) return 0.0f;                    /* gia' in flinch */
+    int clip=pick_clip(vl,body,slot,ST_HIT);
+    const VatClip *c=&vl->m[body].clip[clip];
+    int nf=c->numFrames>0?c->numFrames:1;
+    /* finestra casuale dentro la clip: start 1..30, lunghezza 20..30 frame
+       (la clip hit reale e' ~61 frame: la piena durerebbe ~2 s). hit_ctr da'
+       varieta' tra colpi successivi. Clampata ai limiti della clip per body
+       con hit corte. */
+    unsigned h=hashu((unsigned)slot*131u + vl->hit_ctr*2654435761u + 0x117u); vl->hit_ctr++;
+    int f0 = 1 + (int)(h % 30u);
+    int len = 20 + (int)((h>>8) % 11u);
+    if(f0 >= nf) f0 = nf>1?nf-1:0;
+    if(f0+len > nf) len = nf-f0;
+    if(len < 1) len = 1;
+    float perFrame = (c->duration>0?c->duration:(float)nf/30.0f)/(float)nf;
+    vl->osClip[slot]=clip; vl->osF0[slot]=f0; vl->osLen[slot]=len; vl->osPh[slot]=0;
+    vl->osT[slot]=len*perFrame;
+    if(vl->osT[slot]<=0) vl->osT[slot]=0.1f;
+    return vl->osT[slot];
 }
 
 /* Spawna un decedente: una visuale renderer-side che riproduce la clip morte del
@@ -313,6 +337,7 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
             unsigned r=hashu(h); float ang=(r&0xffff)*(6.2831853f/65536.0f);
             vl->seen[slot]=h; vl->hx[slot]=sinf(ang)*0.01f; vl->hy[slot]=cosf(ang)*0.01f;
             vl->spd[slot]=1.0f; vl->state[slot]=ST_WALK; vl->blending[slot]=0;
+            vl->osT[slot]=0.0f;                          /* niente flinch ereditato dal precedente slot */
             /* body: pinnato (tipo di gioco, es. crawler) o random fra le cosmetiche */
             int body = vl->pin[slot] ? vl->pin[slot]-1 : (int)(hashu(h+333u)%(unsigned)vl->nrandom);
             vl->pin[slot]=0;                          /* consuma: slot riusato torna libero */
@@ -342,8 +367,10 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
         if(vl->osT[slot]>0.0f){
             vl->osT[slot]-=dt;
             const VatClip *c=&vl->m[body].clip[vl->osClip[slot]];
-            float dur=c->duration>0?c->duration:1.0f;
-            vl->osPh[slot]+=dt/dur; if(vl->osPh[slot]>1.0f)vl->osPh[slot]=1.0f;
+            int nf=c->numFrames>0?c->numFrames:1;
+            float perFrame=(c->duration>0?c->duration:(float)nf/30.0f)/(float)nf;
+            float dur=vl->osLen[slot]*perFrame;            /* durata della FINESTRA, non della clip */
+            vl->osPh[slot]+=dt/(dur>0?dur:1.0f); if(vl->osPh[slot]>1.0f)vl->osPh[slot]=1.0f;
             continue;
         }
 
@@ -383,11 +410,13 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
 static void emit_instance(VatLayer *vl, int slot, const VatMeta *M,
                           float x, float y, float z, float r, float *o){
     float gA,gB,mix;
-    if(vl->osT[slot]>0.0f){                      /* one-shot HIT: gioca una volta, niente loop */
+    if(vl->osT[slot]>0.0f){                      /* one-shot HIT: solo la finestra [osF0,osF0+osLen) */
         const VatClip *c=&M->clip[vl->osClip[slot]];
-        float local=vl->osPh[slot]*(float)(c->numFrames-1);
-        float fa=floorf(local), fb=fa+1; if(fb>=c->numFrames)fb=(float)(c->numFrames-1);
-        gA=c->startFrame+fa; gB=c->startFrame+fb; mix=local-fa;
+        int len=vl->osLen[slot]>0?vl->osLen[slot]:1;
+        float local=vl->osPh[slot]*(float)(len-1);
+        float fa=floorf(local), fb=fa+1; if(fb>=len)fb=(float)(len-1);
+        float base=(float)(c->startFrame+vl->osF0[slot]);
+        gA=base+fa; gB=base+fb; mix=local-fa;
     } else {
         const VatClip *ca=&M->clip[vl->clipA[slot]];
         if(vl->blending[slot]){ const VatClip *cb=&M->clip[vl->clipB[slot]];

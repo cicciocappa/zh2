@@ -106,8 +106,11 @@ Il progetto ha DUE modelli di simulazione complementari:
      `simp_corpse_clear(x,y,r)` = fuoco/acido (rimuove corpi fisici + azzera i
      campi). Default ON. Con la **massa finita §3** ora attiva, il traffico che
      sfonda una pila la calpesta → `pack` sale e abbassa height/costo nav; il
-     decay resta la garanzia di non-permanenza. RESTA: lo scaling
-     `pack`→`invm` (cedimento fisico progressivo) e la tabella armi §6. La RAMPA
+     decay resta la garanzia di non-permanenza. Lo scaling `pack`→`invm`
+     (cedimento fisico progressivo) è stato SCARTATO (23 giu 2026): inerte
+     (`corpse_pack` non si accumula — il PBD tiene i centri agente fuori dalle
+     celle cadavere) e ridondante (l'anti-imbuto è già il costo nav §7-bis).
+     RESTA: la tabella armi §6. La RAMPA
      §4 è TAGLIATA (decisione 23 giu 2026: due vettori di sconfitta sullo stesso
      muro = troppo carico di leggibilità, l'anti-degenere è già dato da
      reroute+decay, lo stallo su muro indistruttibile lo rompono i flyer;

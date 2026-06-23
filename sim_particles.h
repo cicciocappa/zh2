@@ -241,6 +241,14 @@ void  simp_sleep(SimP *s, int i);
  * Index-based like simp_kill/simp_sleep: convert from a handle for persistence.
  * No-op for an out-of-range index; takes effect at the next step's steering. */
 void  simp_set_vpref(SimP *s, int i, float v_pref);
+/* Stun a live agent for `duration` seconds: steering brakes to rest (no goal
+ * pull) and self-momentum is dropped at once, so it stays planted under a hit
+ * flinch instead of foot-sliding forward. It still collides and absorbs crowd
+ * pushes (PBD) — a shoved stunned agent still moves, which is intended. The
+ * timer decays per step and the agent resumes on its own (vpref untouched, so
+ * jitter survives). duration<=0 clears it. No-op while flying or out of range.
+ * Index-based: convert from a handle for persistence. */
+void  simp_stun(SimP *s, int i, float duration);
 /* Swap-and-pop removal: the last agent takes index i.                      */
 void  simp_kill(SimP *s, int i);
 int   simp_count(const SimP *s);

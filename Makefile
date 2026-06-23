@@ -32,7 +32,7 @@ else
   SDL_LIBS   := $(shell $(SDL_PC) --libs   sdl3 2>/dev/null)
 endif
 
-all: test_particles test_impulse test_dormant test_handles test_query test_corpses \
+all: test_particles test_impulse test_dormant test_stun test_handles test_query test_corpses \
      test_corpse_pile \
      test_types test_density_route test_jam test_scene test_siege test_turret \
      test_defense test_base test_director test_terrain test_pick test_editor \
@@ -49,6 +49,9 @@ test_impulse: test_impulse.c sim_particles.c sim_particles.h
 
 test_dormant: test_dormant.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_dormant.c sim_particles.c $(LDLIBS)
+
+test_stun: test_stun.c sim_particles.c sim_particles.h
+	$(CC) $(CFLAGS) -o $@ test_stun.c sim_particles.c $(LDLIBS)
 
 test_handles: test_handles.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_handles.c sim_particles.c $(LDLIBS)
@@ -137,6 +140,7 @@ test: all
 	./test_particles
 	./test_impulse
 	./test_dormant
+	./test_stun
 	./test_handles
 	./test_query
 	./test_corpses

@@ -49,13 +49,15 @@ static const char *PREFIX[] = {
     "vat/assets/zombie_man", "vat/assets/zombie_man_obese",
     "vat/assets/zombie_fem", "vat/assets/zombie_fem_obese",
     "vat/assets/zombie_child", "vat/assets/zombie_fem_skirt",
+    "vat/assets/zombie_maimed_arm",    /* monco di un braccio: tipo di gioco, non cosmetico */
     "vat/assets/zombie_maimed_legs",   /* crawler: tipo di gioco, non cosmetico */
     "vat/assets/zombie_tank",          /* tank: tipo di gioco, non cosmetico */
 };
 #define NVAR ((int)(sizeof(PREFIX)/sizeof(PREFIX[0])))
 #define TANK_VAR    (NVAR-1)               /* indice del body tank */
 #define CRAWLER_VAR (NVAR-2)               /* indice del body crawler */
-#define NCOSMETIC   (NVAR-2)               /* le prime = body random cosmetici */
+#define ARM_VAR     (NVAR-3)               /* indice del body monco di un braccio */
+#define NCOSMETIC   (NVAR-3)               /* le prime = body random cosmetici */
 
 // --- spawn dei nemici come TIPI DI GIOCO (defense.c): la distribuzione decide
 // il body (HP/massa/velocità via la tabella EnemyDef), e il body sceglie la
@@ -93,7 +95,8 @@ static void on_director_spawn(void *user, SimPHandle h, DefBody body, unsigned r
 // GIB = morte esplosiva, burst di pezzi balistici (niente cadavere).
 static void on_def_event(void *user, int slot, int i, DefBody body, DefEvent ev){
     SpawnCtx *c=(SpawnCtx*)user; (void)body;
-    if(ev==DEF_EV_HIT) vat_layer_hit(c->vl, slot);
+    if(ev==DEF_EV_HIT){ float dur=vat_layer_hit(c->vl, slot);   /* flinch + plant l'agente */
+        if(dur>0.0f) simp_stun(c->s, i, dur); }                /* niente foot-sliding sotto la hit */
     else if(ev==DEF_EV_DEATH)
         vat_layer_die(c->vl, slot, simp_px(c->s)[i], simp_py(c->s)[i], simp_radius_arr(c->s)[i]);
     else if(ev==DEF_EV_GIB)
@@ -573,6 +576,9 @@ int main(int argc, char **argv){
     for(int v=0;v<NVAR;v++){ snprintf(metas[v],256,"%s_meta.txt",PREFIX[v]); metap[v]=metas[v]; }
 
     VatLayer *vl=vat_layer_create_multi(metap,NVAR,MAXA);
+    if(vat_layer_nvariants(vl)!=NVAR){                 /* clamp silenzioso = body persi */
+        fprintf(stderr,"VAT_MAX_VARIANTS (%d) < NVAR (%d): alza il limite in vat_layer.h\n",
+                vat_layer_nvariants(vl),NVAR); return 1; }
     for(int v=0;v<NVAR;v++){ const VatMeta *M=vat_layer_meta_variant(vl,v);
         if(M->nclips<=0){fprintf(stderr,"meta vuoto: %s\n",PREFIX[v]);return 1;} }
     vat_layer_set_random_count(vl,NCOSMETIC);   /* crawler e tank solo via pin, non a caso */
@@ -580,7 +586,7 @@ int main(int argc, char **argv){
        ~2 m, non ~3 m come darebbe raggio/0.30: scala fissa 1.90-2.05 m
        (scala 1.0 = altezza-modello 1.8 m). */
     vat_layer_set_variant_scale(vl,TANK_VAR, 1.90f/1.8f, 2.05f/1.8f);
-    printf("varianti=%d (di cui %d cosmetiche + crawler + tank)\n",NVAR,NCOSMETIC);
+    printf("varianti=%d (di cui %d cosmetiche + arm + crawler + tank)\n",NVAR,NCOSMETIC);
 
     // Mondo vivo derivato dalla Scene (build_world): sim + torrette + base +
     // director. spctx persiste (il director ne tiene il puntatore come user).
@@ -953,7 +959,8 @@ int main(int argc, char **argv){
                 { const uint8_t *wnd=def_wound(g); int nn=simp_count(s);
                   for(int i=0;i<nn;i++){ int slot=simp_slot_of(s,i);
                       if(wnd[slot]!=DW_NONE) vat_layer_make_bloody(vl,slot);
-                      if(wnd[slot]==DW_CRAWLING) vat_layer_set_variant(vl,slot,CRAWLER_VAR); } }
+                      if(wnd[slot]==DW_CRAWLING)        vat_layer_set_variant(vl,slot,CRAWLER_VAR);
+                      else if(wnd[slot]==DW_MAIMED_ARM) vat_layer_set_variant(vl,slot,ARM_VAR); } }
                 vat_layer_update(vl,s,FIXED_DT);
                 Uint64 t2=SDL_GetPerformanceCounter();
                 sim_ms+=(double)(t1-t0)*1000.0/pf;
