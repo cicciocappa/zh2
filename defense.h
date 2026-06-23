@@ -104,12 +104,18 @@ void def_update(DefGame *g, float dt);
 
 /* ---- render hook: hit/death events ----
  * Fired during def_update so the renderer can play one-shot animations. HIT =
- * a non-lethal light hit landed (agent survives). DEATH = a light kill, fired
- * just BEFORE the agent is removed (index i still valid → read px/py/radius).
- * DEF_EV_GIB = morte esplosiva (kill pesante): il renderer spawna i gib volanti
- * (GFX §5), nessun cadavere. Core-agnostic: defense.c non tocca il renderer;
- * l'host la collega a vat_layer_hit/_die/_gib. */
-typedef enum { DEF_EV_HIT, DEF_EV_DEATH, DEF_EV_GIB } DefEvent;
+ * a non-lethal light hit landed (agent survives → flinch + stun). DEATH = a
+ * light kill, fired just BEFORE the agent is removed (index i still valid → read
+ * px/py/radius). DEF_EV_GIB = morte esplosiva (kill pesante): il renderer spawna
+ * i gib volanti (GFX §5), nessun cadavere intatto (lascia solo gore-nav, §7-bis).
+ *
+ * Gore d'IMPATTO, emesso UNA volta quando una ferita FRESCA viene inflitta
+ * (prima di HIT, che parte solo sul sanguinamento): WOUND_BLEED = pochi gib
+ * piccoli; WOUND_ARM = gib piccoli + 1 arto volante; WOUND_LEGS = gib piccoli +
+ * 2 arti volanti. Mappati dall'host a vat_layer_gib_wound/_limb.
+ * Core-agnostic: defense.c non tocca il renderer; l'host collega gli eventi. */
+typedef enum { DEF_EV_HIT, DEF_EV_DEATH, DEF_EV_GIB,
+               DEF_EV_WOUND_BLEED, DEF_EV_WOUND_ARM, DEF_EV_WOUND_LEGS } DefEvent;
 typedef void (*DefEventFn)(void *user, int slot, int i, DefBody body, DefEvent ev);
 void def_set_event_cb(DefGame *g, DefEventFn cb, void *user);
 

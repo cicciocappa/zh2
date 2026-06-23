@@ -348,6 +348,16 @@ void  simp_apply_impulse_ex(SimP *s, float x, float y, float radius,
  * expiry corpse is replaced. Returns the pool index (not stable, no handles:
  * gameplay should not point at corpses). */
 int   simp_corpse_add(SimP *s, float x, float y, float radius, float ttl);
+
+/* Dismembered-gore splat: deposit ONLY nav-cost mass (CORPSE_DESIGN.md §7-bis)
+ * into the cell at (x,y), with NO physical disc and NO TTL-pool entry — a
+ * dismembered body is gore on the ground that biases routing, not an intact
+ * corpse to collide with. mass_scale weights the deposited volume relative to a
+ * full corpse of `radius` (0.5 = half: ~8 splats match 4 normal corpses before a
+ * cell out-costs a barricade). Decays on the corpse_mass half-life like any pile.
+ * Typical caller: a gib (heavy/explosion) death, which leaves no real corpse. */
+void  simp_corpse_splat(SimP *s, float x, float y, float radius, float mass_scale);
+
 int   simp_corpse_count(const SimP *s);
 const float *simp_corpse_px(const SimP *s);
 const float *simp_corpse_py(const SimP *s);

@@ -240,6 +240,58 @@ void vat_layer_die(VatLayer *vl, int slot, float x, float y, float radius){
     vl->dactive[d]=1;
 }
 
+/* spawn di UN pezzo nel pool gib (ring buffer). Tutto renderer-side, niente
+   collisione: balistica + spin, atterra e si posa fino al TTL (vat_layer_update). */
+static void gib_push(VatLayer *vl, float x, float y, float z,
+                     float vx, float vy, float vz, float ang, float spin,
+                     float hx, float hy, float hz, float ttl,
+                     unsigned char r, unsigned char g, unsigned char b){
+    int gi=vl->gwrite; vl->gwrite=(gi+1)%vl->gmax;
+    vl->gx[gi]=x; vl->gy[gi]=y; vl->gz[gi]=z;
+    vl->gvx[gi]=vx; vl->gvy[gi]=vy; vl->gvz[gi]=vz;
+    vl->gang[gi]=ang; vl->gspin[gi]=spin;
+    vl->ghx[gi]=hx; vl->ghy[gi]=hy; vl->ghz[gi]=hz; vl->gttl[gi]=ttl;
+    vl->gr[gi]=r; vl->gg[gi]=g; vl->gb[gi]=b; vl->gact[gi]=1;
+}
+
+/* burst PICCOLO di gore per un colpo non letale (sangue/schizzi su ferita o
+   mutilazione): pochi cubetti minuscoli, spinta bassa -> restano vicino. */
+void vat_layer_gib_wound(VatLayer *vl, int slot, float x, float y, float radius, unsigned int seed){
+    int has=(slot>=0&&slot<vl->max);
+    float ztr=has?vl->tr[slot]/255.0f:0.6f, ztg=has?vl->tg[slot]/255.0f:0.5f, ztb=has?vl->tb[slot]/255.0f:0.5f;
+    const int N=4;
+    for(int k=0;k<N;k++){
+        unsigned h=hashu(seed*2654435761u + (unsigned)k*40503u + 0xA17u);
+        float a =(h&1023)/1023.0f*6.2831853f;
+        float sp=0.6f+((h>>10)&1023)/1023.0f*1.6f;   /* 0.6-2.2 m/s orizz. */
+        float up=1.5f+((h>>20)&1023)/1023.0f*2.0f;   /* 1.5-3.5 m/s su       */
+        float s =radius*(0.07f+((h>>24)&15)/15.0f*0.05f);  /* cubetto ~2-4 cm */
+        float r,gg,b;
+        if(((h>>28)&3)!=0){ r=0.45f+((h>>5)&15)/15.0f*0.25f; gg=0.02f+((h>>9)&7)/7.0f*0.06f; b=0.02f; } /* sangue */
+        else             { r=ztr*0.7f; gg=ztg*0.7f; b=ztb*0.7f; }                                       /* carne/vestiti */
+        gib_push(vl, x,y, radius*0.6f, cosf(a)*sp, sinf(a)*sp, up,
+                 (h&255)/255.0f*6.2831853f, (float)((int)((h>>8)&511)-255)/255.0f*14.0f,
+                 s,s,s, 0.8f+((h>>16)&255)/255.0f*0.9f,
+                 (unsigned char)(r*255),(unsigned char)(gg*255),(unsigned char)(b*255));
+    }
+    decal_add(vl, x, y, radius*0.5f, seed^0x33u);    /* macchiolina */
+}
+
+/* UN arto volante: box MEDIO allungato (placeholder) con arco balistico. Tinta
+   carne+sangue. Il chiamante lo invoca 1x (braccio) o 2x (gambe). */
+void vat_layer_limb(VatLayer *vl, int slot, float x, float y, float radius, unsigned int seed){
+    (void)slot;
+    unsigned h=hashu(seed*2654435761u + 0x5EEDu);
+    float a =(h&1023)/1023.0f*6.2831853f;
+    float sp=1.2f+((h>>10)&1023)/1023.0f*2.5f;       /* 1.2-3.7 m/s */
+    float up=2.5f+((h>>20)&1023)/1023.0f*2.5f;       /* 2.5-5.0 m/s */
+    float th=radius*0.16f, ln=radius*0.34f;          /* spessore vs lunghezza dell'arto */
+    gib_push(vl, x,y, radius*0.7f, cosf(a)*sp, sinf(a)*sp, up,
+             (h&255)/255.0f*6.2831853f, (float)((int)((h>>8)&511)-255)/255.0f*9.0f,
+             th, ln, th, 1.6f+((h>>16)&255)/255.0f*1.4f,
+             (unsigned char)(0.55f*255),(unsigned char)(0.18f*255),(unsigned char)(0.15f*255));
+}
+
 /* Burst di gib alla morte esplosiva (gib pesante): pezzi balistici renderer-side
    a (x,y). Mescola rosso sangue + tint dello zombie (slot, per vestiti/carne).
    radius = taglia del corpo (scala dei pezzi e dell'esplosione). */

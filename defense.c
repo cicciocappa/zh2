@@ -25,6 +25,10 @@ static const DefEnemyDef ENEMY[BT_COUNT] = {
 #define CORPSE_TTL 9.0f
 #define GIB_RADIUS 1.0f      /* heavy-kill knockback radius                  */
 #define GIB_PUSH   6.0f      /* heavy-kill knockback strength                */
+#define DISMEMBER_NAV 0.5f   /* gore-nav weight of a gibbed body vs a corpse:
+                              * 0.5 = half, so ~8 splats out-cost a cell like
+                              * 4 normal corpses (slower clog, CORPSE_DESIGN
+                              * §7-bis). No physical disc (torn apart).        */
 #define MAXPIERCE  64        /* max agents a piercing shot resolves          */
 #define TURRET_CAP 256
 
@@ -128,9 +132,15 @@ static inline float wrap_pi(float a) {
     return a;
 }
 
-static void gib(DefGame *g, int i) {           /* heavy kill: no corpse */
+static void gib(DefGame *g, int i) {           /* heavy kill: no intact corpse */
     float x = simp_px(g->s)[i], y = simp_py(g->s)[i];
+    float r = simp_radius_arr(g->s)[i];
     simp_apply_impulse(g->s, x, y, GIB_RADIUS, GIB_PUSH);
+    /* dismembered: no collidable corpse, but it still gores the cell -> nav cost
+     * at half a corpse's rate (§7-bis, slow clog in heavy-weapon killzones).
+     * Same effective radius (r*0.9) as a normal corpse so DISMEMBER_NAV reads as
+     * a clean fraction of one: 0.5 -> 8 splats == 4 corpses. */
+    simp_corpse_splat(g->s, x, y, r * 0.9f, DISMEMBER_NAV);
     if (g->ev_cb) g->ev_cb(g->ev_user, simp_slot_of(g->s, i), i,
                            (DefBody)g->body[simp_slot_of(g->s, i)], DEF_EV_GIB);
     simp_kill(g->s, i);
@@ -170,11 +180,29 @@ static void apply_damage(DefGame *g, SimPHandle h, const DefTurret *t) {
         gib(g, i);                             /* normal, or tank's last hit */
     } else {
         g->hp[slot] -= (int)t->damage;
-        if (g->hp[slot] <= 0) die_light(g, i, slot);
-        else {
-            if (g->wound[slot] == DW_NONE) wound_roll(g, i, slot);
-            if (g->ev_cb) g->ev_cb(g->ev_user, slot, i, (DefBody)g->body[slot], DEF_EV_HIT);
+        if (g->hp[slot] <= 0) { die_light(g, i, slot); return; }
+        int fresh = (g->wound[slot] == DW_NONE);
+        if (fresh) wound_roll(g, i, slot);
+        DefWound w = (DefWound)g->wound[slot];
+        DefBody  body = (DefBody)g->body[slot];
+        /* gore d'IMPATTO, una volta, al momento della ferita fresca: schizzi
+         * sempre, + l'arto/gli arti volanti sulle mutilazioni (host). */
+        if (fresh && g->ev_cb) {
+            DefEvent ge = (w == DW_CRAWLING)   ? DEF_EV_WOUND_LEGS
+                        : (w == DW_MAIMED_ARM) ? DEF_EV_WOUND_ARM
+                                               : DEF_EV_WOUND_BLEED;
+            g->ev_cb(g->ev_user, slot, i, body, ge);
         }
+        /* HIT flinch + stun SOLO sul sanguinamento (o ri-colpo su uno gia'
+         * ferito: "se e' gia' insanguinato, solo l'animazione hit"). Una
+         * MUTILAZIONE appena inflitta (braccio/gambe) NON stunna: il suo
+         * feedback e' lo swap di modello (monco/crawler) + gli arti/gib che
+         * volano (host); uno stun qui congelerebbe il nuovo body a piedi fermi
+         * (la walk del crawler e' guidata dalla distanza -> resterebbe al
+         * frame 0). */
+        int mutilated_now = fresh && (w == DW_MAIMED_ARM || w == DW_CRAWLING);
+        if (g->ev_cb && !mutilated_now)
+            g->ev_cb(g->ev_user, slot, i, body, DEF_EV_HIT);
     }
 }
 

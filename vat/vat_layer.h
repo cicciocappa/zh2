@@ -65,8 +65,10 @@ void vat_layer_set_variant_scale(VatLayer *vl, int variant, float smin, float sm
 
 /* Cambia il body model di uno slot VIVO (es. zombie ferito → mesh crawler).
  * No-op se è già quella variante; altrimenti ri-sceglie una clip valida per il
- * layout del nuovo body. A differenza di pin_variant agisce su un agente già
- * visto (mid-life). */
+ * layout del nuovo body e riparte pulito dalla WALK (phase azzerata). A
+ * differenza di pin_variant agisce su un agente già visto (mid-life). NB: chi la
+ * chiama deve garantire che l'agente non sia stunnato (la walk del crawler è
+ * guidata dalla distanza: a velocità 0 resterebbe al frame 0). */
 void vat_layer_set_variant(VatLayer *vl, int slot, int variant);
 
 /* Avanza heading/FSM/fase + il pool decessi. Stesso dt di simp_step (salta se in pausa). */
@@ -96,6 +98,15 @@ void vat_layer_die(VatLayer *vl, int slot, float x, float y, float radius);
  * volo M3.2): parabola + spin, atterrano e si posano fino al TTL. Mescola rosso
  * sangue + tint dello zombie (slot). radius = taglia del corpo. seed dà varietà. */
 void vat_layer_gib(VatLayer *vl, int slot, float x, float y, float radius, unsigned int seed);
+/* Tre TIER di gore (stesso pool/render dei gib, taglie crescenti dei box):
+ *  - _gib_wound: burst PICCOLO (pochi cubetti, bassa spinta) per i colpi non
+ *    letali — sangue su sanguinamento, schizzi su mutilazione. Cubi minuscoli.
+ *  - _limb: UN pezzo MEDIO allungato (un arto) con arco balistico — il chiamante
+ *    lo invoca 1× per il braccio, 2× per le gambe (seed diversi → ventaglio).
+ *  - _gib (sopra): il burst GRANDE della morte esplosiva. Pezzi più grossi.
+ * radius = taglia del corpo (scala pezzi/spinta); seed dà varietà. */
+void vat_layer_gib_wound(VatLayer *vl, int slot, float x, float y, float radius, unsigned int seed);
+void vat_layer_limb(VatLayer *vl, int slot, float x, float y, float radius, unsigned int seed);
 /* Emette i gib attivi: 10 float/pezzo (x, y, z_sul_suolo, hx, hy, hz, ang, r,g,b).
  * Il chiamante somma terrain_z(x,y) a z e costruisce un box per pezzo. Ritorna n. */
 int  vat_layer_fill_gibs(VatLayer *vl, float *out, int max_out);

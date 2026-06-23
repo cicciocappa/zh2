@@ -227,6 +227,27 @@ static int test_clear(void) {
     return ok;
 }
 
+/* ----- part 5: dismembered splat == half a corpse (nav cost only) -------- */
+
+static int test_splat_ratio(void) {
+    SimP *s = simp_create(GW, GH, CELL, 16);
+    const float *ch = simp_corpse_height(s);
+    const float R = 0.36f;
+    float xc = (40 + 0.5f) * CELL, yc = (40 + 0.5f) * CELL;  /* cell (40,40) */
+    float xs = (80 + 0.5f) * CELL, ys = (40 + 0.5f) * CELL;  /* cell (80,40) */
+    for (int k = 0; k < 4; k++) simp_corpse_add(s, xc, yc, R, 1e9f);   /* 4 corpses */
+    for (int k = 0; k < 8; k++) simp_corpse_splat(s, xs, ys, R, 0.5f); /* 8 dismembered */
+    simp_step(s, DT);
+    float h_c = ch[40 * GW + 40], h_s = ch[40 * GW + 80];
+    int corpses = simp_corpse_count(s);     /* splats add NO physical corpse */
+    simp_destroy(s);
+    /* both deposit 4*pi*R^2 of pile volume -> equal height; splats leave 0 discs */
+    int ok = h_c > 0.1f && fabsf(h_s - h_c) < 0.02f * h_c && corpses == 4;
+    printf("part5 splat ratio: 4 corpses h=%.4f | 8 splats h=%.4f (phys corpses=%d) -> %s\n",
+           h_c, h_s, corpses, ok ? "ok" : "FAIL");
+    return ok;
+}
+
 int main(void) {
     Pivot a = run_pivot(0.0f, 0.0f);   /* baseline: queue at gap, no barricade */
     Pivot j = run_pivot(0.0f, 8.0f);   /* jam alone: still can't beat barricade */
@@ -247,6 +268,7 @@ int main(void) {
 
     int ok_decay  = test_decay();
     int ok_clear  = test_clear();
+    int ok_splat  = test_splat_ratio();
 
     Pivot c2 = run_pivot(300.0f, 0.0f);
     int ok_det = (c2.barr_pressure == c.barr_pressure) && (c2.drained == c.drained);
@@ -254,7 +276,7 @@ int main(void) {
            c.barr_pressure, c2.barr_pressure, c.drained, c2.drained,
            ok_det ? "ok" : "FAIL");
 
-    int ok = ok_pile && ok_pivot && nan_ok && ok_decay && ok_clear && ok_det;
+    int ok = ok_pile && ok_pivot && nan_ok && ok_decay && ok_clear && ok_splat && ok_det;
     printf("pile reached wall=%d  pivot=%d (jam<<corpse)  nan=%d\n",
            ok_pile, ok_pivot, nan_ok);
     printf(ok ? "PASS\n" : "FAIL\n");

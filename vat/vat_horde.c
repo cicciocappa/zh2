@@ -92,16 +92,27 @@ static void on_director_spawn(void *user, SimPHandle h, DefBody body, unsigned r
 
 // hook eventi defense → animazioni one-shot del render layer: HIT = flinch su
 // colpo non letale; DEATH = decedente (clip morte) prima che lo slot sia riusato;
-// GIB = morte esplosiva, burst di pezzi balistici (niente cadavere).
+// GIB = morte esplosiva, burst grande di pezzi balistici (niente cadavere);
+// WOUND_* = gore d'impatto di una ferita fresca (gib piccoli + arti volanti).
 static void on_def_event(void *user, int slot, int i, DefBody body, DefEvent ev){
     SpawnCtx *c=(SpawnCtx*)user; (void)body;
+    float x=simp_px(c->s)[i], y=simp_py(c->s)[i], r=simp_radius_arr(c->s)[i];
+    unsigned seed=simp_handle_of(c->s,i);
     if(ev==DEF_EV_HIT){ float dur=vat_layer_hit(c->vl, slot);   /* flinch + plant l'agente */
         if(dur>0.0f) simp_stun(c->s, i, dur); }                /* niente foot-sliding sotto la hit */
     else if(ev==DEF_EV_DEATH)
-        vat_layer_die(c->vl, slot, simp_px(c->s)[i], simp_py(c->s)[i], simp_radius_arr(c->s)[i]);
+        vat_layer_die(c->vl, slot, x, y, r);
     else if(ev==DEF_EV_GIB)
-        vat_layer_gib(c->vl, slot, simp_px(c->s)[i], simp_py(c->s)[i],
-                      simp_radius_arr(c->s)[i], simp_handle_of(c->s,i));
+        vat_layer_gib(c->vl, slot, x, y, r, seed);
+    else if(ev==DEF_EV_WOUND_BLEED)
+        vat_layer_gib_wound(c->vl, slot, x, y, r, seed);
+    else if(ev==DEF_EV_WOUND_ARM){                              /* schizzi + 1 braccio */
+        vat_layer_gib_wound(c->vl, slot, x, y, r, seed);
+        vat_layer_limb(c->vl, slot, x, y, r, seed^0x1u); }
+    else if(ev==DEF_EV_WOUND_LEGS){                             /* schizzi + 2 gambe */
+        vat_layer_gib_wound(c->vl, slot, x, y, r, seed);
+        vat_layer_limb(c->vl, slot, x, y, r, seed^0x2u);
+        vat_layer_limb(c->vl, slot, x, y, r, seed^0x3u); }
 }
 
 // Benchmark prefill: popola il campo a `target` agenti su un lattice jitterato
@@ -959,6 +970,9 @@ int main(int argc, char **argv){
                 { const uint8_t *wnd=def_wound(g); int nn=simp_count(s);
                   for(int i=0;i<nn;i++){ int slot=simp_slot_of(s,i);
                       if(wnd[slot]!=DW_NONE) vat_layer_make_bloody(vl,slot);
+                      // i maimed_legs passano alla mesh crawler, i maimed_arm al
+                      // monco (a runtime). Niente stun da gestire qui: la
+                      // mutilazione non emette HIT/stun (vedi defense.c apply_damage).
                       if(wnd[slot]==DW_CRAWLING)        vat_layer_set_variant(vl,slot,CRAWLER_VAR);
                       else if(wnd[slot]==DW_MAIMED_ARM) vat_layer_set_variant(vl,slot,ARM_VAR); } }
                 vat_layer_update(vl,s,FIXED_DT);

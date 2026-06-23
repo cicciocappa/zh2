@@ -1260,6 +1260,15 @@ int simp_corpse_add(SimP *s, float x, float y, float radius, float ttl) {
     return i;
 }
 
+void simp_corpse_splat(SimP *s, float x, float y, float radius, float mass_scale) {
+    if (mass_scale <= 0.0f || radius <= 0.0f) return;
+    /* §7-bis nav cost only: bump the cell's corpse VOLUME, no disc, no TTL. */
+    int cx = clampi((int)(x * s->inv_cell), 0, s->gw - 1);
+    int cy = clampi((int)(y * s->inv_cell), 0, s->gh - 1);
+    s->corpse_mass[cy * s->gw + cx] += mass_scale * 3.14159265f * radius * radius;
+    s->corpse_active = true;
+}
+
 int simp_corpse_count(const SimP *s) { return s->corpse_count; }
 const float *simp_corpse_px(const SimP *s)  { return s->cpx; }
 const float *simp_corpse_py(const SimP *s)  { return s->cpy; }
