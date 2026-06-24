@@ -27,7 +27,11 @@
   property **outfit** base (0–15: 0–13 normali, **14=carbonizzato, 15=acido**) +
   checkbox **insanguinato** (+16), combo **Animazione** (clip walk/run/idle del
   body corrente, "auto" = FSM velocità→stato), bottoni effetti
-  (Hit/Maim/Schizzo/Insanguina/Morte/Esplodi/Respawn), pausa, stato. Il mouse sul
+  (**Hit+sangue**/Maim/**Maim braccio**/Schizzo/Sangue/Insanguina/Morte/Esplodi/
+  Respawn), pausa, stato. **Hit+sangue** = anim hit + burst di sangue particellare
+  + outfit insanguinato, in un colpo (stesso per il tasto `H`). **Maim braccio**
+  (tasto `N`) = body→`zombie_maimed_arm` + sangue + braccio reciso e 2 frammenti
+  (mesh-gib 3D, sotto) che volano via + outfit insanguinato. Il mouse sul
   pannello NON muove la camera (`nk_window_is_any_hovered`/`item_is_any_active`).
   **Pannello AUTOREVOLE**: body+outfit+clip scelti sono applicati all'agente vivo
   OGNI frame → lo schermo combacia sempre col pannello (anche al primo spawn e dopo
@@ -42,9 +46,29 @@
   vanno dipinte le righe sangue di quelle 4 diffuse. Atlante = 4 col × 8 righe
   (`vat.vs` ATLAS_NX/NY), righe 0–3 = outfit 0–15, righe 4–7 = +16 insanguinati.
 - CONTROLLI tastiera (oltre all'UI): `[`/`]` cambia body · `O` insanguina · `H`
-  colpo · `M` mutila→crawler · `G` schizzo · `K` morte (cadavere+decal) · `B`
-  morte esplosiva · `R` respawn · `SPACE` pausa · `C` cam libera · `T` texture ·
+  colpo+sangue+insanguina · `M` mutila→crawler · `G` schizzo (gib chunky) · `J`
+  sangue particellare · `K` morte (cadavere+decal) · `B` morte esplosiva · `R`
+  sangue particellare · `K` morte (cadavere+decal) · `B` morte esplosiva · `N`
+  maim braccio · `R` respawn · `SPACE` pausa · `C` cam libera · `T` texture ·
   mouse/frecce camera · `ESC`.
+- MESH-GIB (gore con mesh 3D vere, FX_LAB step maim): pool balistico condiviso in
+  `vat_layer` (`vat_layer_maim_arm`/`vat_layer_fill_mesh_gibs`) — pos/vel/ttl +
+  tumble a 3 assi + `mesh_id`; il modulo tiene SOLO la fisica, il tool mappa id→
+  VAO e disegna (principio 1). Le 3 mesh stanno in `blend/gibs.glb` (nodi `arm`/
+  `gib1`/`gib2` = mesh_id 0/1/2), caricate da `fxlab` (`load_gib_meshes`, centrate
+  sul centroide), texture = diffuse di `zombie_man`, shader `vat/mesh.*`. Scala
+  unità→metri `GIB_UNIT=0.01` (braccio ~0.53 m), tunabile in `fxlab.c`. Le mesh
+  sono BOZZE: l'arte si itera, la pipeline è pronta.
+- PARTICLE SYSTEM (`fx_particles.h/.c`, modulo zero-dep come i core, FX_LAB
+  step 2): sim renderer-agnostic di particelle billboard (gravità/drag/vento,
+  colore+scala start→end, blend alpha/additivo, emitter burst/cono/continui
+  data-driven `FxEmitterDef`); il disegno GL (shader `vat/particle.*`, due
+  passate) sta in `fxlab` come i pool gib/decal. RNG xorshift deterministico,
+  niente `rand()`, niente malloc nello step. Callback quota terreno → le gocce
+  si fermano su `ter_z`. Preset `BLOOD_DEF` = schizzo sangue. Migra in
+  `vat_horde` accendendo un flag (principio 1). Generale per fuoco/fumo/
+  esplosioni (preset futuri). Decal-a-terra al landing SCARTATO (24 giu 2026:
+  basta la macchia di morte già esistente + i cadaveri).
 - HEADLESS: `FXLAB_SHOT="<frame>"` → N step, `fxlab_shot.bmp`, esce (UI esclusa).
   `FXLAB_CAM="cx,cz,hh,az,el"`, `FXLAB_FX=<frame>` (esplode l'agente per
   verificare i pool gore da uno screenshot), `FXLAB_UI=1` (forza l'UI anche nello

@@ -49,6 +49,12 @@ struct VatLayer {
     int gmax, gwrite;
     float *gx, *gy, *gz, *gvx, *gvy, *gvz, *gttl, *ghx, *ghy, *ghz, *gang, *gspin;
     unsigned char *gr, *gg, *gb, *gact;
+    /* pool mesh-gib (gore con mesh 3D vere, "maim arm"): come i gib ma con mesh_id
+       e tumble a 3 assi (asse normalizzato + angolo + spin) invece di box+yaw. */
+    int mgmax, mgwrite;
+    float *mgx, *mgy, *mgz, *mgvx, *mgvy, *mgvz, *mgttl, *mgsc;
+    float *mgax, *mgay, *mgaz, *mgang, *mgspin;
+    unsigned char *mgmesh, *mgact;
     /* decal di sangue PERSISTENTI (GFX §5.2): macchie a terra dove un corpo si
        posa (fine vita del decedente) o esplode (gib). Niente decay, niente
        collisione: ring buffer cappato = il "tappeto dell'orrore" resta limitato. */
@@ -140,6 +146,14 @@ VatLayer *vat_layer_create_multi(const char *const *meta_paths, int nvariants, i
     vl->gvx=calloc(gp,4); vl->gvy=calloc(gp,4); vl->gvz=calloc(gp,4); vl->gttl=calloc(gp,4);
     vl->ghx=calloc(gp,4); vl->ghy=calloc(gp,4); vl->ghz=calloc(gp,4); vl->gang=calloc(gp,4); vl->gspin=calloc(gp,4);
     vl->gr=calloc(gp,1); vl->gg=calloc(gp,1); vl->gb=calloc(gp,1); vl->gact=calloc(gp,1);
+    /* pool mesh-gib: piccolo (pochi hero pieces per maim) */
+    vl->mgmax=256; vl->mgwrite=0; int mp=vl->mgmax;
+    vl->mgx=calloc(mp,4); vl->mgy=calloc(mp,4); vl->mgz=calloc(mp,4);
+    vl->mgvx=calloc(mp,4); vl->mgvy=calloc(mp,4); vl->mgvz=calloc(mp,4);
+    vl->mgttl=calloc(mp,4); vl->mgsc=calloc(mp,4);
+    vl->mgax=calloc(mp,4); vl->mgay=calloc(mp,4); vl->mgaz=calloc(mp,4);
+    vl->mgang=calloc(mp,4); vl->mgspin=calloc(mp,4);
+    vl->mgmesh=calloc(mp,1); vl->mgact=calloc(mp,1);
     /* pool decal persistenti (cap fisso, ring buffer) */
     vl->kmax=8192; vl->kwrite=0; vl->kcount=0; int kp=vl->kmax;
     vl->kx=calloc(kp,4); vl->ky=calloc(kp,4); vl->ksz=calloc(kp,4);
@@ -164,6 +178,9 @@ void vat_layer_destroy(VatLayer *vl){ if(!vl)return;
     free(vl->gx);free(vl->gy);free(vl->gz);free(vl->gvx);free(vl->gvy);free(vl->gvz);free(vl->gttl);
     free(vl->ghx);free(vl->ghy);free(vl->ghz);free(vl->gang);free(vl->gspin);
     free(vl->gr);free(vl->gg);free(vl->gb);free(vl->gact);
+    free(vl->mgx);free(vl->mgy);free(vl->mgz);free(vl->mgvx);free(vl->mgvy);free(vl->mgvz);
+    free(vl->mgttl);free(vl->mgsc);free(vl->mgax);free(vl->mgay);free(vl->mgaz);
+    free(vl->mgang);free(vl->mgspin);free(vl->mgmesh);free(vl->mgact);
     free(vl->kx);free(vl->ky);free(vl->ksz);free(vl->kr);free(vl->kg);free(vl->kb);
     free(vl->qx);free(vl->qy);free(vl->qhd);free(vl->qsz);free(vl->qvar);free(vl->qtr);free(vl->qtg);free(vl->qtb);
     free(vl); }
@@ -364,6 +381,58 @@ void vat_layer_gib(VatLayer *vl, int slot, float x, float y, float radius, unsig
     decal_add(vl, x, y, radius*1.6f, seed^0x9E37u);   /* pozza all'epicentro dell'esplosione */
 }
 
+/* spawn di UN mesh-gib (ring buffer). Tutto renderer-side: balistica + tumble 3D,
+   atterra e si posa fino al TTL (vat_layer_update). L'asse viene normalizzato. */
+static void mesh_gib_push(VatLayer *vl, int mesh, float x, float y, float z,
+                          float vx, float vy, float vz, float scale,
+                          float ax, float ay, float az, float spin, float ttl){
+    int g=vl->mgwrite; vl->mgwrite=(g+1)%vl->mgmax;
+    vl->mgmesh[g]=(unsigned char)mesh;
+    vl->mgx[g]=x; vl->mgy[g]=y; vl->mgz[g]=z;
+    vl->mgvx[g]=vx; vl->mgvy[g]=vy; vl->mgvz[g]=vz; vl->mgsc[g]=scale;
+    float l=sqrtf(ax*ax+ay*ay+az*az); if(l<1e-5f){ ax=0; ay=0; az=1; l=1; }
+    vl->mgax[g]=ax/l; vl->mgay[g]=ay/l; vl->mgaz[g]=az/l;
+    vl->mgang[g]=0.0f; vl->mgspin[g]=spin; vl->mgttl[g]=ttl; vl->mgact[g]=1;
+}
+
+/* Maim braccio: lancia il braccio reciso (mesh 0) + 2 frammenti (mesh 1,2) verso
+   il lato del corpo (heading±90°, dove c'era la spalla) con arco balistico, scala
+   ~ taglia del corpo e tumble 3D casuale. Lascia una macchiolina all'origine. */
+void vat_layer_maim_arm(VatLayer *vl, int slot, float x, float y, float radius,
+                        float heading, unsigned int seed){
+    (void)slot;
+    float scale = radius/0.30f;                 /* radius default 0.30 -> scala 1 */
+    float zsh = radius*4.0f;                     /* quota spalla ~1.2 m            */
+    for(int k=0;k<3;k++){
+        unsigned h=hashu(seed*2654435761u + (unsigned)k*40503u + 0x4A1Bu);
+        float side = (k==0) ? 1.0f : ((h&1)?1.0f:-1.0f);
+        float a  = heading + side*1.5708f + ((int)((h>>1)&255)-128)/128.0f*0.6f;
+        float sp = (k==0?2.5f:3.0f) + ((h>>9)&255)/255.0f*2.0f;    /* orizzontale */
+        float up = (k==0?3.0f:3.5f) + ((h>>17)&255)/255.0f*2.0f;   /* verso l'alto*/
+        float ax=((int)((h>>3)&255)-128)/128.0f, ay=((int)((h>>11)&255)-128)/128.0f,
+              az=((int)((h>>19)&255)-128)/128.0f;
+        float spin=(k==0?6.0f:9.0f)+((h>>24)&15)/15.0f*4.0f; if(h&0x40000000u) spin=-spin;
+        mesh_gib_push(vl, (k==0?0:k), x, y, zsh, cosf(a)*sp, sinf(a)*sp, up,
+                      scale, ax,ay,az, spin, 1.8f+((h>>16)&255)/255.0f*1.2f);
+    }
+    decal_add(vl, x, y, radius*0.7f, seed^0x1A2Bu);
+}
+
+/* Emette i mesh-gib attivi: 9 float/pezzo (mesh_id, x, y, z_sul_suolo, ax, ay, az,
+   angle, scale). Il chiamante somma terrain_z(x,y) a z e costruisce la matrice. */
+int vat_layer_fill_mesh_gibs(VatLayer *vl, float *out, int max_out){
+    int c=0;
+    for(int g=0; g<vl->mgmax && c<max_out; g++) if(vl->mgact[g]){
+        float *o=out+c*9;
+        o[0]=(float)vl->mgmesh[g];
+        o[1]=vl->mgx[g]; o[2]=vl->mgy[g]; o[3]=vl->mgz[g];
+        o[4]=vl->mgax[g]; o[5]=vl->mgay[g]; o[6]=vl->mgaz[g];
+        o[7]=vl->mgang[g]; o[8]=vl->mgsc[g];
+        c++;
+    }
+    return c;
+}
+
 /* Emette i decal attivi: 6 float/decal (x, y, size, r, g, b). Il chiamante
    somma terrain_z(x,y) e disegna un disco blended a terra. Ritorna il numero. */
 int vat_layer_fill_decals(VatLayer *vl, float *out, int max_out){
@@ -440,6 +509,15 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
         vl->gang[g]+=vl->gspin[g]*dt;
         if(vl->gz[g]<=0.0f){ vl->gz[g]=0.0f; vl->gvz[g]=0.0f;       /* atterrato: si posa */
             vl->gvx[g]*=0.25f; vl->gvy[g]*=0.25f; vl->gspin[g]*=0.25f; }
+    }
+    /* avanza i mesh-gib: balistica + tumble 3D; atterrano (z=0) e si posano */
+    for(int g=0; g<vl->mgmax; g++) if(vl->mgact[g]){
+        vl->mgttl[g]-=dt; if(vl->mgttl[g]<=0.0f){ vl->mgact[g]=0; continue; }
+        vl->mgvz[g]-=9.81f*dt;
+        vl->mgx[g]+=vl->mgvx[g]*dt; vl->mgy[g]+=vl->mgvy[g]*dt; vl->mgz[g]+=vl->mgvz[g]*dt;
+        vl->mgang[g]+=vl->mgspin[g]*dt;
+        if(vl->mgz[g]<=0.0f){ vl->mgz[g]=0.0f; vl->mgvz[g]=0.0f;
+            vl->mgvx[g]*=0.30f; vl->mgvy[g]*=0.30f; vl->mgspin[g]*=0.30f; }
     }
     for(int i=0;i<n;i++){
         int slot=simp_slot_of(s,i); if(slot<0||slot>=vl->max) continue;

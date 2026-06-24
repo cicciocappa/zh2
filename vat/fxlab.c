@@ -19,6 +19,7 @@
 #include "vat_layer.h"
 #include "sim_particles.h"
 #include "terrain.h"
+#include "fx_particles.h"
 #include "cgltf.h"
 #include "edit_pick.h"
 
@@ -63,6 +64,30 @@ static float inst[MAXSLOT*12];
 static Terrain gTer; static int gTerOn=0;
 static float OFX=0, OFY=0;   // = origin del .zhm (sx_mondo = sx_sim + OFX)
 static float ter_z(float x, float y){ return gTerOn ? terrain_z(&gTer, x+OFX, y+OFY) : 0.0f; }
+// ground callback for the particle system: particle horizontal coords are
+// (x, z) = (world x, sim y), the floor height there is ter_z(x, z).
+static float fx_ground(float x, float z, void *ud){ (void)ud; return ter_z(x,z); }
+
+// blood splatter preset: a fine omnidirectional burst of dark-red droplets with
+// real gravity that arc and stick to the ground (ground_stop). Versatile-by-data
+// FX_LAB step 2: fire/smoke/explosions are other FxEmitterDef presets.
+static const FxEmitterDef BLOOD_DEF = {
+    .count=28, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.05f, .spawn_box_z=0.05f,
+    .spawn_offset_y_min=-0.05f, .spawn_offset_y_max=0.10f,
+    .speed_xy_min=1.2f, .speed_xy_max=4.0f,
+    .speed_y_min=1.2f,  .speed_y_max=4.5f,
+    .gravity=9.81f, .drag=0.6f,
+    .lifetime_min=0.5f, .lifetime_max=1.2f,
+    .start_scale_min=0.05f, .start_scale_max=0.11f,
+    .end_scale_min=0.02f,   .end_scale_max=0.05f,
+    .start_color={0.50f,0.02f,0.02f,1.0f}, .end_color={0.22f,0.0f,0.0f,0.55f},
+    .color_variants={ {0.55f,0.03f,0.03f,1.0f},{0.42f,0.0f,0.0f,1.0f},{0.60f,0.08f,0.04f,1.0f} },
+    .color_variant_count=3,
+    .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.3f, .ground_stop=true, .blend=FX_BLEND_ALPHA,
+    .rate=20.0f,
+};
 
 // --- glTF ground loader (copia di vat_horde.load_ground_glb) con TRASLAZIONE
 // orizzontale: sposta il footprint del suolo in coord >=0 (offx,offy = -origin).
@@ -150,6 +175,75 @@ static int load_ground_glb(const char *path, Ground *G, float offx, float offy){
     free(verts); free(idx);
     printf("ground: %s  %zu verts %zu tris  tex=%d\n",path,vbase,ibase/3,G->hasTex);
     return 0;
+}
+
+// --- gore mesh-gibs: carica le mesh di blend/gibs.glb (arm + 2 frammenti) in un
+// VAO ciascuna (pos/norm/uv, attrib 0/1/2), CENTRATE sul centroide del bbox così
+// il tumble ruota attorno al centro. Indicizzate per ORDINE DI NODO = mesh_id
+// (0=arm, 1=gib1, 2=gib2). UV mappate sul diffuse del corpo (texture esterna).
+typedef struct { GLuint vao; int nidx; } GibMesh;
+static int load_gib_meshes(const char *path, GibMesh *out, int maxn){
+    cgltf_options opt={0}; cgltf_data *data=NULL;
+    if(cgltf_parse_file(&opt,path,&data)!=cgltf_result_success){ fprintf(stderr,"gibs: parse fail %s\n",path); return 0; }
+    if(cgltf_load_buffers(&opt,data,path)!=cgltf_result_success){ fprintf(stderr,"gibs: load buffers fail\n"); cgltf_free(data); return 0; }
+    int got=0;
+    for(size_t n=0;n<data->nodes_count && got<maxn;n++){
+        cgltf_node *nd=&data->nodes[n]; if(!nd->mesh||nd->mesh->primitives_count<1) continue;
+        cgltf_primitive *pr=&nd->mesh->primitives[0];
+        if(pr->type!=cgltf_primitive_type_triangles||!pr->indices) continue;
+        cgltf_accessor *pos=NULL,*nrm=NULL,*uv=NULL;
+        for(size_t a=0;a<pr->attributes_count;a++){ cgltf_attribute *at=&pr->attributes[a];
+            if(at->type==cgltf_attribute_type_position) pos=at->data;
+            else if(at->type==cgltf_attribute_type_normal) nrm=at->data;
+            else if(at->type==cgltf_attribute_type_texcoord && at->index==0) uv=at->data; }
+        if(!pos) continue;
+        float M[16]; cgltf_node_transform_world(nd,M);
+        size_t nv=pos->count, ni=pr->indices->count;
+        float *verts=malloc(nv*8*sizeof(float)); unsigned short *idx=malloc(ni*sizeof(unsigned short));
+        float cmin[3]={1e30f,1e30f,1e30f}, cmax[3]={-1e30f,-1e30f,-1e30f};
+        for(size_t v=0;v<nv;v++){ float P[3]={0,0,0}; cgltf_accessor_read_float(pos,v,P,3);
+            float wx=M[0]*P[0]+M[4]*P[1]+M[8]*P[2]+M[12];
+            float wy=M[1]*P[0]+M[5]*P[1]+M[9]*P[2]+M[13];
+            float wz=M[2]*P[0]+M[6]*P[1]+M[10]*P[2]+M[14];
+            float *o=verts+v*8; o[0]=wx; o[1]=wy; o[2]=wz;
+            if(wx<cmin[0])cmin[0]=wx; if(wx>cmax[0])cmax[0]=wx;
+            if(wy<cmin[1])cmin[1]=wy; if(wy>cmax[1])cmax[1]=wy;
+            if(wz<cmin[2])cmin[2]=wz; if(wz>cmax[2])cmax[2]=wz; }
+        float ctr[3]={(cmin[0]+cmax[0])*0.5f,(cmin[1]+cmax[1])*0.5f,(cmin[2]+cmax[2])*0.5f};
+        for(size_t v=0;v<nv;v++){ float *o=verts+v*8; o[0]-=ctr[0]; o[1]-=ctr[1]; o[2]-=ctr[2];
+            float N[3]={0,1,0},T[2]={0,0};
+            if(nrm) cgltf_accessor_read_float(nrm,v,N,3);
+            if(uv)  cgltf_accessor_read_float(uv,v,T,2);
+            o[3]=M[0]*N[0]+M[4]*N[1]+M[8]*N[2]; o[4]=M[1]*N[0]+M[5]*N[1]+M[9]*N[2];
+            o[5]=M[2]*N[0]+M[6]*N[1]+M[10]*N[2]; o[6]=T[0]; o[7]=T[1]; }
+        for(size_t k=0;k<ni;k++) idx[k]=(unsigned short)cgltf_accessor_read_index(pr->indices,k);
+        GLuint vao,vbo,ebo; glGenVertexArrays(1,&vao);glBindVertexArray(vao);
+        glGenBuffers(1,&vbo);glBindBuffer(GL_ARRAY_BUFFER,vbo);
+        glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)nv*8*sizeof(float),verts,GL_STATIC_DRAW);
+        glVertexAttribPointer(0,3,GL_FLOAT,0,8*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1,3,GL_FLOAT,0,8*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
+        glVertexAttribPointer(2,2,GL_FLOAT,0,8*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
+        glGenBuffers(1,&ebo);glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER,(GLsizeiptr)ni*sizeof(unsigned short),idx,GL_STATIC_DRAW);
+        glBindVertexArray(0); free(verts); free(idx);
+        out[got].vao=vao; out[got].nidx=(int)ni;
+        printf("gib mesh[%d] %s: %zu verts %zu tris\n",got,nd->name?nd->name:"?",nv,ni/3);
+        got++;
+    }
+    cgltf_free(data); return got;
+}
+
+// column-major model matrix: T(world) * rot(axis,angle) * uniform scale.
+static void gib_model(mat4 m, float tx,float ty,float tz,
+                      float ax,float ay,float az, float ang, float sc){
+    float c=cosf(ang), s=sinf(ang), C=1.0f-c;
+    float R[9]={ ax*ax*C+c,    ax*ay*C-az*s, ax*az*C+ay*s,
+                 ay*ax*C+az*s, ay*ay*C+c,    ay*az*C-ax*s,
+                 az*ax*C-ay*s, az*ay*C+ax*s, az*az*C+c };
+    m[0]=R[0]*sc; m[1]=R[3]*sc; m[2]=R[6]*sc; m[3]=0.0f;
+    m[4]=R[1]*sc; m[5]=R[4]*sc; m[6]=R[7]*sc; m[7]=0.0f;
+    m[8]=R[2]*sc; m[9]=R[5]*sc; m[10]=R[8]*sc; m[11]=0.0f;
+    m[12]=tx; m[13]=ty; m[14]=tz; m[15]=1.0f;
 }
 
 // box per i gib (copia di vat_horde.prop_box): top + 4 pareti, 30 vertici.
@@ -435,6 +529,31 @@ int main(int argc, char **argv){
     glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
     glBindVertexArray(0);
 
+    // particle system (fx_particles): billboard istanziati, blob procedurali.
+    FxParticles fx; fx_init(&fx, 0xC0FFEEu);
+    static float pmat[FX_MAX_PARTICLES*16], pcol[FX_MAX_PARTICLES*4], pspr[FX_MAX_PARTICLES];
+    static const float pquad[18]={-0.5f,-0.5f,0, 0.5f,-0.5f,0, 0.5f,0.5f,0,
+                                  -0.5f,-0.5f,0, 0.5f,0.5f,0, -0.5f,0.5f,0};
+    GLuint pProg=vg_shader("vat/particle.vs","vat/particle.fs");
+    GLint uVPp=glGetUniformLocation(pProg,"uVP"), uHasAtl=glGetUniformLocation(pProg,"uHasAtlas"),
+          uAtlGrid=glGetUniformLocation(pProg,"uAtlasGrid");
+    GLuint pVao,pQuadVbo,pMatVbo,pColVbo,pSprVbo;
+    glGenVertexArrays(1,&pVao); glBindVertexArray(pVao);
+    glGenBuffers(1,&pQuadVbo); glBindBuffer(GL_ARRAY_BUFFER,pQuadVbo);
+    glBufferData(GL_ARRAY_BUFFER,sizeof pquad,pquad,GL_STATIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,0,3*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glGenBuffers(1,&pMatVbo); glBindBuffer(GL_ARRAY_BUFFER,pMatVbo);
+    glBufferData(GL_ARRAY_BUFFER,sizeof pmat,NULL,GL_DYNAMIC_DRAW);
+    for(int c=0;c<4;c++){ glVertexAttribPointer(1+c,4,GL_FLOAT,0,16*sizeof(float),(void*)(c*4*sizeof(float)));
+        glEnableVertexAttribArray(1+c); glVertexAttribDivisor(1+c,1); }
+    glGenBuffers(1,&pColVbo); glBindBuffer(GL_ARRAY_BUFFER,pColVbo);
+    glBufferData(GL_ARRAY_BUFFER,sizeof pcol,NULL,GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(5,4,GL_FLOAT,0,4*sizeof(float),(void*)0);glEnableVertexAttribArray(5);glVertexAttribDivisor(5,1);
+    glGenBuffers(1,&pSprVbo); glBindBuffer(GL_ARRAY_BUFFER,pSprVbo);
+    glBufferData(GL_ARRAY_BUFFER,sizeof pspr,NULL,GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(6,1,GL_FLOAT,0,sizeof(float),(void*)0);glEnableVertexAttribArray(6);glVertexAttribDivisor(6,1);
+    glBindVertexArray(0);
+
     // un Asset (VAO+mesh+texture VAT) per variante.
     Asset A[NVAR];
     for(int v=0;v<NVAR;v++){
@@ -463,6 +582,14 @@ int main(int argc, char **argv){
         free(verts);free(uvs);free(idxb);
     }
     glEnable(GL_DEPTH_TEST);
+
+    // gore mesh-gibs: VAO delle 3 mesh + shader mesh statica texturizzata. La
+    // texture è il diffuse di zombie_man (A[0]), su cui sono mappate le UV del glb.
+    GibMesh GM[3]={0}; int nGibMesh=load_gib_meshes("blend/gibs.glb",GM,3);
+    const float GIB_UNIT=0.01f;   // unità Blender -> metri (braccio ~0.53 m); tunabile
+    GLuint mProg=vg_shader("vat/mesh.vs","vat/mesh.fs");
+    GLint uVPm=glGetUniformLocation(mProg,"uVP"), uModelm=glGetUniformLocation(mProg,"uModel");
+    static float meshgib[256*9];
 
     // BAKE atlante sagome-cadavere (copia di vat_horde): ortho top-down dell'ultimo
     // frame death di ogni variante in una cella RGBA cutout.
@@ -551,9 +678,18 @@ int main(int argc, char **argv){
                 else if(k==SDLK_LEFTBRACKET && liveSlot>=0){ cur_var=(cur_var+NVAR-1)%NVAR; vat_layer_set_variant(vl,liveSlot,cur_var); }
                 else if(k==SDLK_RIGHTBRACKET && liveSlot>=0){ cur_var=(cur_var+1)%NVAR; vat_layer_set_variant(vl,liveSlot,cur_var); }
                 else if(k==SDLK_O && liveSlot>=0) vat_layer_make_bloody(vl,liveSlot);
-                else if(k==SDLK_H && liveIdx>=0){ float d=vat_layer_hit(vl,liveSlot); if(d>0) simp_stun(s,liveIdx,d); }
+                else if(k==SDLK_H && liveIdx>=0){ float d=vat_layer_hit(vl,liveSlot); if(d>0) simp_stun(s,liveIdx,d);
+                    float o[3]={lx, ter_z(lx,ly)+1.0f, ly}; fx_emit(&fx,o,&BLOOD_DEF,0.0f,-1.0f);
+                    ui_bloody=1; vat_layer_make_bloody(vl,liveSlot); }
                 else if(k==SDLK_M && liveSlot>=0){ cur_var=CRAWLER_VAR; vat_layer_set_variant(vl,liveSlot,CRAWLER_VAR); }
+                else if(k==SDLK_N && liveSlot>=0){
+                    float hd=atan2f(simp_vy(s)[liveIdx],simp_vx(s)[liveIdx]);
+                    vat_layer_maim_arm(vl,liveSlot,lx,ly,lr,hd,(unsigned)frame*2654435761u);
+                    float o[3]={lx, ter_z(lx,ly)+1.2f, ly}; fx_emit(&fx,o,&BLOOD_DEF,0.0f,-1.0f);
+                    cur_var=ARM_VAR; vat_layer_set_variant(vl,liveSlot,ARM_VAR);
+                    ui_bloody=1; vat_layer_make_bloody(vl,liveSlot); }
                 else if(k==SDLK_G && liveSlot>=0) vat_layer_gib_wound(vl,liveSlot,lx,ly,lr,(unsigned)frame*2654435761u);
+                else if(k==SDLK_J && liveIdx>=0){ float o[3]={lx, ter_z(lx,ly)+1.0f, ly}; fx_emit(&fx,o,&BLOOD_DEF,0.0f,-1.0f); }
                 else if((k==SDLK_K||k==SDLK_B) && liveIdx>=0){
                     if(k==SDLK_B) vat_layer_gib(vl,liveSlot,lx,ly,lr,(unsigned)frame*2654435761u);
                     vat_layer_die(vl,liveSlot,lx,ly,lr);
@@ -613,6 +749,7 @@ int main(int argc, char **argv){
                 if(li>=0){ float d=vat_layer_hit(vl,simp_slot_of(s,li)); if(d>0)simp_stun(s,li,d); } fx_hit_done=1; }
             simp_step(s,FIXED_DT);
             vat_layer_update(vl,s,FIXED_DT);
+            fx_update(&fx,FIXED_DT,NULL,fx_ground,NULL);
             acc_t-=FIXED_DT; steps++; frame++;
         }
 
@@ -656,9 +793,18 @@ int main(int argc, char **argv){
                     if(ui_force_clip>=0) vat_layer_force_clip(vl,sl,ui_force_clip); }
 
                 nk_layout_row_dynamic(c,22,2);
-                if(nk_button_label(c,"Hit")&&li>=0){ float d=vat_layer_hit(vl,sl); if(d>0)simp_stun(s,li,d); }
+                if(nk_button_label(c,"Hit+sangue")&&li>=0){ float d=vat_layer_hit(vl,sl); if(d>0)simp_stun(s,li,d);
+                    float o[3]={ex, ter_z(ex,ey)+1.0f, ey}; fx_emit(&fx,o,&BLOOD_DEF,0.0f,-1.0f);
+                    ui_bloody=1; vat_layer_make_bloody(vl,sl); }
                 if(nk_button_label(c,"Maim")&&sl>=0){ cur_var=CRAWLER_VAR; vat_layer_set_variant(vl,sl,CRAWLER_VAR); }
+                if(nk_button_label(c,"Maim braccio")&&li>=0){
+                    float hd=atan2f(simp_vy(s)[li],simp_vx(s)[li]);
+                    vat_layer_maim_arm(vl,sl,ex,ey,er,hd,seed);
+                    float o[3]={ex, ter_z(ex,ey)+1.2f, ey}; fx_emit(&fx,o,&BLOOD_DEF,0.0f,-1.0f);
+                    cur_var=ARM_VAR; vat_layer_set_variant(vl,sl,ARM_VAR);
+                    ui_bloody=1; vat_layer_make_bloody(vl,sl); }
                 if(nk_button_label(c,"Schizzo")&&sl>=0) vat_layer_gib_wound(vl,sl,ex,ey,er,seed);
+                if(nk_button_label(c,"Sangue")&&li>=0){ float o[3]={ex, ter_z(ex,ey)+1.0f, ey}; fx_emit(&fx,o,&BLOOD_DEF,0.0f,-1.0f); }
                 if(nk_button_label(c,"Insanguina")&&sl>=0){ ui_bloody=1; vat_layer_make_bloody(vl,sl); }
                 if(nk_button_label(c,"Morte")&&li>=0){ vat_layer_die(vl,sl,ex,ey,er); simp_kill(s,li); respawn_t=1.2f; }
                 if(nk_button_label(c,"Esplodi")&&li>=0){ vat_layer_gib(vl,sl,ex,ey,er,seed); vat_layer_die(vl,sl,ex,ey,er); simp_kill(s,li); respawn_t=1.2f; }
@@ -697,6 +843,19 @@ int main(int argc, char **argv){
               glBindVertexArray(gibVao);glBindBuffer(GL_ARRAY_BUFFER,gibVbo);
               glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)gc*9*sizeof(float),gibmesh);
               glDrawArrays(GL_TRIANGLES,0,gc); } }
+
+        // gore mesh-gibs (arm + frammenti): mesh statiche texturizzate, tumble 3D
+        if(nGibMesh>0){ int nm=vat_layer_fill_mesh_gibs(vl,meshgib,256);
+          if(nm){ glUseProgram(mProg);glUniformMatrix4fv(uVPm,1,GL_FALSE,vp);
+              glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,A[0].texD);
+              glUniform1i(glGetUniformLocation(mProg,"uTex"),0);
+              for(int i=0;i<nm;i++){ float *p=meshgib+i*9; int mid=(int)(p[0]+0.5f);
+                  if(mid<0||mid>=nGibMesh) continue;
+                  float wx=p[1], wz=p[2], wy=ter_z(p[1],p[2])+p[3];
+                  mat4 mm; gib_model(mm, wx,wy,wz, p[4],p[5],p[6], p[7], p[8]*GIB_UNIT);
+                  glUniformMatrix4fv(uModelm,1,GL_FALSE,mm);
+                  glBindVertexArray(GM[mid].vao);
+                  glDrawElements(GL_TRIANGLES,GM[mid].nidx,GL_UNSIGNED_SHORT,0); } } }
 
         // decal di sangue persistenti (a terra, blended)
         { int nd=vat_layer_fill_decals(vl,decalraw,DECALMAX);
@@ -754,6 +913,24 @@ int main(int argc, char **argv){
             glBindVertexArray(A[v].vao);glDrawElementsInstanced(GL_TRIANGLES,A[v].ni,GL_UNSIGNED_SHORT,0,count);
         }
         glBindVertexArray(0);
+
+        // particle system: billboard istanziati, due passate (alpha poi additivo)
+        { glUseProgram(pProg); glUniformMatrix4fv(uVPp,1,GL_FALSE,vp);
+          glUniform1i(uHasAtl,0); glUniform1f(uAtlGrid,1.0f);
+          glEnable(GL_BLEND); glDepthMask(GL_FALSE);
+          glBindVertexArray(pVao);
+          float right[3]={view[0],view[4],view[8]}, up[3]={view[1],view[5],view[9]};
+          for(int pass=0;pass<2;pass++){
+              FxBlend bm = pass==0?FX_BLEND_ALPHA:FX_BLEND_ADD;
+              int pc=fx_collect(&fx,bm,right,up,pmat,pcol,pspr,FX_MAX_PARTICLES);
+              if(!pc) continue;
+              glBlendFunc(GL_SRC_ALPHA, bm==FX_BLEND_ADD?GL_ONE:GL_ONE_MINUS_SRC_ALPHA);
+              glBindBuffer(GL_ARRAY_BUFFER,pMatVbo);glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)pc*16*sizeof(float),pmat);
+              glBindBuffer(GL_ARRAY_BUFFER,pColVbo);glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)pc*4*sizeof(float),pcol);
+              glBindBuffer(GL_ARRAY_BUFFER,pSprVbo);glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)pc*sizeof(float),pspr);
+              glDrawArraysInstanced(GL_TRIANGLES,0,6,pc);
+          }
+          glBindVertexArray(0); glDepthMask(GL_TRUE); glDisable(GL_BLEND); }
 
         if(ui_on) nkgl_render(&nk,SW,SH);   // UI sopra la scena
         SDL_GL_SwapWindow(win);

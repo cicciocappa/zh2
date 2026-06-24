@@ -136,11 +136,11 @@ vat_horde: vat/vat_horde.c vat/vat_layer.c sim_particles.c scene.c defense.c ter
 	$(CC) -O2 -w -Ivat -c vat/cgltf_impl.c -o vat/cgltf_impl.o
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Ivat -I. -o $@$(EXE) vat/vat_horde.c vat/vat_layer.c sim_particles.c scene.c defense.c terrain.c props.c vat/glad.o vat/stb_impl.o vat/cgltf_impl.o $(SDL_LIBS) $(PLAT_LIBS) $(LDLIBS) $(DL_LIB)
 
-fxlab: vat/fxlab.c vat/vat_layer.c sim_particles.c terrain.c vat/glad.c vat/stb_impl.c vat/cgltf_impl.c vat/vat.vs vat/vat.fs vat/flat.vs vat/flat.fs vat/ground.vs vat/ground.fs vat/shadow.vs vat/shadow.fs vat/decal.vs vat/decal.fs vat/corpse_decal.vs vat/corpse_decal.fs sim_particles.h vat/vat_layer.h vat/vat_gl.h vat/cgltf.h vat/nuklear.h terrain.h
+fxlab: vat/fxlab.c vat/vat_layer.c sim_particles.c fx_particles.c terrain.c vat/glad.c vat/stb_impl.c vat/cgltf_impl.c vat/vat.vs vat/vat.fs vat/flat.vs vat/flat.fs vat/ground.vs vat/ground.fs vat/shadow.vs vat/shadow.fs vat/decal.vs vat/decal.fs vat/corpse_decal.vs vat/corpse_decal.fs vat/particle.vs vat/particle.fs vat/mesh.vs vat/mesh.fs sim_particles.h fx_particles.h vat/vat_layer.h vat/vat_gl.h vat/cgltf.h vat/nuklear.h terrain.h
 	$(CC) -O2 -w -Ivat $(SDL_CFLAGS) -c vat/glad.c -o vat/glad.o
 	$(CC) -O2 -w -Ivat -c vat/stb_impl.c -o vat/stb_impl.o
 	$(CC) -O2 -w -Ivat -c vat/cgltf_impl.c -o vat/cgltf_impl.o
-	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Ivat -I. -o $@$(EXE) vat/fxlab.c vat/vat_layer.c sim_particles.c terrain.c vat/glad.o vat/stb_impl.o vat/cgltf_impl.o $(SDL_LIBS) $(PLAT_LIBS) $(LDLIBS) $(DL_LIB)
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Ivat -I. -o $@$(EXE) vat/fxlab.c vat/vat_layer.c sim_particles.c fx_particles.c terrain.c vat/glad.o vat/stb_impl.o vat/cgltf_impl.o $(SDL_LIBS) $(PLAT_LIBS) $(LDLIBS) $(DL_LIB)
 
 test: all
 	./test_particles

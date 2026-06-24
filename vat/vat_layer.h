@@ -121,6 +121,21 @@ void vat_layer_limb(VatLayer *vl, int slot, float x, float y, float radius, unsi
 /* Emette i gib attivi: 10 float/pezzo (x, y, z_sul_suolo, hx, hy, hz, ang, r,g,b).
  * Il chiamante somma terrain_z(x,y) a z e costruisce un box per pezzo. Ritorna n. */
 int  vat_layer_fill_gibs(VatLayer *vl, float *out, int max_out);
+
+/* Mesh-gib (gore con mesh 3D vere, FX_LAB step "maim arm"): pool balistico
+ * renderer-side di pezzi 3D — arto reciso + frammenti — che volteggiano (tumble
+ * a 3 assi) e atterrano fino al TTL, come i gib ma con mesh anziché box. Il
+ * modulo tiene SOLO la fisica + un mesh_id (0=arm, 1/2=frammenti); il tool mappa
+ * id->VAO e disegna (la mesh non la conosce). vat_layer_maim_arm lancia braccio +
+ * 2 frammenti da (x,y), espulsi verso il lato del corpo (heading±90°) con arco.
+ * radius = taglia (scala dei pezzi/spinta); heading in rad; seed dà varietà. */
+void vat_layer_maim_arm(VatLayer *vl, int slot, float x, float y, float radius,
+                        float heading, unsigned int seed);
+/* Emette i mesh-gib attivi: 9 float/pezzo (mesh_id, x, y, z_sul_suolo, ax, ay,
+ * az, angle, scale). Il chiamante somma terrain_z(x,y) a z e costruisce la model
+ * matrix = T(world) * rot(axis,angle) * scale. Ritorna il numero. */
+int  vat_layer_fill_mesh_gibs(VatLayer *vl, float *out, int max_out);
+
 /* Decal di sangue PERSISTENTI (GFX §5.2): macchie a terra dove i corpi si posano
  * (fine vita del decedente) o esplodono (gib). Generati internamente; il pool è
  * un ring buffer cappato (niente decay, niente collisione). Emette 6 float/decal

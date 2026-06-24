@@ -231,6 +231,18 @@ Il progetto ha DUE modelli di simulazione complementari:
 
 - `sim_particles.h` / `.c` — core particellare (vedi sopra). API `simp_*`.
   SoA pubblici (`simp_px/py/vx/vy/radius_arr`) pronti come instance buffer.
+- `fx_particles.h` / `.c` — particle system grafico GENERALE (FX_LAB step 2),
+  zero-dep come i core (solo libm), RNG xorshift deterministico, niente malloc
+  nello step. Simula particelle billboard 3D (gravità/drag/vento, colore+scala
+  start→end, blend alpha/additivo, emitter burst/cono/continui data-driven
+  `FxEmitterDef`) e ne emette i dati istanza via `fx_collect`; il disegno GL sta
+  nel tool (come i pool gib/decal). Callback quota terreno → stop a `ter_z`.
+  Preset `BLOOD_DEF` = schizzo sangue; base per fuoco/fumo/esplosioni. Vedi
+  `FX_LAB.md`. Gli FX sono solo visivi → niente test deterministico (scelta 24
+  giu 2026). Shader `vat/particle.*`. Il **mesh-gib** (gore con mesh 3D vere:
+  braccio reciso + frammenti, `blend/gibs.glb`, shader `vat/mesh.*`) vive nel
+  pool condiviso di `vat_layer` (`vat_layer_maim_arm`/`fill_mesh_gibs`), reso da
+  `fxlab` (`load_gib_meshes`). Migrazione in `vat_horde` = accendere il rendering.
 - `test_particles.c` — verifica headless: scena chokepoint, metriche, frame PPM
   in `frames/`.
 - `test_impulse.c` — smoke test esplosione (picco + assestamento).
