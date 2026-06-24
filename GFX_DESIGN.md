@@ -149,6 +149,13 @@ sommare) + **decay** nel tempo + bordi netti dello stamp. È esattamente §5.2 s
    la tecnica è perfetta per il gioco. ⚠️ La camera libera di `vat_horde`
    (pan/rotate/zoom) è un **comfort da editor/debug**, NON il regime di gioco —
    da mettere nero su bianco: *il gioco gira a camera bloccata sull'iso*.
+   **EMENDAMENTO (2026-06-24, CORPSE_DESIGN §10.1):** il regime di gioco è ora
+   *azimuth ruotabile, elevazione bloccata*. Quindi il decal piatto NON è più la
+   rappresentazione primaria del cadavere singolo (sotto azimuth ruotante tradisce
+   per parallasse di silhouette — non per shading, che con sole world-fixed resta
+   coerente). Resta valido come **LOD lontano** (tier 3 di §10.2). I singoli vicini
+   = mesh 3D (`vat_layer_die`), i mucchi = mound mesh che cresce. Vedi
+   CORPSE_DESIGN §10.
 
 2. **Si salda col pool decedenti (M6) via Impostor cross-fade.** Il pool
    `vat_layer_die` (clip morte in 3D vero, regge a ogni angolo, "vende"

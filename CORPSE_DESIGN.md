@@ -331,3 +331,170 @@ NOTA: il **cedimento §3** (massa finita) è verificato in `test_corpses` parte 
   `rho`/`jam` → texture/SSBO, aggiornati nel kernel d'istogramma + un kernel
   pointwise per height. Niente decisione di scavalco (rampa tagliata): solo il
   termine d'arco nel Dijkstra, come `k_density`/`k_jam`.
+
+## 10. Rappresentazione visiva (render) — singoli vs mucchi
+
+> **STATO (2026-06-24):** DESIGN + **PROTOTIPO mound in `vat_horde`** (tier 1-2-3
+> di §10.6 fatti: cupola lumpy + colore per-faccia + arti hero; silhouette
+> verificata a 0°/90° d'azimuth). Tutto qui è **render-side**
+> (`vat_layer`/`vat_horde`): il core non cambia. L'unico aggancio è
+> `simp_corpse_height` (§5), già esposto. Questa sezione **emenda GFX_DESIGN §5.1
+> punto 1** ("il gioco gira a camera bloccata sull'iso"): vedi §10.1.
+>
+> Nota: la **normal map** di §10.3 è stata resa, nel prototipo, come **variazione
+> di colore per-faccia** (`mnd_facecol`: mix verso palette carne/stoffa/sangue +
+> jitter di luminosità) — coerente con lo stile faceted-flat di `vat_horde`
+> (ostacoli/gib/prop sono tutti flat-shaded), dove una texture tangent-space
+> stonerebbe. La normal map vera resta un'opzione se si passa a uno shader
+> texturizzato per i mound.
+
+### 10.1 Regime di camera: azimuth ruotabile, elevazione fissa
+
+**Decisione di design:** la camera di gioco può **ruotare l'azimuth** (orbita
+orizzontale attorno al punto guardato), ma l'**elevazione è bloccata** (sempre lo
+stesso angolo di picchiata, alla 3/4). Questo **rilassa** l'assunzione di
+GFX_DESIGN §5.1.1 (camera fissa sull'iso), pensata per rendere "invisibile" il
+decal piatto bakato.
+
+Conseguenza diretta: **il decal piatto NON è più la rappresentazione primaria del
+cadavere singolo.** Sotto azimuth ruotante un disegno piatto a terra si tradisce —
+ma è importante capire *perché*, perché cambia la strategia:
+
+- **Lo shading bakato SOPRAVVIVE alla rotazione.** Con luce chiave world-fixed (il
+  "sole" RTS della chiave NW, direzione fissa nel mondo, non agganciata alla
+  camera) il diffuse di una forma è **azimuth-independent** (dipende da
+  normale·luce, non da dove guardi). E un decal inchiodato al terreno **ruota col
+  mondo** → la sua ombra/AO bakata resta coerente col sole da qualunque azimuth.
+  Il lavoro di "fingere il volume con luce bakata" continua a reggere.
+- **Quello che tradisce è il RILIEVO mancante: parallasse di silhouette.** A
+  elevazione fissa, un oggetto con altezza reale, ruotando l'azimuth, vede le sue
+  parti rialzate *scivolare* rispetto al terreno e cambiare auto-occlusione. Il
+  decal piatto (`h=0`) sta incollato, non scivola mai. È **questo** l'artefatto, e
+  una normal map non lo risolve (la normal dà shading, non silhouette né
+  parallasse — §10.3).
+
+### 10.2 Tre tier (LOD per rappresentazione)
+
+Sfruttiamo che gli zombie sono già lowpoly 3D via VAT: il 3D dei cadaveri è quasi
+gratis e l'azimuth diventa un non-problema dove conta.
+
+1. **Singolo, fresco / vicino → mesh 3D statica (posa di morte congelata).** È
+   **già** `vat_layer_die`: alla morte una visuale riproduce la clip dying una
+   volta e poi **tiene l'ultimo frame** per un TTL, indipendente dall'agente sim
+   già rimosso. È 3D vero → regge a ogni azimuth, parallasse corretta, zero
+   finzione. Copre il 90% di ciò che l'occhio guarda da vicino. **Estensione:** a
+   TTL scaduto, invece di sparire, il decedente confluisce nel mucchio (§10.4) o,
+   se isolato/lontano, stampa il decal di tier 3.
+2. **Accumulo (killzone sotto fuoco torrette) → mound mesh che cresce** (§10.3). I
+   mucchi sono **pochi** — solo dove si concentra il fuoco — quindi una manciata di
+   mesh istanziate, costo trascurabile.
+3. **Lontano / zoom basso → decal piatto bakato.** Al tier di zoom basso (il "campo
+   di densità = minimappa" di GFX_DESIGN) la parallasse di un corpo disteso è
+   **sotto la soglia percettiva**: lì il decal è perfetto e scala a decine di
+   migliaia di corpi senza geometria. **Resta valido** come LOD lontano — è la
+   roadmap GFX §5.1–5.2 (height-decal + impostor cross-fade), solo declassata da
+   "primaria" a "LOD distante". La transizione mesh→decal è su distanza/zoom, non
+   sul tempo.
+
+### 10.3 Il mound: forma, crescita, dettaglio
+
+**Forma — NON un tronco di piramide a base quadrata.** Una piramide tronca a 4
+facce ha spigoli netti che, ruotando l'azimuth, **telegrafano la primitiva** (a 0°
+vedi una faccia, a 45° lo spigolo in mezzo): è il giveaway peggiore proprio sotto
+la meccanica che vogliamo. Un mucchio di cadaveri ha silhouette **irregolare e
+tonda** da ogni lato. Tre accorgimenti, costo crescente:
+
+- **Base a molte facce / revolved** (cono o cupola a 8–12 lati invece di 4): da
+  qualsiasi azimuth la silhouette resta tonda, niente spigolo che tradisce. Costa
+  nulla e risolve l'80%.
+- **Lumpiness nei vertici della mesh** (non nella normale): la mesh è low-poly,
+  basta spostare un po' i vertici per un profilo bitorzoluto. La silhouette
+  irregolare è ciò che la normal map **non potrà mai** dare, e qui costa pochi
+  vertici.
+- **3–4 arti "hero"** (un braccio, una gamba, una testa) piantati ad angoli random
+  sul rim a spezzare l'outline. Sono ciò che l'occhio guarda; vendono l'insieme con
+  due triangoli.
+
+**Dettaglio di superficie — normal map (o simile).** Sotto sole world-fixed
+l'illuminazione è azimuth-independent (§10.1) → il dettaglio di normal (corpi,
+arti, pieghe che spezzano la luce) resta **coerente** mentre ruoti, e fa leggere il
+mound come carne invece che come primitiva liscia. **Tienila.** Ma ricorda: la
+normal **non aggiunge silhouette né parallasse** — il break-up del profilo deve
+venire dalla *geometria* (sopra), non da lei.
+
+**Crescita — Y-position (emersione dal suolo), NON Y-scale.**
+
+- *Y-scale* stira i texel verticalmente → man mano che cresce, i cadaveri nella
+  texture/normale si **allungano**. Brutto e visibile.
+- *Y-position (emersione)*: il resto del mucchio sta **sotto il terreno** e viene
+  spinto in su. Forma e densità di texel **costanti**; il terreno opaco clippa la
+  parte sepolta **gratis** col depth buffer. Bonus: un cono/frustum sepolto emerge
+  **prima dalla punta stretta**, poi le sezioni più larghe → il mucchio cresce in
+  altezza **e** in impronta insieme, esattamente come si accatastano i corpi.
+- La quota visibile (quanto è emerso) è legata a **`corpse_height` §7-bis** — lo
+  stesso campo che guida il costo nav → visivo e nav restano in **sync gratis** (la
+  pila che fa deviare l'orda è anche quella che si vede crescere).
+
+**Contact shadow / AO alla base**, o il mound galleggia: un decal d'ombra morbido
+sotto il rim lo inchioda a terra (questo sì, un decal piatto, ma per l'ombra di
+contatto va benissimo — è proprio piatto).
+
+### 10.4 Transizione singoli → mucchio (anti-pop)
+
+Quando un gruppo di cadaveri singoli (mesh in posa di morte, tier 1) diventa un
+mound (tier 2)? **Soglia su `corpse_height` per cella:** sotto → si mostrano i corpi
+individuali; sopra → emerge il mound. Il rischio è il **pop** allo stacco.
+Mitigazione: il mound **emerge SOTTO i singoli ancora visibili e li riassorbe**
+mentre sale — così "inghiotte" i corpi invece di sostituirli con un cambio netto.
+
+### 10.5 Filosofia "abbastanza buono"
+
+Il gioco è **frenetico**: il giocatore non ha tempo di ispezionare i dettagli.
+Basta una **vaga idea** di mucchio di cadaveri, non dev'essere perfetto. Priorità,
+in ordine: prima la **silhouette tonda + lumpy** che regge a occhio sotto rotazione
+(è ciò che si nota), poi semmai il dettaglio fine. Budget bersaglio: **una sola
+mesh-mucchio low-poly condivisa**, scalata/ruotata/emersa per istanza, + **una
+normal map condivisa** + pochi arti hero. Niente di per-corpo, niente
+displacement/parallax-occlusion a runtime.
+
+### 10.6 Prototipo (prossimo passo)
+
+Nel sandbox `vat_horde` (che ha già camera con rotate, comodo qui): far emergere la
+mesh-mucchio da `corpse_height` su una cella e **giudicare a occhio se la silhouette
+tonda+lumpy regge ruotando l'azimuth**. Iterazioni: (1) cono/cupola liscio →
+verificare che NON sembri primitiva; (2) + lumpiness vertici; (3) + normal map; (4)
++ arti hero. Fermarsi al primo tier che "dà l'idea" sotto rotazione veloce.
+
+**FATTO (2026-06-24).** Implementato in `vat/vat_horde.c`: `build_mound` (cupola
+14×4 a lobi + jitter, face-normal flat, colore per-faccia via `mnd_facecol`) +
+`mnd_limb` (arti/teste come box orientati che sbucano radialmente, 2 su pile basse,
+4 sulle alte). Alimentato dal campo `simp_corpse_height` live (soglia 0.20 m, una
+cupola per cella sopra soglia) **e** da una modalità test (`VAT_HORDE_MOUNDTEST=1`
+= fila di mound di altezza crescente, scollegata dalla sim). Toggle runtime **M**.
+Verificato headless (`VAT_HORDE_SHOT`/`VAT_HORDE_CAM`) a azimuth 0° e 90°: la
+silhouette resta tonda/irregolare (niente spigolo da primitiva), gli arti ruotano
+con la geometria (parallasse corretta), il colore per-faccia rende il patchwork di
+corpi. **Tier 1+2+3 raggiunti** — "dà l'idea di un mucchio di cadaveri" sotto
+camera rotante, sufficiente per il ritmo frenetico (§10.5).
+
+**Aggregazione celle→mound unico — FATTO (2026-06-24).** `build_corpse_mounds`:
+flood-fill 8-vicini sulle celle `corpse_height >= 0.20` → componenti connesse, UN
+mound per componente. Footprint = **ellisse della covarianza** pesata per altezza
+(semi-assi `ra/rb` = 2·√autovalori + mezza cella, orientazione = autovettore
+principale via `atan2`): una pila allungata (banda lungo un muro/varco) dà un mound
+**stirato lungo il suo asse**, non un campo di cupolette. Altezza = picco della
+componente; arti scalati col numero di celle. `build_mound` generalizzato a
+footprint ellittico (trasformata `XF`: scala anisotropa + rotazione). Seed
+**quantizzato** su griglia coarse (~2.5 m): la lumpiness/arti restano stabili mentre
+il centroide deriva (no flicker per-frame). Verificato headless con `VAT_HORDE_PILE=1`
+(disco→mound tondo, banda→mound stirato; orientazione world-space coerente a 0°/90°
+d'azimuth); live reale senza crash. **Limite noto:** le componenti NON sono tracciate
+fra i frame → se il centroide attraversa un bucket da 2.5 m la lumpiness si rimescola
+(pop raro). Fix proprio = tracking persistente delle componenti (follow-up se dà
+fastidio).
+
+**RESTA (follow-up, non bloccante):** (b) emersione graduale per Y-position legata
+alla crescita di `corpse_height` (oggi la cupola appare già a piena altezza sopra
+soglia) + transizione anti-pop dai decedenti singoli (§10.4); (c) contact-shadow/AO
+alla base; (d) eventuale normal map vera se si texturizzano i mound; (e) tracking
+persistente delle componenti (anti-flicker completo, vedi sopra).

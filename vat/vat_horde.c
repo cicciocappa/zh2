@@ -336,6 +336,178 @@ static int prop_box(float *buf, int c, float cx, float cz, float ox, float oz,
     return c;
 }
 
+// --- mucchio di cadaveri (CORPSE_DESIGN §10.3): cupola low-poly a molte facce,
+// silhouette IRREGOLARE (lobi verticali + jitter dei vertici) per reggere la
+// rotazione d'azimuth — un tronco di piramide a 4 facce telegraferebbe la
+// primitiva. Face-normal flat (faccette = lowpoly gore). Emerge dal suolo per
+// Y-position: la quota visibile = height (legata a corpse_height §7-bis), il
+// resto resta sotto zb e lo clippa il depth buffer del terreno. seed dà varietà.
+#define MOUND_NSEG 14
+#define MOUND_NRING 4
+#define MOUND_DOME_VERTS (((MOUND_NRING-1)*2 + 1) * MOUND_NSEG * 3)   // 294
+#define MOUND_LIMBS 8                                                  // arti hero max
+#define MOUND_VERTS_EACH (MOUND_DOME_VERTS + MOUND_LIMBS*36)           // +box 12 tris/arto
+#define MOUNDMAX 256                                                   // mound (componenti) max
+static unsigned mnd_hash(unsigned x){ x^=x>>16; x*=0x7feb352dU; x^=x>>15; x*=0x846ca68bU; x^=x>>16; return x; }
+static float    mnd_rand(unsigned s){ return (mnd_hash(s)&0xffffffU)/(float)0x1000000; } // [0,1)
+
+// colore per-faccia: mescola il base verso una piccola palette carne/stoffa/sangue
+// (la massa legge come TANTI corpi, non un blob unico) + jitter di luminosità.
+static void mnd_facecol(unsigned s, float br,float bg,float bb, float *o){
+    static const float PAL[3][3]={{0.40f,0.24f,0.19f},{0.17f,0.15f,0.19f},{0.42f,0.07f,0.05f}};
+    const float *p=PAL[mnd_hash(s)%3]; float m=0.35f+0.30f*mnd_rand(s^0x55u);
+    float lum=0.82f+0.36f*mnd_rand(s^0xa3u);
+    o[0]=(br*(1-m)+p[0]*m)*lum; o[1]=(bg*(1-m)+p[1]*m)*lum; o[2]=(bb*(1-m)+p[2]*m)*lum;
+}
+// box orientato lungo una direzione (arto che sbuca): base (bx,by,bz), asse fwd,
+// lunghezza len, semi-spessori tw/th. Face-normal flat. 6 facce = 36 verti.
+static int mnd_limb(float *buf,int c, float bx,float by,float bz,
+                    float fx,float fy,float fz, float len,float tw,float th,
+                    float r,float g,float b){
+    float fl=sqrtf(fx*fx+fy*fy+fz*fz); if(fl<1e-6f){fx=0;fy=1;fz=0;fl=1;} fx/=fl;fy/=fl;fz/=fl;
+    float rx=fz, ry=0, rz=-fx; float rl=sqrtf(rx*rx+rz*rz);            // right = fwd x up
+    if(rl<1e-6f){rx=1;ry=0;rz=0;rl=1;} rx/=rl;rz/=rl;
+    float vx=ry*fz-rz*fy, vy=rz*fx-rx*fz, vz=rx*fy-ry*fx;              // up' = right x fwd
+    float P[8][3];
+    for(int i=0;i<8;i++){ float a=(i&1)?len:0.0f, s=(i&2)?tw:-tw, t=(i&4)?th:-th;
+        P[i][0]=bx+fx*a+rx*s+vx*t; P[i][1]=by+fy*a+ry*s+vy*t; P[i][2]=bz+fz*a+rz*s+vz*t; }
+    static const int F[6][4]={{0,1,3,2},{4,6,7,5},{0,2,6,4},{1,5,7,3},{0,4,5,1},{2,3,7,6}};
+#define LQ(q) do{ const int*ix=F[q]; float *p0=P[ix[0]],*p1=P[ix[1]],*p2=P[ix[2]],*p3=P[ix[3]]; \
+    float ux=p1[0]-p0[0],uy=p1[1]-p0[1],uz=p1[2]-p0[2], wx=p2[0]-p0[0],wy=p2[1]-p0[1],wz=p2[2]-p0[2]; \
+    float nx=uy*wz-uz*wy,ny=uz*wx-ux*wz,nz=ux*wy-uy*wx; float ln=sqrtf(nx*nx+ny*ny+nz*nz); \
+    if(ln>1e-6f){nx/=ln;ny/=ln;nz/=ln;} float*o; \
+    float*qq[6]={p0,p1,p2,p0,p2,p3}; for(int k=0;k<6;k++){ o=buf+c*9; \
+        o[0]=qq[k][0];o[1]=qq[k][1];o[2]=qq[k][2];o[3]=nx;o[4]=ny;o[5]=nz;o[6]=r;o[7]=g;o[8]=b;c++; } }while(0)
+    for(int q=0;q<6;q++) LQ(q);
+#undef LQ
+    return c;
+}
+// Footprint ELLITTICO (semi-assi ra>=rb lungo l'asse caxis/saxis) per seguire
+// pile allungate; nlimb arti hero (scalati col footprint dal chiamante).
+static int build_mound(float *buf, int c, float cx, float cz, float zb,
+                       float ra, float rb, float caxis, float saxis,
+                       float height, int nlimb, unsigned seed,
+                       float r, float g, float b) {
+    // due lobi a frequenza diversa -> profilo orizzontale ondulato (bitorzoluto)
+    float ph3 = mnd_rand(seed)*6.2832f, ph5 = mnd_rand(seed^0x9e3779b9U)*6.2832f;
+    // (EX,EZ) in spazio cerchio unitario -> mondo: scala ellittica + rotazione asse
+#define XF(EX,EZ, OX,OZ) do{ float _px=ra*(EX), _pz=rb*(EZ); \
+    (OX)=cx+_px*caxis-_pz*saxis; (OZ)=cz+_px*saxis+_pz*caxis; }while(0)
+    float rx[MOUND_NRING][MOUND_NSEG], ry[MOUND_NRING][MOUND_NSEG], rz[MOUND_NRING][MOUND_NSEG];
+    for(int ri=0; ri<MOUND_NRING; ri++){
+        float f  = ri/(float)MOUND_NRING;            // 0 base .. ->apice
+        float yy = height*sinf(f*1.5708f);           // salita arrotondata
+        for(int si=0; si<MOUND_NSEG; si++){
+            float th = si*(6.2832f/MOUND_NSEG), ct=cosf(th), st=sinf(th);
+            float lobe = 1.0f + 0.18f*sinf(th*3.0f+ph3) + 0.11f*sinf(th*5.0f+ph5);
+            float jr = (mnd_rand(seed ^ (unsigned)(ri*131+si*17))-0.5f)*0.22f*(1.0f-f);
+            float jy = (mnd_rand(seed ^ (unsigned)(ri*977+si*53))-0.5f)*0.12f*height;
+            float urad = (1.0f-f)*lobe + jr;          // raggio in spazio unitario
+            XF(urad*ct, urad*st, rx[ri][si], rz[ri][si]);
+            ry[ri][si] = zb + yy + jy;
+        }
+    }
+    float ax=cx, ay=zb+height*1.02f, az=cz;          // apice (leggermente bombato)
+    float fc[3];
+#define MTRI(AX,AY,AZ,BX,BY,BZ,CX2,CY2,CZ2) do{ \
+    float ux=(BX)-(AX),uy=(BY)-(AY),uz=(BZ)-(AZ), vx=(CX2)-(AX),vy=(CY2)-(AY),vz=(CZ2)-(AZ); \
+    float nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx; \
+    float ln=sqrtf(nx*nx+ny*ny+nz*nz); if(ln>1e-6f){nx/=ln;ny/=ln;nz/=ln;} \
+    if(ny<0){nx=-nx;ny=-ny;nz=-nz;} /* normali verso l'alto: lit dal cielo NW */ \
+    float*o; \
+    o=buf+c*9;o[0]=(AX);o[1]=(AY);o[2]=(AZ);o[3]=nx;o[4]=ny;o[5]=nz;o[6]=fc[0];o[7]=fc[1];o[8]=fc[2];c++; \
+    o=buf+c*9;o[0]=(BX);o[1]=(BY);o[2]=(BZ);o[3]=nx;o[4]=ny;o[5]=nz;o[6]=fc[0];o[7]=fc[1];o[8]=fc[2];c++; \
+    o=buf+c*9;o[0]=(CX2);o[1]=(CY2);o[2]=(CZ2);o[3]=nx;o[4]=ny;o[5]=nz;o[6]=fc[0];o[7]=fc[1];o[8]=fc[2];c++; \
+}while(0)
+    for(int ri=0; ri<MOUND_NRING-1; ri++){           // bande fra anelli consecutivi
+        for(int si=0; si<MOUND_NSEG; si++){
+            int s1=(si+1)%MOUND_NSEG;
+            mnd_facecol(seed^(unsigned)(ri*2654435761U+si*40503U), r,g,b, fc);
+            MTRI(rx[ri][si],ry[ri][si],rz[ri][si], rx[ri][s1],ry[ri][s1],rz[ri][s1], rx[ri+1][s1],ry[ri+1][s1],rz[ri+1][s1]);
+            MTRI(rx[ri][si],ry[ri][si],rz[ri][si], rx[ri+1][s1],ry[ri+1][s1],rz[ri+1][s1], rx[ri+1][si],ry[ri+1][si],rz[ri+1][si]);
+        }
+    }
+    int top=MOUND_NRING-1;                            // cappello -> apice
+    for(int si=0; si<MOUND_NSEG; si++){ int s1=(si+1)%MOUND_NSEG;
+        mnd_facecol(seed^(unsigned)(0x7000U+si*40503U), r,g,b, fc);
+        MTRI(rx[top][si],ry[top][si],rz[top][si], rx[top][s1],ry[top][s1],rz[top][s1], ax,ay,az); }
+#undef MTRI
+    // arti "hero": pochi pezzi (braccio/gamba/testa) che sbucano dalla pila a
+    // rompere l'outline e dire "sono CORPI" (CORPSE_DESIGN §10.3). Sbucano
+    // radialmente verso l'alto da metà cupola; si spalmano sull'ellisse.
+    int nl = height<0.35f ? 0 : nlimb; if(nl>MOUND_LIMBS) nl=MOUND_LIMBS;
+    float rrep = sqrtf(ra*rb);                        // raggio rappresentativo
+    for(int i=0;i<nl;i++){
+        unsigned ls = mnd_hash(seed ^ (unsigned)(0x1b0b*(i+1)));
+        float th = (ls&0xffff)/65535.0f*6.2832f, ct=cosf(th), st=sinf(th);
+        float f  = 0.30f + 0.45f*mnd_rand(ls^0x11u);  // quota lungo la cupola
+        float urr = (1.0f-f)*(1.0f+0.15f*sinf(th*3.0f+ph3));
+        float bx,bz; XF(urr*ct, urr*st, bx,bz);
+        float by = zb+height*sinf(f*1.5708f);
+        float out = 0.55f + 0.4f*mnd_rand(ls^0x22u);  // quanto punta in fuori vs su
+        float odx=ra*ct, odz=rb*st;                   // normale ellittica (approx)
+        float wdx=odx*caxis-odz*saxis, wdz=odx*saxis+odz*caxis;
+        float dl=sqrtf(wdx*wdx+wdz*wdz); if(dl>1e-6f){wdx/=dl;wdz/=dl;}
+        float dx=wdx*out, dz=wdz*out, dy=0.7f;
+        int kind = ls%3;                              // 0 braccio,1 gamba,2 testa
+        float len = kind==2 ? rrep*0.20f : rrep*(kind==1?0.60f:0.46f);
+        float tw  = kind==2 ? rrep*0.15f : rrep*(kind==1?0.11f:0.08f);
+        float th2 = tw;
+        float lc[3]; mnd_facecol(ls, kind==2?0.50f:0.46f, kind==2?0.34f:0.28f, kind==2?0.28f:0.22f, lc);
+        c = mnd_limb(buf,c, bx,by,bz, dx,dy,dz, len,tw,th2, lc[0],lc[1],lc[2]);
+    }
+#undef XF
+    return c;
+}
+
+// Aggrega le celle di corpse_height sopra soglia in COMPONENTI connesse (flood
+// 8-vicini) e rende UN mound per componente: footprint = ellisse della covarianza
+// (segue pile allungate), altezza = picco, arti scalati col numero di celle. Il
+// seed e' QUANTIZZATO su griglia coarse (~2.5 m) cosi' la lumpiness/arti non
+// sfarfallano mentre il centroide deriva (fix completo = tracking persistente
+// delle componenti fra i frame, follow-up). comp/stack = scratch gw*gh.
+static int build_corpse_mounds(float *buf, int maxmounds,
+                               const float *ch, int gw, int gh, float cs,
+                               int *comp, int *stack){
+    const float THR = 0.20f;                          // soglia §10.4
+    int nc = gw*gh, vc = 0, nmound = 0;
+    for(int i=0;i<nc;i++) comp[i] = (ch[i]>=THR) ? -1 : 0;   // -1 = da visitare
+    for(int c0=0;c0<nc && nmound<maxmounds;c0++){
+        if(comp[c0]!=-1) continue;
+        int sp=0; stack[sp++]=c0; comp[c0]=1;
+        double W=0,Sx=0,Sz=0,Sxx=0,Szz=0,Sxz=0; float hmax=0; int n=0;
+        while(sp>0){
+            int idx=stack[--sp], cyy=idx/gw, cxx=idx%gw;
+            float h=ch[idx], x=(cxx+0.5f)*cs, z=(cyy+0.5f)*cs, w=h;
+            W+=w; Sx+=w*x; Sz+=w*z; Sxx+=w*x*x; Szz+=w*z*z; Sxz+=w*x*z;
+            if(h>hmax)hmax=h; n++;
+            for(int dyy=-1;dyy<=1;dyy++) for(int dxx=-1;dxx<=1;dxx++){
+                if(!dxx&&!dyy) continue; int nx=cxx+dxx, ny=cyy+dyy;
+                if(nx<0||ny<0||nx>=gw||ny>=gh) continue; int ni=ny*gw+nx;
+                if(comp[ni]==-1){ comp[ni]=1; stack[sp++]=ni; }
+            }
+        }
+        if(W<=0.0||n==0) continue;
+        float mcx=(float)(Sx/W), mcz=(float)(Sz/W);
+        float Cxx=(float)(Sxx/W)-mcx*mcx, Czz=(float)(Szz/W)-mcz*mcz, Cxz=(float)(Sxz/W)-mcx*mcz;
+        if(Cxx<0)Cxx=0; if(Czz<0)Czz=0;
+        float tr=Cxx+Czz, det=Cxx*Czz-Cxz*Cxz;
+        float disc=sqrtf(fmaxf(tr*tr*0.25f-det,0.0f));
+        float l1=tr*0.5f+disc, l2=tr*0.5f-disc; if(l2<0)l2=0;
+        float ang=0.5f*atan2f(2.0f*Cxz, Cxx-Czz);
+        float ra=2.0f*sqrtf(l1)+cs*0.7f, rb=2.0f*sqrtf(l2)+cs*0.7f;
+        if(ra<cs*0.8f)ra=cs*0.8f; if(rb<cs*0.8f)rb=cs*0.8f; if(rb>ra)rb=ra;
+        int qx=(int)floorf(mcx/2.5f), qz=(int)floorf(mcz/2.5f);  // seed stabile
+        unsigned seed=mnd_hash((unsigned)(qx*73856093) ^ (unsigned)(qz*19349663));
+        int nlimb = 2 + n/3; if(nlimb>MOUND_LIMBS) nlimb=MOUND_LIMBS;
+        vc = build_mound(buf, vc, mcx, mcz, ter_z(mcx,mcz),
+                         ra, rb, cosf(ang), sinf(ang), hmax, nlimb, seed,
+                         0.30f,0.11f,0.09f);
+        nmound++;
+    }
+    return vc;
+}
+
 #define PROP_VERTS_EACH 60   // corpo (30) + montante (30)
 static float *build_prop_mesh(const Scene *sc, const PropCatalog *cat, int *out_nv) {
     int nv = sc->n_prop * PROP_VERTS_EACH;
@@ -605,6 +777,19 @@ int main(int argc, char **argv){
     SimP *s=NULL; DefGame *g=NULL; DefDirector *dir=NULL;
     if(build_world(&sc, vl, fillN, &spctx, &s, &g, &dir)!=0) return 1;
 
+    // VAT_HORDE_PILE=1: inietta pile di cadaveri di prova (un disco + una banda
+    // allungata) per verificare l'AGGREGAZIONE celle->mound unico (§10): il blob
+    // tondo deve dare un mound tondo, la banda un mound stirato lungo il suo asse.
+    if(getenv("VAT_HORDE_PILE")){
+        unsigned rs=12345u; float W=sc.world_w, H=sc.world_h;
+        #define PRND() ((rs=rs*1103515245u+12345u),(rs>>9)/(float)0x800000)
+        for(int i=0;i<450;i++){ float a=PRND()*6.2832f, rr=3.0f*sqrtf(PRND());
+            simp_corpse_add(s, W*0.40f+rr*cosf(a), H*0.50f+rr*sinf(a), 0.30f, 1e6f); }
+        for(int i=0;i<350;i++){ float u=PRND()*2.0f-1.0f, v=PRND()*2.0f-1.0f;
+            simp_corpse_add(s, W*0.65f+u*6.0f, H*0.50f+v*1.6f, 0.30f, 1e6f); }
+        #undef PRND
+    }
+
     const char *shot=getenv("VAT_HORDE_SHOT");
     int shot_frames = shot? atoi(shot):0; if(shot&&shot_frames<=0)shot_frames=600;
 
@@ -734,6 +919,22 @@ int main(int argc, char **argv){
     glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
     glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
     glBindVertexArray(0);
+
+    // --- mucchi di cadaveri (CORPSE_DESIGN §10): cupole lumpy ricostruite CPU
+    // ogni frame dal campo corpse_height (poche celle sopra soglia), flat shader.
+    // M = toggle; VAT_HORDE_MOUNDTEST=1 = fila di mound di prova (valuta la sola
+    // silhouette ruotando l'azimuth, scollegata dalla sim).
+    float *mndmesh = malloc((size_t)MOUNDMAX*MOUND_VERTS_EACH*9*sizeof(float));
+    int *mnd_comp = malloc((size_t)simp_grid_w(s)*simp_grid_h(s)*sizeof(int));   // scratch flood-fill
+    int *mnd_stack= malloc((size_t)simp_grid_w(s)*simp_grid_h(s)*sizeof(int));
+    GLuint mndVao,mndVbo; glGenVertexArrays(1,&mndVao);glBindVertexArray(mndVao);
+    glGenBuffers(1,&mndVbo);glBindBuffer(GL_ARRAY_BUFFER,mndVbo);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)MOUNDMAX*MOUND_VERTS_EACH*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
+    glBindVertexArray(0);
+    int show_mounds=1, mound_test=getenv("VAT_HORDE_MOUNDTEST")?1:0;
 
     // stato editor (EDITOR_DESIGN fase 1): VAT_HORDE_EDIT=1 parte in EDIT, TAB
     // commuta. In EDIT la sim NON steppa, si edita la Scene e si salva (F2).
@@ -933,6 +1134,7 @@ int main(int argc, char **argv){
                 default: break;
             } else switch(e.key.key){                             // --- tasti PLAY ---
                 case SDLK_C:cam_free=!cam_free;break; case SDLK_T:useTex=!useTex;break;
+                case SDLK_M:show_mounds=!show_mounds;break;   // mucchi cadaveri (§10)
                 case SDLK_SPACE:paused=!paused;break;
                 case SDLK_E:blast_x=cx;blast_y=cz;blast_pending=1;break;
                 default: break;
@@ -1043,6 +1245,31 @@ int main(int argc, char **argv){
           if(gc){ glBindVertexArray(gibVao);glBindBuffer(GL_ARRAY_BUFFER,gibVbo);
               glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)gc*9*sizeof(float),gibmesh);
               glDrawArrays(GL_TRIANGLES,0,gc); } }
+
+        // mucchi di cadaveri (CORPSE_DESIGN §10): cupole lumpy dal campo
+        // corpse_height (o di prova). Stesso flat shader dei gib.
+        if(show_mounds){
+            int mc=0;
+            float col[3]={0.30f,0.11f,0.09f};         // carne/sangue scuro
+            if(mound_test){
+                // fila di mound di altezza crescente al centro scena: valuta la
+                // silhouette ruotando l'azimuth (C per camera libera, frecce).
+                float bx=sc.world_w*0.5f-9.0f, bz=sc.world_h*0.82f;
+                float hs[4]={0.6f,1.1f,1.6f,2.1f};
+                for(int i=0;i<4;i++){ float wx=bx+i*6.0f;
+                    mc=build_mound(mndmesh,mc, wx,bz, ter_z(wx,bz),
+                                   2.4f,2.4f, 1.0f,0.0f, hs[i], 4, 1234u+i*101u,
+                                   col[0],col[1],col[2]); }
+            } else {
+                mc=build_corpse_mounds(mndmesh, MOUNDMAX, simp_corpse_height(s),
+                                       simp_grid_w(s), simp_grid_h(s), simp_cell_size(s),
+                                       mnd_comp, mnd_stack);
+            }
+            if(mc){ glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
+                glBindVertexArray(mndVao);glBindBuffer(GL_ARRAY_BUFFER,mndVbo);
+                glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)mc*9*sizeof(float),mndmesh);
+                glDrawArrays(GL_TRIANGLES,0,mc); }
+        }
 
         // strutture della base (rebuild dallo stato vivo: celle crollate spariscono)
         if(gBaseOn){ int sv=build_struct_mesh(g,sc.cell,stBuf);
@@ -1161,7 +1388,7 @@ int main(int argc, char **argv){
             shot_done=1; running=0; }
         SDL_GL_SwapWindow(win);
     }
-    free(stBuf); if(dir) def_director_destroy(dir);
+    free(stBuf); free(mndmesh); free(mnd_comp); free(mnd_stack); if(dir) def_director_destroy(dir);
     if(gTerOn) terrain_free(&gTer);
     def_destroy(g); vat_layer_destroy(vl); simp_destroy(s); scene_free(&sc);
     SDL_GL_DestroyContext(ctx);SDL_DestroyWindow(win);SDL_Quit(); return 0;
