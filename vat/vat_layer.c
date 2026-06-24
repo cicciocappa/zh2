@@ -353,16 +353,18 @@ void vat_layer_limb(VatLayer *vl, int slot, float x, float y, float radius, unsi
 
 /* Burst di gib alla morte esplosiva (gib pesante): pezzi balistici renderer-side
    a (x,y). Mescola rosso sangue + tint dello zombie (slot, per vestiti/carne).
-   radius = taglia del corpo (scala dei pezzi e dell'esplosione). */
-void vat_layer_gib(VatLayer *vl, int slot, float x, float y, float radius, unsigned int seed){
+   radius = taglia del corpo (scala dei pezzi e dell'esplosione). `force` scala la
+   velocità iniziale (1.0 = esplosione piena). */
+static void gib_burst(VatLayer *vl, int slot, float x, float y, float radius,
+                      float force, unsigned int seed){
     int has=(slot>=0&&slot<vl->max);
     float ztr=has?vl->tr[slot]/255.0f:0.6f, ztg=has?vl->tg[slot]/255.0f:0.5f, ztb=has?vl->tb[slot]/255.0f:0.5f;
     const int N=12;
     for(int k=0;k<N;k++){
         unsigned h=hashu(seed*2654435761u + (unsigned)k*40503u);
         float a =(h&1023)/1023.0f*6.2831853f;
-        float sp=1.5f+((h>>10)&1023)/1023.0f*3.5f;   /* 1.5-5 m/s orizzontale */
-        float up=3.0f+((h>>20)&1023)/1023.0f*3.5f;   /* 3-6.5 m/s verso l'alto */
+        float sp=(1.5f+((h>>10)&1023)/1023.0f*3.5f)*force;   /* 1.5-5 m/s orizz. a force=1 */
+        float up=(3.0f+((h>>20)&1023)/1023.0f*3.5f)*force;   /* 3-6.5 m/s su a force=1     */
         int g=vl->gwrite; vl->gwrite=(g+1)%vl->gmax;
         vl->gx[g]=x; vl->gy[g]=y; vl->gz[g]=radius*0.8f;
         vl->gvx[g]=cosf(a)*sp; vl->gvy[g]=sinf(a)*sp; vl->gvz[g]=up;
@@ -379,6 +381,10 @@ void vat_layer_gib(VatLayer *vl, int slot, float x, float y, float radius, unsig
         vl->gact[g]=1;
     }
     decal_add(vl, x, y, radius*1.6f, seed^0x9E37u);   /* pozza all'epicentro dell'esplosione */
+}
+
+void vat_layer_gib(VatLayer *vl, int slot, float x, float y, float radius, unsigned int seed){
+    gib_burst(vl, slot, x, y, radius, 1.0f, seed);
 }
 
 /* spawn di UN mesh-gib (ring buffer). Tutto renderer-side: balistica + tumble 3D,
@@ -416,6 +422,74 @@ void vat_layer_maim_arm(VatLayer *vl, int slot, float x, float y, float radius,
                       scale, ax,ay,az, spin, 1.8f+((h>>16)&255)/255.0f*1.2f);
     }
     decal_add(vl, x, y, radius*0.7f, seed^0x1A2Bu);
+}
+
+/* Maim gambe: recide DUE gambe (mesh 3 = leg, ×2) + un paio di frammenti (gib1=1,
+   gib2=2) espulsi BASSO-AVANTI — l'origine è l'anca (quota più bassa del braccio) e
+   le gambe partono lungo l'heading, una per lato. Arco balistico + tumble 3D, scala
+   ~ taglia del corpo. Lascia una macchia all'origine. */
+void vat_layer_maim_legs(VatLayer *vl, int slot, float x, float y, float radius,
+                         float heading, unsigned int seed){
+    (void)slot;
+    float scale = radius/0.30f;                  /* radius default 0.30 -> scala 1 */
+    float zhip  = radius*2.5f;                    /* quota anca ~0.75 m             */
+    /* due gambe (mesh 3): espulse in avanti, una a destra una a sinistra dell'heading */
+    for(int k=0;k<2;k++){
+        unsigned h=hashu(seed*2654435761u + (unsigned)k*40503u + 0x1E6Bu);
+        float side = (k==0) ? 1.0f : -1.0f;
+        float a  = heading + side*0.35f + ((int)((h>>1)&255)-128)/128.0f*0.4f;
+        float sp = 2.5f + ((h>>9)&255)/255.0f*1.5f;                /* orizzontale */
+        float up = 2.0f + ((h>>17)&255)/255.0f*1.5f;              /* verso l'alto */
+        float ax=((int)((h>>3)&255)-128)/128.0f, ay=((int)((h>>11)&255)-128)/128.0f,
+              az=((int)((h>>19)&255)-128)/128.0f;
+        float spin=5.0f+((h>>24)&15)/15.0f*4.0f; if(h&0x40000000u) spin=-spin;
+        mesh_gib_push(vl, 3, x, y, zhip, cosf(a)*sp, sinf(a)*sp, up,
+                      scale, ax,ay,az, spin, 1.8f+((h>>16)&255)/255.0f*1.2f);
+    }
+    /* frammenti gib1/gib2 alternati, a ventaglio attorno all'heading, spin più alto */
+    for(int k=0;k<4;k++){
+        unsigned h=hashu(seed*2654435761u + (unsigned)k*2246822519u + 0x33C7u);
+        int mesh = (k&1) ? 2 : 1;
+        float a  = heading + ((int)((h>>1)&255)-128)/128.0f*2.2f;
+        float sp = 3.0f + ((h>>9)&255)/255.0f*2.0f;
+        float up = 3.0f + ((h>>17)&255)/255.0f*2.5f;
+        float ax=((int)((h>>3)&255)-128)/128.0f, ay=((int)((h>>11)&255)-128)/128.0f,
+              az=((int)((h>>19)&255)-128)/128.0f;
+        float spin=9.0f+((h>>24)&15)/15.0f*5.0f; if(h&0x40000000u) spin=-spin;
+        mesh_gib_push(vl, mesh, x, y, zhip*0.8f, cosf(a)*sp, sinf(a)*sp, up,
+                      scale, ax,ay,az, spin, 1.6f+((h>>16)&255)/255.0f*1.0f);
+    }
+    decal_add(vl, x, y, radius*0.8f, seed^0x7C3Du);
+}
+
+/* Esplosione TOTALE del corpo: espelle radialmente ogni pezzo mesh (2 braccia,
+   2 gambe, testa, 2 metà torso) con arco balistico + tumble 3D, e ci somma un
+   doppio burst abbondante di cubetti sangue/carne (vat_layer_gib) + una pozza
+   grande. NON crea cadavere né animazione di morte: il chiamante chiama solo
+   simp_kill, niente vat_layer_die. */
+void vat_layer_explode(VatLayer *vl, int slot, float x, float y, float radius,
+                       float force, unsigned int seed){
+    float scale = radius/0.30f;
+    /* pezzo -> mesh_id e quota di partenza (in raggi, ~altezza anatomica) */
+    static const int   PART[] = { 0, 0,  3, 3,  4,    5,    6   }; /* braccia, gambe, testa, torso */
+    static const float HZ[]   = { 4.0f,4.0f, 1.7f,1.7f, 5.5f, 3.3f, 3.3f };
+    const int NP = (int)(sizeof(PART)/sizeof(PART[0]));
+    for(int k=0;k<NP;k++){
+        unsigned h=hashu(seed*2654435761u + (unsigned)k*40503u + 0xB00Bu);
+        float a  = (h&1023)/1023.0f*6.2831853f;                   /* direzione radiale piena */
+        float sp = (2.0f + ((h>>10)&1023)/1023.0f*3.0f)*force;    /* 2-5 m/s a force=1       */
+        float up = (3.5f + ((h>>20)&1023)/1023.0f*3.0f)*force;    /* 3.5-6.5 m/s a force=1   */
+        float ax=((int)((h>>2)&255)-128)/128.0f, ay=((int)((h>>11)&255)-128)/128.0f,
+              az=((int)((h>>19)&255)-128)/128.0f;
+        float spin=7.0f+((h>>24)&15)/15.0f*6.0f; if(h&0x40000000u) spin=-spin;
+        mesh_gib_push(vl, PART[k], x, y, radius*HZ[k], cosf(a)*sp, sinf(a)*sp, up,
+                      scale, ax,ay,az, spin, 2.2f+((h>>16)&255)/255.0f*1.5f);
+    }
+    /* doppio burst di cubetti (sangue abbondante) — stessa `force` dei pezzi grandi,
+       così smembra non sparge i cubetti lontano — + pozza all'epicentro */
+    gib_burst(vl, slot, x, y, radius, force, seed^0x5A5Au);
+    gib_burst(vl, slot, x, y, radius, force, seed^0xC3C3u);
+    decal_add(vl, x, y, radius*2.2f, seed^0x9E37u);
 }
 
 /* Emette i mesh-gib attivi: 9 float/pezzo (mesh_id, x, y, z_sul_suolo, ax, ay, az,

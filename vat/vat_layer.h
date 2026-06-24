@@ -131,6 +131,21 @@ int  vat_layer_fill_gibs(VatLayer *vl, float *out, int max_out);
  * radius = taglia (scala dei pezzi/spinta); heading in rad; seed dà varietà. */
 void vat_layer_maim_arm(VatLayer *vl, int slot, float x, float y, float radius,
                         float heading, unsigned int seed);
+/* Come maim_arm ma per le GAMBE: recide due gambe (mesh_id 3 = leg, ×2) + un paio
+ * di frammenti (gib1/gib2), espulsi BASSO-AVANTI (origine all'anca, non alla spalla)
+ * con arco balistico e tumble 3D. Il chiamante passa anche il body a maimed_legs e
+ * fa partire gli schizzi di sangue. heading in rad; seed dà varietà. */
+void vat_layer_maim_legs(VatLayer *vl, int slot, float x, float y, float radius,
+                         float heading, unsigned int seed);
+/* Esplosione TOTALE: il corpo si disintegra in TUTTI i suoi pezzi mesh — 2 braccia
+ * (mesh 0), 2 gambe (3), testa (4) e le due metà del torso (5,6) — espulsi radialmente
+ * con arco balistico e tumble 3D, PIÙ un burst abbondante di cubetti sangue/carne. Da
+ * usare al posto di gib+die: NON lascia cadavere né animazione di morte, del corpo
+ * resta solo la pioggia di pezzi (che si posano fino al TTL) e una pozza. seed=varietà.
+ * `force` scala la velocità iniziale dei pezzi: 1.0 = esplosione piena (mina), valori
+ * più bassi (~0.4) = smembramento ravvicinato (colpo di torretta pesante). */
+void vat_layer_explode(VatLayer *vl, int slot, float x, float y, float radius,
+                       float force, unsigned int seed);
 /* Emette i mesh-gib attivi: 9 float/pezzo (mesh_id, x, y, z_sul_suolo, ax, ay,
  * az, angle, scale). Il chiamante somma terrain_z(x,y) a z e costruisce la model
  * matrix = T(world) * rot(axis,angle) * scale. Ritorna il numero. */

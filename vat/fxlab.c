@@ -89,6 +89,26 @@ static const FxEmitterDef BLOOD_DEF = {
     .rate=20.0f,
 };
 
+// Schizzo ABBONDANTE per l'esplosione totale del corpo: più particelle, getto più
+// ampio e veloce, gocce un filo più grosse e durature di BLOOD_DEF.
+static const FxEmitterDef BLOOD_BURST_DEF = {
+    .count=90, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.10f, .spawn_box_z=0.10f,
+    .spawn_offset_y_min=-0.05f, .spawn_offset_y_max=0.20f,
+    .speed_xy_min=1.5f, .speed_xy_max=6.0f,
+    .speed_y_min=2.0f,  .speed_y_max=7.0f,
+    .gravity=9.81f, .drag=0.55f,
+    .lifetime_min=0.6f, .lifetime_max=1.6f,
+    .start_scale_min=0.06f, .start_scale_max=0.16f,
+    .end_scale_min=0.02f,   .end_scale_max=0.06f,
+    .start_color={0.50f,0.02f,0.02f,1.0f}, .end_color={0.20f,0.0f,0.0f,0.5f},
+    .color_variants={ {0.55f,0.03f,0.03f,1.0f},{0.42f,0.0f,0.0f,1.0f},{0.60f,0.08f,0.04f,1.0f} },
+    .color_variant_count=3,
+    .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.3f, .ground_stop=true, .blend=FX_BLEND_ALPHA,
+    .rate=20.0f,
+};
+
 // --- glTF ground loader (copia di vat_horde.load_ground_glb) con TRASLAZIONE
 // orizzontale: sposta il footprint del suolo in coord >=0 (offx,offy = -origin).
 static GLuint ground_load_tex(cgltf_data *data, cgltf_primitive *prim, const char *dir){
@@ -180,7 +200,7 @@ static int load_ground_glb(const char *path, Ground *G, float offx, float offy){
 // --- gore mesh-gibs: carica le mesh di blend/gibs.glb (arm + 2 frammenti) in un
 // VAO ciascuna (pos/norm/uv, attrib 0/1/2), CENTRATE sul centroide del bbox così
 // il tumble ruota attorno al centro. Indicizzate per ORDINE DI NODO = mesh_id
-// (0=arm, 1=gib1, 2=gib2). UV mappate sul diffuse del corpo (texture esterna).
+// (0=arm, 1=gib1, 2=gib2, 3=leg, 4=head, 5/6=torso). UV sul diffuse del corpo.
 typedef struct { GLuint vao; int nidx; } GibMesh;
 static int load_gib_meshes(const char *path, GibMesh *out, int maxn){
     cgltf_options opt={0}; cgltf_data *data=NULL;
@@ -585,7 +605,7 @@ int main(int argc, char **argv){
 
     // gore mesh-gibs: VAO delle 3 mesh + shader mesh statica texturizzata. La
     // texture è il diffuse di zombie_man (A[0]), su cui sono mappate le UV del glb.
-    GibMesh GM[3]={0}; int nGibMesh=load_gib_meshes("blend/gibs.glb",GM,3);
+    GibMesh GM[8]={0}; int nGibMesh=load_gib_meshes("blend/gibs.glb",GM,8);
     const float GIB_UNIT=0.01f;   // unità Blender -> metri (braccio ~0.53 m); tunabile
     GLuint mProg=vg_shader("vat/mesh.vs","vat/mesh.fs");
     GLint uVPm=glGetUniformLocation(mProg,"uVP"), uModelm=glGetUniformLocation(mProg,"uModel");
@@ -691,8 +711,9 @@ int main(int argc, char **argv){
                 else if(k==SDLK_G && liveSlot>=0) vat_layer_gib_wound(vl,liveSlot,lx,ly,lr,(unsigned)frame*2654435761u);
                 else if(k==SDLK_J && liveIdx>=0){ float o[3]={lx, ter_z(lx,ly)+1.0f, ly}; fx_emit(&fx,o,&BLOOD_DEF,0.0f,-1.0f); }
                 else if((k==SDLK_K||k==SDLK_B) && liveIdx>=0){
-                    if(k==SDLK_B) vat_layer_gib(vl,liveSlot,lx,ly,lr,(unsigned)frame*2654435761u);
-                    vat_layer_die(vl,liveSlot,lx,ly,lr);
+                    if(k==SDLK_B){ vat_layer_explode(vl,liveSlot,lx,ly,lr,1.0f,(unsigned)frame*2654435761u);
+                        float o[3]={lx, ter_z(lx,ly)+1.0f, ly}; fx_emit(&fx,o,&BLOOD_BURST_DEF,0.0f,-1.0f); }
+                    else vat_layer_die(vl,liveSlot,lx,ly,lr);
                     simp_kill(s,liveIdx); respawn_t=1.2f;
                 }
                 else if(k==SDLK_R && liveIdx>=0){ simp_kill(s,liveIdx); respawn_t=0.05f; }
@@ -739,7 +760,8 @@ int main(int argc, char **argv){
             // trigger FX headless (morte esplosiva dell'agente)
             if(fx_frame>=0 && !fx_done && frame>=fx_frame){ int li=simp_index_of(s,ah);
                 if(li>=0){ int sl=simp_slot_of(s,li); float gx=simp_px(s)[li],gy=simp_py(s)[li],gr=simp_radius_arr(s)[li];
-                    vat_layer_gib(vl,sl,gx,gy,gr,12345u); vat_layer_die(vl,sl,gx,gy,gr);
+                    vat_layer_explode(vl,sl,gx,gy,gr,1.0f,12345u);
+                    float o[3]={gx, ter_z(gx,gy)+1.0f, gy}; fx_emit(&fx,o,&BLOOD_BURST_DEF,0.0f,-1.0f);
                     simp_kill(s,li); respawn_t=1e9f; }
                 fx_done=1; }
             if(fx_clip!=-2){ int li=simp_index_of(s,ah); if(li>=0) vat_layer_force_clip(vl,simp_slot_of(s,li),fx_clip); }
@@ -803,11 +825,22 @@ int main(int argc, char **argv){
                     float o[3]={ex, ter_z(ex,ey)+1.2f, ey}; fx_emit(&fx,o,&BLOOD_DEF,0.0f,-1.0f);
                     cur_var=ARM_VAR; vat_layer_set_variant(vl,sl,ARM_VAR);
                     ui_bloody=1; vat_layer_make_bloody(vl,sl); }
+                if(nk_button_label(c,"Maim gambe")&&li>=0){
+                    float hd=atan2f(simp_vy(s)[li],simp_vx(s)[li]);
+                    vat_layer_maim_legs(vl,sl,ex,ey,er,hd,seed);
+                    float o[3]={ex, ter_z(ex,ey)+0.8f, ey}; fx_emit(&fx,o,&BLOOD_DEF,0.0f,-1.0f);
+                    cur_var=CRAWLER_VAR; vat_layer_set_variant(vl,sl,CRAWLER_VAR);
+                    ui_bloody=1; vat_layer_make_bloody(vl,sl); }
                 if(nk_button_label(c,"Schizzo")&&sl>=0) vat_layer_gib_wound(vl,sl,ex,ey,er,seed);
                 if(nk_button_label(c,"Sangue")&&li>=0){ float o[3]={ex, ter_z(ex,ey)+1.0f, ey}; fx_emit(&fx,o,&BLOOD_DEF,0.0f,-1.0f); }
                 if(nk_button_label(c,"Insanguina")&&sl>=0){ ui_bloody=1; vat_layer_make_bloody(vl,sl); }
                 if(nk_button_label(c,"Morte")&&li>=0){ vat_layer_die(vl,sl,ex,ey,er); simp_kill(s,li); respawn_t=1.2f; }
-                if(nk_button_label(c,"Esplodi")&&li>=0){ vat_layer_gib(vl,sl,ex,ey,er,seed); vat_layer_die(vl,sl,ex,ey,er); simp_kill(s,li); respawn_t=1.2f; }
+                if(nk_button_label(c,"Esplodi")&&li>=0){ vat_layer_explode(vl,sl,ex,ey,er,1.0f,seed);
+                    float o[3]={ex, ter_z(ex,ey)+1.0f, ey}; fx_emit(&fx,o,&BLOOD_BURST_DEF,0.0f,-1.0f);
+                    simp_kill(s,li); respawn_t=1.2f; }
+                if(nk_button_label(c,"Smembra")&&li>=0){ vat_layer_explode(vl,sl,ex,ey,er,0.4f,seed);
+                    float o[3]={ex, ter_z(ex,ey)+1.0f, ey}; fx_emit(&fx,o,&BLOOD_BURST_DEF,0.0f,-1.0f);
+                    simp_kill(s,li); respawn_t=1.2f; }
                 nk_layout_row_dynamic(c,22,2);
                 if(nk_button_label(c,"Respawn")&&li>=0){ simp_kill(s,li); respawn_t=0.05f; }
                 paused = nk_check_label(c,"pausa",paused)?1:0;
