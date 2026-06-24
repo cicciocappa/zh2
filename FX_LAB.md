@@ -1,8 +1,56 @@
 # FX_LAB — laboratorio effetti visivi
 
-> **STATO (2026-06-24):** PIANO concordato, non ancora implementato. Si parte
-> dalla prossima sessione, dallo scheletro (step 0). Questo doc fissa scopo,
+> **STATO (2026-06-24):** step 0 (scheletro) FATTO e verificato headless;
+> gli FX gore (hit/maim/gib/morte/decal/sagoma) sono già CABLATI sui pool
+> condivisi di `vat_layer` e rendono nel lab (steps 1-3 da rifinire a occhio,
+> uno alla volta). `vat/fxlab.c`, `make fxlab`. Questo doc fissa scopo,
 > principi e ordine degli step così non si perde il filo.
+
+## Build / uso (implementato)
+
+- `make fxlab` → `./fxlab [terreno.glb]` (default `blend/road_test.glb`). Riusa
+  `vat_layer.c`, gli shader `vat/*`, terrain.c, i pool gib/decal/sagoma. NON è
+  nei target di default.
+- DRIVER: un solo agente del core (`sim_particles`) che fa la SPOLA lungo un
+  goal (locomozione reale del gioco → heading/FSM/fase veri in `vat_layer`),
+  niente director/orda. Il `road_test.glb` è caricato come suolo texturizzato +
+  heightmap `.zhm` a fianco (`gfx/terrain_bake.py`). Footprint del glb a coord
+  negative → traslato in coord ≥0 per la sim, la quota si campiona riaggiungendo
+  l'origine (`OFX/OFY`).
+- TERRENO/QUOTA: ombre, decal di sangue, sagome-cadavere, gib e l'agente sono
+  TUTTI posati su `terrain_z(x,y)` → un cadavere su pendenza siede alla quota
+  giusta GIÀ ORA. `road_test` è quasi piatto (z 0–0.16): per stressare le quote
+  serve un glb con dislivelli veri. L'accumulo cross-quota (mound che copre celle
+  a quote diverse) resta da affrontare nello step 5.
+- UI: pannello **nuklear** (single-header C puro `vat/nuklear.h`, backend SDL3+GL3
+  `nkgl_*` in `fxlab.c`, adattato dal demo ufficiale) — combo **body** (9 modelli),
+  property **outfit** base (0–15: 0–13 normali, **14=carbonizzato, 15=acido**) +
+  checkbox **insanguinato** (+16), combo **Animazione** (clip walk/run/idle del
+  body corrente, "auto" = FSM velocità→stato), bottoni effetti
+  (Hit/Maim/Schizzo/Insanguina/Morte/Esplodi/Respawn), pausa, stato. Il mouse sul
+  pannello NON muove la camera (`nk_window_is_any_hovered`/`item_is_any_active`).
+  **Pannello AUTOREVOLE**: body+outfit+clip scelti sono applicati all'agente vivo
+  OGNI frame → lo schermo combacia sempre col pannello (anche al primo spawn e dopo
+  i respawn; prima il primo spawn aveva body casuale, fuori sync). Setter aggiunti
+  a `vat_layer`: `set_outfit` (make_bloody è a senso unico) e `force_clip` (override
+  clip locomozione, -1 = auto/FSM; reset al cambio body / riuso slot).
+- **LACUNA ASSET (texture)**: le righe insanguinate dell'atlante outfit (celle
+  16–31, = outfit+16) sono dipinte solo per **zombie_man** e **zombie_man_obese**.
+  Per **zombie_fem, zombie_fem_obese, zombie_child, zombie_fem_skirt** le celle
+  16–31 sono **placeholder verde** (non dipinte) → selezionare "insanguinato" su
+  quei body mostra il verde. Il lab è corretto (mostra ciò che c'è nell'asset):
+  vanno dipinte le righe sangue di quelle 4 diffuse. Atlante = 4 col × 8 righe
+  (`vat.vs` ATLAS_NX/NY), righe 0–3 = outfit 0–15, righe 4–7 = +16 insanguinati.
+- CONTROLLI tastiera (oltre all'UI): `[`/`]` cambia body · `O` insanguina · `H`
+  colpo · `M` mutila→crawler · `G` schizzo · `K` morte (cadavere+decal) · `B`
+  morte esplosiva · `R` respawn · `SPACE` pausa · `C` cam libera · `T` texture ·
+  mouse/frecce camera · `ESC`.
+- HEADLESS: `FXLAB_SHOT="<frame>"` → N step, `fxlab_shot.bmp`, esce (UI esclusa).
+  `FXLAB_CAM="cx,cz,hh,az,el"`, `FXLAB_FX=<frame>` (esplode l'agente per
+  verificare i pool gore da uno screenshot), `FXLAB_UI=1` (forza l'UI anche nello
+  screenshot, per verificarla), `FXLAB_CLIP=<idx>` (forza una clip sull'agente,
+  -1=auto), `FXLAB_BODY=<v>` / `FXLAB_OUTFIT=<o>` (pin body / outfit, per verifiche
+  headless di anim/outfit/texture).
 
 ## Scopo
 

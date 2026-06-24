@@ -8,6 +8,25 @@ C puro, zero dipendenze** e portano su OpenGL (instancing + compute shader in fu
 Conversazioni in **italiano**. Codice e commenti in **inglese**. Si lavora da terminale
 (compila e testa sempre prima di consegnare). Vedi `TODO.md` per l'agenda operativa.
 
+## Preferenze di lavoro (l'utente)
+
+- **Verifica visiva all'utente prima dell'analisi con screenshot.** Per le
+  modifiche **visive/di rendering**: fare la modifica, compilare, dire in una riga
+  cosa guardare, poi **fermarsi e lasciar verificare a occhio all'utente** — non
+  partire subito con build headless + screenshot + diff. Lui spesso vede al volo
+  cosa non va e si perde meno tempo. Screenshot headless solo se l'utente non può
+  guardare interattivamente, se li chiede, o per test di CORRETTEZZA (es. unit
+  test testuali), non come prima validazione estetica.
+- **Niente probing dell'ambiente; download/installazioni li fa l'utente.** Non
+  andare a cercare cosa è installato sul sistema (no `find /`, no scan di
+  toolchain/pacchetti/rete): **chiedere sempre all'utente**. Se serve qualcosa da
+  internet, **dirlo all'utente** che lo scarica e indica dove l'ha messo — non
+  assumere accesso di rete.
+- **Preferire librerie leggere** a quelle pesanti (es. UI sandbox: nuklear/microui,
+  single-header C puro, invece di Dear ImGui/cimgui che vuole il toolchain C++).
+  Coerente con l'etica "zero/poche dipendenze": i core sono zero-dep; i tool
+  (`vat_horde`/`fxlab`) ammettono SDL3/glad/stb/cgltf/nuklear.
+
 ## I due core
 
 Il progetto ha DUE modelli di simulazione complementari:

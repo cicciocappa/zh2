@@ -43,7 +43,7 @@ int main(void){
     ok = ok && c==1 && in_range(buf[5],0,20);   /* live, locomotion/idle (not hit/death) */
     printf("baseline: count=%d gA=%.0f | %s\n", c, (double)buf[5], ok?"ok":"BAD");
 
-    /* --- HIT one-shot: overrides with the hit clip, then resumes --- */
+    /* --- HIT one-shot (HARD CUT): overrides with the hit clip, then resumes --- */
     vat_layer_hit(vl,slot);
     vat_layer_update(vl,s,dt);
     c=vat_layer_fill_variant(vl,s,0,buf,64);

@@ -79,6 +79,17 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt);
  * quando il gioco marca lo zombie ferito. slot = simp_slot_of(s, indice). */
 void vat_layer_make_bloody(VatLayer *vl, int slot);
 
+/* Fissa l'outfit di uno slot (atlante 4x8: 0..13 puliti, +16 = insanguinato,
+   clamp [0,31]). Controllo diretto per il lab FX (make_bloody è a senso unico). */
+void vat_layer_set_outfit(VatLayer *vl, int slot, int outfit);
+
+/* Forza la CLIP di locomozione di uno slot, scavalcando la FSM velocità→stato e
+   la scelta casuale per-slot: l'agente riproduce sempre `clip_idx` (indice nel
+   meta del suo body, avanzato per distanza/tempo come al solito). clip_idx = -1
+   = torna in AUTO (FSM). Resettato a -1 al cambio body e al riuso dello slot.
+   Per il lab FX (anteprima delle varianti walk/run). slot = simp_slot_of(...). */
+void vat_layer_force_clip(VatLayer *vl, int slot, int clip_idx);
+
 /* Evento HIT one-shot su un agente vivo (colpo non letale): flinch della clip
  * hit, poi ritorno alla FSM velocità. No-op se il body non ha clip hit (crawler)
  * o se un flinch è già in corso. slot = simp_slot_of(s, indice). Ritorna la

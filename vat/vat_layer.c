@@ -29,6 +29,7 @@ struct VatLayer {
     SimPHandle *seen;
     float *hx, *hy, *spd, *phaseA, *phaseB, *blendF, *hmul;
     int   *clipA, *clipB, *pin;              /* pin[slot] = variante+1 forzata, 0 = libera */
+    int   *force_clip;                       /* override clip locomozione, -1 = AUTO (FSM) */
     unsigned char *state, *target, *blending, *outfit, *var, *tr, *tg, *tb;
     /* one-shot HIT overlay (interrompe la FSM per la durata della FINESTRA, poi
        torna). Si riproduce solo un sotto-intervallo casuale della clip hit
@@ -121,6 +122,7 @@ VatLayer *vat_layer_create_multi(const char *const *meta_paths, int nvariants, i
     vl->hx=calloc(n,4); vl->hy=calloc(n,4); vl->spd=calloc(n,4);
     vl->phaseA=calloc(n,4); vl->phaseB=calloc(n,4); vl->blendF=calloc(n,4); vl->hmul=calloc(n,4);
     vl->clipA=calloc(n,sizeof(int)); vl->clipB=calloc(n,sizeof(int)); vl->pin=calloc(n,sizeof(int));
+    vl->force_clip=malloc(n*sizeof(int)); for(int i=0;i<n;i++)vl->force_clip[i]=-1;
     vl->state=calloc(n,1); vl->target=calloc(n,1); vl->blending=calloc(n,1);
     vl->outfit=calloc(n,1); vl->var=calloc(n,1); vl->tr=calloc(n,1); vl->tg=calloc(n,1); vl->tb=calloc(n,1);
     vl->osT=calloc(n,4); vl->osPh=calloc(n,4); vl->osClip=calloc(n,sizeof(int));
@@ -154,7 +156,7 @@ VatLayer *vat_layer_create(const char *meta_path, int max_slots){
 }
 void vat_layer_destroy(VatLayer *vl){ if(!vl)return;
     free(vl->seen);free(vl->hx);free(vl->hy);free(vl->spd);free(vl->phaseA);free(vl->phaseB);
-    free(vl->blendF);free(vl->hmul);free(vl->clipA);free(vl->clipB);free(vl->pin);free(vl->state);free(vl->target);
+    free(vl->blendF);free(vl->hmul);free(vl->clipA);free(vl->clipB);free(vl->pin);free(vl->force_clip);free(vl->state);free(vl->target);
     free(vl->blending);free(vl->outfit);free(vl->var);free(vl->tr);free(vl->tg);free(vl->tb);
     free(vl->osT);free(vl->osPh);free(vl->osClip);free(vl->osF0);free(vl->osLen);
     free(vl->dx);free(vl->dy);free(vl->dz);free(vl->dhd);free(vl->dsc);free(vl->dph);free(vl->dttl);
@@ -186,6 +188,14 @@ void vat_layer_make_bloody(VatLayer *vl,int slot){
     if(slot<0||slot>=vl->max) return;
     if(vl->outfit[slot]<16) vl->outfit[slot]=(unsigned char)(vl->outfit[slot]+16);
 }
+/* Fissa l'outfit di uno slot (atlante 4x8 = 32 celle: 0..13 puliti, +16 =
+   versione insanguinata). Controllo diretto per il lab FX; il gioco usa
+   make_bloody. Clampato a [0,31]. */
+void vat_layer_set_outfit(VatLayer *vl,int slot,int outfit){
+    if(slot<0||slot>=vl->max) return;
+    if(outfit<0)outfit=0; if(outfit>31)outfit=31;
+    vl->outfit[slot]=(unsigned char)outfit;
+}
 void vat_layer_set_variant_scale(VatLayer *vl,int variant,float smin,float smax){
     if(variant<0||variant>=vl->nvar) return;
     if(smin<=0.0f){ vl->vsmin[variant]=vl->vsmax[variant]=0.0f; return; }
@@ -208,9 +218,18 @@ void vat_layer_set_variant(VatLayer *vl,int slot,int variant){
        (osClip): sul nuovo body (es. il crawler, 3 clip) e' fuori range -> frame
        sballati = posa distorta/congelata finche' osT non scade. Annullalo e
        riparti pulito dalla WALK del nuovo body. */
-    vl->osT[slot]=0.0f;
+    vl->osT[slot]=0.0f; vl->force_clip[slot]=-1;   /* l'indice clip era del vecchio layout */
     vl->state[slot]=ST_WALK; vl->blending[slot]=0;
     vl->clipA[slot]=pick_clip(vl,variant,slot,ST_WALK); vl->phaseA[slot]=0.0f; }
+
+/* Forza la clip di locomozione di uno slot (override FSM), -1 = AUTO. clip_idx
+   è un indice nel meta del body corrente dello slot. */
+void vat_layer_force_clip(VatLayer *vl,int slot,int clip_idx){
+    if(slot<0||slot>=vl->max) return;
+    if(clip_idx<0){ vl->force_clip[slot]=-1; return; }
+    if(clip_idx>=vl->m[vl->var[slot]].nclips) return;
+    vl->force_clip[slot]=clip_idx;
+}
 
 /* One-shot HIT flinch su un agente vivo. No-op se il body non ha clip hit
    (es. crawler) o se un flinch e' gia' in corso (i colpi ravvicinati non
@@ -429,7 +448,7 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
             unsigned r=hashu(h); float ang=(r&0xffff)*(6.2831853f/65536.0f);
             vl->seen[slot]=h; vl->hx[slot]=sinf(ang)*0.01f; vl->hy[slot]=cosf(ang)*0.01f;
             vl->spd[slot]=1.0f; vl->state[slot]=ST_WALK; vl->blending[slot]=0;
-            vl->osT[slot]=0.0f;                          /* niente flinch ereditato dal precedente slot */
+            vl->osT[slot]=0.0f; vl->force_clip[slot]=-1;  /* niente flinch/override dal precedente slot */
             /* body: pinnato (tipo di gioco, es. crawler) o random fra le cosmetiche */
             int body = vl->pin[slot] ? vl->pin[slot]-1 : (int)(hashu(h+333u)%(unsigned)vl->nrandom);
             vl->pin[slot]=0;                          /* consuma: slot riusato torna libero */
@@ -466,6 +485,12 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
             continue;
         }
 
+        /* override clip (lab FX): scavalca la FSM, l'agente resta su force_clip
+           (avanzato per distanza/tempo come una locomozione normale). */
+        if(vl->force_clip[slot]>=0 && vl->force_clip[slot]<vl->m[body].nclips){
+            if(vl->clipA[slot]!=vl->force_clip[slot]) vl->clipA[slot]=vl->force_clip[slot];
+            vl->blending[slot]=0;
+        } else {
         /* FSM da velocità (dormienti = idle); gruppi del BODY di questo agente.
            ATTACK = override condizione: l'agente preme un muro/struttura per
            raggiungere il goal oltre (sensore d'assedio wall_pressure). */
@@ -477,6 +502,7 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
         if(want!=eff && vl->group_n[body][want]>0){
             vl->blending[slot]=1; vl->target[slot]=want;
             vl->clipB[slot]=pick_clip(vl,body,slot,want); vl->phaseB[slot]=0; vl->blendF[slot]=0; }
+        }
 
         /* avanza fase (distanza per locomozione, tempo per il resto) — stride/durata
            dal meta del BODY di questo agente (variano per taglia: il bambino ha
@@ -503,6 +529,9 @@ static void emit_instance(VatLayer *vl, int slot, const VatMeta *M,
                           float x, float y, float z, float r, float *o){
     float gA,gB,mix;
     if(vl->osT[slot]>0.0f){                      /* one-shot HIT: solo la finestra [osF0,osF0+osLen) */
+        /* HARD CUT walk<->hit (per scelta): un crossfade LERP tra pose molto diverse
+           (walk mid-passo vs flinch) distorce la geometria; il salto netto è più
+           pulito (la scattosità si copre con gib/sangue). Vedi storia git. */
         const VatClip *c=&M->clip[vl->osClip[slot]];
         int len=vl->osLen[slot]>0?vl->osLen[slot]:1;
         float local=vl->osPh[slot]*(float)(len-1);

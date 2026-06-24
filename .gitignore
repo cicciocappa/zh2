@@ -36,6 +36,8 @@ vat_view_shot.bmp
 vat/glad.o
 vat_horde
 vat_horde_shot.bmp
+fxlab
+fxlab_shot.bmp
 
 # Windows cross-build (make TARGET=win64)
 *.exe
