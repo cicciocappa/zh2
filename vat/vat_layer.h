@@ -117,6 +117,14 @@ int  vat_layer_fill_gibs(VatLayer *vl, float *out, int max_out);
  * blended a terra. Ritorna il numero di decal. */
 int  vat_layer_fill_decals(VatLayer *vl, float *out, int max_out);
 
+/* Sagome-cadavere PERSISTENTI: come i decal di sangue ma orientate e tipizzate
+ * per variante. Il chiamante le rende come quad texturizzati campionando un
+ * atlante di sprite top-down bakati dai modelli VAT in posa di morte (una cella
+ * per variante). Emesse quando un decedente svanisce, oltre alla macchia.
+ * Ring buffer cappato (niente decay). 8 float/decal: x, y, heading(rad),
+ * size(raggio mondo), variante, r, g, b. Ritorna il numero. */
+int  vat_layer_fill_corpse_decals(VatLayer *vl, float *out, int max_out);
+
 /* Riempie inst_buf (12 float/istanza: pos.xyz, heading, scala, gA, gB, mix,
  * outfit, tint.rgb) con i SOLI agenti assegnati a `variant`. Ritorna il numero
  * di istanze: il chiamante lo disegna con mesh/texture di quella variante. */

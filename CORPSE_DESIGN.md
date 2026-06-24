@@ -493,8 +493,65 @@ fra i frame → se il centroide attraversa un bucket da 2.5 m la lumpiness si ri
 (pop raro). Fix proprio = tracking persistente delle componenti (follow-up se dà
 fastidio).
 
+**Contact-shadow / AO alla base — FATTO (2026-06-24).** Un'istanza di ombra
+ELLITTICA per mound (`vat/mound_shadow.vs` + `shadow.fs` riusato): il disco
+unitario delle ombre agente (`shDisc`) scalato sui semi-assi `ra/rb` del footprint
+e ruotato sull'asse principale (stessi parametri della cupola) → l'ombra segue la
+pila allungata invece di restare tonda, ed è world-aligned (coerente sotto
+rotazione d'azimuth). Quota = `ter_z+0.03`, raggi ×1.12 per huggare il rim, blend
++ no depth write, disegnata PRIMA delle cupole opache. `build_corpse_mounds` emette
+anche le istanze d'ombra (param `shad`/`nshad`); il path `VAT_HORDE_MOUNDTEST`
+riempie ombre circolari. Inchioda i mound a terra ("o il mound galleggia", §10.3):
+verificato headless (`VAT_HORDE_MOUNDTEST` fila di 4 + `VAT_HORDE_PILE` banda) —
+alone morbido sotto ogni rim, ellisse allineata alla banda.
+
 **RESTA (follow-up, non bloccante):** (b) emersione graduale per Y-position legata
 alla crescita di `corpse_height` (oggi la cupola appare già a piena altezza sopra
-soglia) + transizione anti-pop dai decedenti singoli (§10.4); (c) contact-shadow/AO
-alla base; (d) eventuale normal map vera se si texturizzano i mound; (e) tracking
-persistente delle componenti (anti-flicker completo, vedi sopra).
+soglia) + transizione anti-pop dai decedenti singoli (§10.4); (d) eventuale normal
+map vera se si texturizzano i mound; (e) tracking persistente delle componenti
+(anti-flicker completo, vedi sopra).
+
+### 10.7 Sagoma-cadavere persistente a terra (decal del corpo) — FATTO (2026-06-24)
+
+Prima il decedente (mesh in posa di morte, §10.2 tier 1) a fine TTL svaniva
+lasciando **solo** una macchia di sangue (disco). Ora lascia **anche la sagoma del
+corpo** disegnata a terra ("come la sagoma del corpo nelle indagini per omicidio"),
+persistente come la macchia.
+
+**Tecnica — sprite top-down BAKATO dal modello, instanced (NON RTT in texture).**
+La sagoma è un quad orientato texturizzato con uno sprite top-down del corpo. Gli
+sprite vengono **bakati a init** (`vat_horde`, blocco "BAKE atlante sagome-cadavere"):
+per ogni variante si renderizza il modello VAT nell'ultimo frame di una clip
+`dying`/`death` con una **camera ortografica dall'alto** (guarda −Y, up +Z mondo,
+semi-lato `CORPSE_HALF`=1.15 m) in una cella RGBA di un atlante (`CORPSE_CELL`=256
+px × NVAR celle in riga); `alpha=1` dove c'è il corpo, 0 fuori → **cutout**. Lo
+shading NW è già bakato nello sprite → niente asset esterni, lo sprite *è* il modello
+reale. (Il crawler non ha clip morte → fallback frame 0, ma non genera mai un
+decedente: cella mai campionata.) Debug: `VAT_HORDE_CORPSE_ATLAS=1` dumpa l'atlante
+in `corpse_atlas.bmp` (sagoma su magenta).
+
+**Perché instanced e non il bake-in-texture proposto.** I decal di sangue sono già
+quad instanced persistenti in un ring buffer cappato (8192) ridisegnati ogni frame,
+costo trascurabile. Le sagome riusano lo stesso schema (pool `q*` in `vat_layer`,
+`vat_layer_fill_corpse_decals`, cap 4096, ring buffer = "tappeto dell'orrore"
+limitato): bounded, semplice, zero UV sul terreno. Il **bake del POOL in una texture
+"cadaveri" world-aligned** (l'idea originale) è la mossa giusta solo per permanenza
+*illimitata* oltre il cap instanced, e richiede UV-map sul terreno + FBO di
+compositing; si potrà fare dopo **senza toccare il lato emit** (il punto di
+emissione resta identico). Rinviato.
+
+**Pipeline runtime.** Alla scadenza del decedente (`vat_layer_update`):
+`corpse_decal_add(x, y, heading, scala, variante, tinta)` accanto a `decal_add`
+(macchia). Render (`vat/corpse_decal.vs`/`.fs`): quad `[-1,1]²` ruotato per heading,
+posato a `ter_z+0.05` (sopra la macchia a +0.03), semi-lato = `CORPSE_HALF·scala`
+(il tank, più grande, lascia una sagoma più grande), UV → cella d'atlante della
+variante; FS = sample + cutout (`alpha<0.04` discard) + scurimento ×0.85 ("posato/
+secco"). Blend, no depth write, sopra il sangue e sotto l'orda. Verificato headless
+(1500 frame, 94 kill): corpi distesi orientati con pozza di sangue sotto, scala
+coerente con gli zombie vivi.
+
+**RESTA (polish, non bloccante):** (i) la cella delle varianti senza diffuse esce
+slavata (sprite biancastro) — minore, riguarda i body atipici; (ii) la posa bakata
+è sempre l'ultimo frame di `dying`, mentre il decedente vivo può mostrare `death`
+(scelta random per-corpo): micro-incoerenza all'istante della transizione, entrambe
+pose distese; (iii) varietà di posa (più frame/cluster) e fade lento opzionale.

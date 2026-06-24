@@ -466,11 +466,15 @@ static int build_mound(float *buf, int c, float cx, float cz, float zb,
 // seed e' QUANTIZZATO su griglia coarse (~2.5 m) cosi' la lumpiness/arti non
 // sfarfallano mentre il centroide deriva (fix completo = tracking persistente
 // delle componenti fra i frame, follow-up). comp/stack = scratch gw*gh.
+// shad (opzionale): per ogni mound emette un'istanza di contact-shadow ellittico
+// (cx,cy,cz, ra,rb, cos,sin = 7 float) alla quota del terreno; *nshad = quante.
 static int build_corpse_mounds(float *buf, int maxmounds,
                                const float *ch, int gw, int gh, float cs,
-                               int *comp, int *stack){
+                               int *comp, int *stack,
+                               float *shad, int *nshad){
     const float THR = 0.20f;                          // soglia §10.4
     int nc = gw*gh, vc = 0, nmound = 0;
+    if(nshad) *nshad = 0;
     for(int i=0;i<nc;i++) comp[i] = (ch[i]>=THR) ? -1 : 0;   // -1 = da visitare
     for(int c0=0;c0<nc && nmound<maxmounds;c0++){
         if(comp[c0]!=-1) continue;
@@ -500,9 +504,15 @@ static int build_corpse_mounds(float *buf, int maxmounds,
         int qx=(int)floorf(mcx/2.5f), qz=(int)floorf(mcz/2.5f);  // seed stabile
         unsigned seed=mnd_hash((unsigned)(qx*73856093) ^ (unsigned)(qz*19349663));
         int nlimb = 2 + n/3; if(nlimb>MOUND_LIMBS) nlimb=MOUND_LIMBS;
+        float ca=cosf(ang), sa=sinf(ang);
         vc = build_mound(buf, vc, mcx, mcz, ter_z(mcx,mcz),
-                         ra, rb, cosf(ang), sinf(ang), hmax, nlimb, seed,
+                         ra, rb, ca, sa, hmax, nlimb, seed,
                          0.30f,0.11f,0.09f);
+        if(shad){                                     // contact-shadow ellittico (§10.3)
+            float *o = shad + (*nshad)*7;             // hugga il rim (1.12×)
+            o[0]=mcx; o[1]=ter_z(mcx,mcz)+0.03f; o[2]=mcz;
+            o[3]=ra*1.12f; o[4]=rb*1.12f; o[5]=ca; o[6]=sa; (*nshad)++;
+        }
         nmound++;
     }
     return vc;
@@ -871,6 +881,28 @@ int main(int argc, char **argv){
     glVertexAttribPointer(2,3,GL_FLOAT,0,7*sizeof(float),(void*)(4*sizeof(float)));glEnableVertexAttribArray(2);glVertexAttribDivisor(2,1);
     glBindVertexArray(0);
 
+    // --- sagome-cadavere (richiesta utente / CORPSE_DESIGN §10.2): quad orientati
+    // texturizzati con l'atlante di sprite top-down bakato dai modelli VAT in posa
+    // di morte (bake init-time più sotto). Persistenti come i decal di sangue.
+#define CORPSEDECMAX 4096
+#define CORPSE_CELL  256                  // px per cella d'atlante
+#define CORPSE_HALF  1.15f                // semi-lato ortho del bake (m): un corpo disteso
+    static float cdecraw[CORPSEDECMAX*8];  // x,y,hd,size,var,r,g,b (da vat_layer)
+    static float cdecinst[CORPSEDECMAX*6]; // cx,gy,cz,hd, half,cell (istanza GL)
+    static const float cquad[12]={-1,-1, 1,-1, 1,1, -1,-1, 1,1, -1,1};
+    GLuint cdProg=vg_shader("vat/corpse_decal.vs","vat/corpse_decal.fs");
+    GLint uVPcd=glGetUniformLocation(cdProg,"uVP"), uNCellsCd=glGetUniformLocation(cdProg,"uNCells");
+    GLuint cdVao,cdQuad,cdInst; glGenVertexArrays(1,&cdVao);glBindVertexArray(cdVao);
+    glGenBuffers(1,&cdQuad);glBindBuffer(GL_ARRAY_BUFFER,cdQuad);
+    glBufferData(GL_ARRAY_BUFFER,sizeof cquad,cquad,GL_STATIC_DRAW);
+    glVertexAttribPointer(0,2,GL_FLOAT,0,2*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glGenBuffers(1,&cdInst);glBindBuffer(GL_ARRAY_BUFFER,cdInst);
+    glBufferData(GL_ARRAY_BUFFER,sizeof cdecinst,NULL,GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(1,4,GL_FLOAT,0,6*sizeof(float),(void*)0);glEnableVertexAttribArray(1);glVertexAttribDivisor(1,1);
+    glVertexAttribPointer(2,2,GL_FLOAT,0,6*sizeof(float),(void*)(4*sizeof(float)));glEnableVertexAttribArray(2);glVertexAttribDivisor(2,1);
+    glBindVertexArray(0);
+    GLuint corpseAtlas=0; int corpseNCells=NVAR;   // riempito dal bake init-time
+
     // --- ostacoli: programma flat + mesh statica estrusa dalla scena (il quad
     // suolo flat si salta quando c'è il terreno glb).
     GLuint progFlat=vg_shader("vat/flat.vs","vat/flat.fs");
@@ -935,6 +967,20 @@ int main(int argc, char **argv){
     glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
     glBindVertexArray(0);
     int show_mounds=1, mound_test=getenv("VAT_HORDE_MOUNDTEST")?1:0;
+
+    // contact-shadow ellittico dei mound (§10.3): un'istanza per mound, disco
+    // unitario condiviso (shDisc) scalato sui semi-assi + ruotato. Riusa shadow.fs.
+    static float mndshad[MOUNDMAX*7];                 // cx,cy,cz, ra,rb, cos,sin
+    GLuint progMndSh=vg_shader("vat/mound_shadow.vs","vat/shadow.fs");
+    GLint uVPmndsh=glGetUniformLocation(progMndSh,"uVP");
+    GLuint mndShVao,mndShInst; glGenVertexArrays(1,&mndShVao);glBindVertexArray(mndShVao);
+    glBindBuffer(GL_ARRAY_BUFFER,shDisc);             // unit disc (cond. con le ombre agente)
+    glVertexAttribPointer(0,2,GL_FLOAT,0,2*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glGenBuffers(1,&mndShInst);glBindBuffer(GL_ARRAY_BUFFER,mndShInst);
+    glBufferData(GL_ARRAY_BUFFER,sizeof mndshad,NULL,GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(1,3,GL_FLOAT,0,7*sizeof(float),(void*)0);glEnableVertexAttribArray(1);glVertexAttribDivisor(1,1);
+    glVertexAttribPointer(2,4,GL_FLOAT,0,7*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(2);glVertexAttribDivisor(2,1);
+    glBindVertexArray(0);
 
     // stato editor (EDITOR_DESIGN fase 1): VAT_HORDE_EDIT=1 parte in EDIT, TAB
     // commuta. In EDIT la sim NON steppa, si edita la Scene e si salva (F2).
@@ -1003,6 +1049,61 @@ int main(int argc, char **argv){
     }
     glEnable(GL_DEPTH_TEST);
     GLint uVP=glGetUniformLocation(prog,"uVP"),uTS=glGetUniformLocation(prog,"texSize"),uRPF=glGetUniformLocation(prog,"rowsPerFrame"),uHas=glGetUniformLocation(prog,"uHasTex");
+
+    // --- BAKE atlante sagome-cadavere (init-time): per ogni variante render
+    // ortho TOP-DOWN del modello VAT nell'ultimo frame di una clip morte (corpo
+    // disteso) in una cella RGBA; alpha=1 dove c'è il corpo, 0 fuori (cutout).
+    // Lo sprite È il modello reale (shading NW bakato) -> niente asset esterni.
+    {   int W=CORPSE_CELL*corpseNCells, H=CORPSE_CELL;
+        glGenTextures(1,&corpseAtlas);glBindTexture(GL_TEXTURE_2D,corpseAtlas);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,W,H,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        GLuint fbo,depth; glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,corpseAtlas,0);
+        glGenRenderbuffers(1,&depth);glBindRenderbuffer(GL_RENDERBUFFER,depth);
+        glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT24,W,H);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_RENDERBUFFER,depth);
+        if(glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE) fprintf(stderr,"corpse atlas FBO incompleto\n");
+        glDisable(GL_BLEND); glClearColor(0,0,0,0); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+        // camera ortho dall'alto (guarda -Y), up = +Z mondo
+        mat4 cproj,cview,cvp; m_ortho(cproj,-CORPSE_HALF,CORPSE_HALF,-CORPSE_HALF,CORPSE_HALF,-10,10);
+        float ceye[3]={0,5,0},cctr[3]={0,0,0},cup[3]={0,0,1};
+        m_lookat(cview,ceye,cctr,cup); m_mul(cvp,cproj,cview);
+        glUseProgram(prog); glUniformMatrix4fv(uVP,1,GL_FALSE,cvp);
+        glUniform1i(glGetUniformLocation(prog,"texPos"),0);
+        glUniform1i(glGetUniformLocation(prog,"texNorm"),1);
+        glUniform1i(glGetUniformLocation(prog,"texDiff"),2);
+        for(int v=0;v<NVAR;v++){
+            const VatMeta *M=A[v].M; int fr=-1;          // ultimo frame di death/dying
+            for(int ci=0;ci<M->nclips;ci++) if(!strncmp(M->clip[ci].name,"death",5)||!strncmp(M->clip[ci].name,"dying",5)){
+                fr=M->clip[ci].startFrame+M->clip[ci].numFrames-1; break; }
+            if(fr<0) fr=0;                                // nessuna clip morte (raro): primo frame
+            // istanza singola: origine, heading 0, scala 1, frame fr, outfit 0
+            float one[12]={0,0,0, 0, 1.0f, (float)fr,(float)fr,0, 0, 0.55f,0.5f,0.5f};
+            glViewport(v*CORPSE_CELL,0,CORPSE_CELL,CORPSE_CELL);
+            glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferSubData(GL_ARRAY_BUFFER,0,12*sizeof(float),one);
+            glUniform2f(uTS,(float)M->texW,(float)M->texH);glUniform1f(uRPF,(float)M->rowsPerFrame);
+            glUniform1i(uHas,A[v].hasTex);
+            glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,A[v].texP);
+            glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,A[v].texN);
+            glActiveTexture(GL_TEXTURE2);glBindTexture(GL_TEXTURE_2D,A[v].texD);
+            glBindVertexArray(A[v].vao);glDrawElementsInstanced(GL_TRIANGLES,A[v].ni,GL_UNSIGNED_SHORT,0,1);
+        }
+        // debug: VAT_HORDE_CORPSE_ATLAS -> dump RGB (sagoma su magenta) e prosegui
+        if(getenv("VAT_HORDE_CORPSE_ATLAS")){
+            unsigned char *rgba=malloc((size_t)W*H*4); glReadPixels(0,0,W,H,GL_RGBA,GL_UNSIGNED_BYTE,rgba);
+            unsigned char *rgb=malloc((size_t)W*H*3);
+            for(int i=0;i<W*H;i++){ if(rgba[i*4+3]>10){rgb[i*3]=rgba[i*4];rgb[i*3+1]=rgba[i*4+1];rgb[i*3+2]=rgba[i*4+2];}
+                else {rgb[i*3]=255;rgb[i*3+1]=0;rgb[i*3+2]=255;} }
+            vg_save_bmp("corpse_atlas.bmp",W,H,rgb); free(rgba);free(rgb);
+            printf("corpse atlas -> corpse_atlas.bmp (%dx%d, %d celle)\n",W,H,corpseNCells);
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER,0);
+        glDeleteRenderbuffers(1,&depth);glDeleteFramebuffers(1,&fbo);
+    }
 
     float cx=sc.world_w*0.5f, cz=sc.world_h*0.30f, hh=15.0f, az=0.7f, el=0.40f; int cam_free=0,paused=0,useTex=1;
     // camera col mouse: PLAY = LMB pan / RMB rotate / wheel zoom; EDIT = Alt+LMB
@@ -1249,7 +1350,7 @@ int main(int argc, char **argv){
         // mucchi di cadaveri (CORPSE_DESIGN §10): cupole lumpy dal campo
         // corpse_height (o di prova). Stesso flat shader dei gib.
         if(show_mounds){
-            int mc=0;
+            int mc=0, mnsh=0;
             float col[3]={0.30f,0.11f,0.09f};         // carne/sangue scuro
             if(mound_test){
                 // fila di mound di altezza crescente al centro scena: valuta la
@@ -1259,12 +1360,23 @@ int main(int argc, char **argv){
                 for(int i=0;i<4;i++){ float wx=bx+i*6.0f;
                     mc=build_mound(mndmesh,mc, wx,bz, ter_z(wx,bz),
                                    2.4f,2.4f, 1.0f,0.0f, hs[i], 4, 1234u+i*101u,
-                                   col[0],col[1],col[2]); }
+                                   col[0],col[1],col[2]);
+                    float *o=mndshad+mnsh*7;           // ombra circolare per i mound di prova
+                    o[0]=wx; o[1]=ter_z(wx,bz)+0.03f; o[2]=bz;
+                    o[3]=2.4f*1.12f; o[4]=2.4f*1.12f; o[5]=1.0f; o[6]=0.0f; mnsh++; }
             } else {
                 mc=build_corpse_mounds(mndmesh, MOUNDMAX, simp_corpse_height(s),
                                        simp_grid_w(s), simp_grid_h(s), simp_cell_size(s),
-                                       mnd_comp, mnd_stack);
+                                       mnd_comp, mnd_stack, mndshad, &mnsh);
             }
+            // contact-shadow PRIMA delle cupole opache (blend, no depth write): le
+            // inchioda a terra (§10.3, "o il mound galleggia").
+            if(mnsh){ glUseProgram(progMndSh);glUniformMatrix4fv(uVPmndsh,1,GL_FALSE,vp);
+                glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);
+                glBindVertexArray(mndShVao);glBindBuffer(GL_ARRAY_BUFFER,mndShInst);
+                glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)mnsh*7*sizeof(float),mndshad);
+                glDrawArraysInstanced(GL_TRIANGLE_FAN,0,SHADN,mnsh);
+                glDepthMask(GL_TRUE);glDisable(GL_BLEND); }
             if(mc){ glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
                 glBindVertexArray(mndVao);glBindBuffer(GL_ARRAY_BUFFER,mndVbo);
                 glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)mc*9*sizeof(float),mndmesh);
@@ -1287,6 +1399,22 @@ int main(int argc, char **argv){
               glBindVertexArray(dcVao);glBindBuffer(GL_ARRAY_BUFFER,dcInst);
               glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)nd*7*sizeof(float),decalinst);
               glDrawArraysInstanced(GL_TRIANGLE_FAN,0,SHADN,nd);
+              glDepthMask(GL_TRUE);glDisable(GL_BLEND); } }
+
+        // sagome-cadavere persistenti (sopra il sangue, sotto l'orda): quad
+        // orientati col modello bakato. Blended, no depth write. CORPSE_DESIGN §10.2.
+        { int nq=vat_layer_fill_corpse_decals(vl,cdecraw,CORPSEDECMAX);
+          for(int i=0;i<nq;i++){ float *r=cdecraw+i*8,*o=cdecinst+i*6;
+              o[0]=r[0]; o[1]=ter_z(r[0],r[1])+0.05f; o[2]=r[1]; o[3]=r[2];  // sopra la macchia (+0.05)
+              o[4]=CORPSE_HALF*r[3]; o[5]=r[4]; }                            // semi-lato = bake×scala, cella=variante
+          if(nq){ glUseProgram(cdProg);glUniformMatrix4fv(uVPcd,1,GL_FALSE,vp);
+              glUniform1f(uNCellsCd,(float)corpseNCells);
+              glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,corpseAtlas);
+              glUniform1i(glGetUniformLocation(cdProg,"uAtlas"),0);
+              glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);
+              glBindVertexArray(cdVao);glBindBuffer(GL_ARRAY_BUFFER,cdInst);
+              glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)nq*6*sizeof(float),cdecinst);
+              glDrawArraysInstanced(GL_TRIANGLES,0,6,nq);
               glDepthMask(GL_TRUE);glDisable(GL_BLEND); } }
 
         // overlay editor (rect/poly-in-corso/cursore) sopra il terreno, flat shader.

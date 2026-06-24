@@ -54,6 +54,13 @@ struct VatLayer {
     int kmax, kwrite, kcount;
     float *kx, *ky, *ksz;
     unsigned char *kr, *kg, *kb;
+    /* decal SAGOMA-CADAVERE persistenti: come i decal di sangue ma ORIENTATI e
+       per-VARIANTE (il render li disegna come quad texturizzati campionando
+       l'atlante di sprite top-down bakati dai modelli VAT). Emessi quando un
+       decedente svanisce, sotto/oltre la macchia. Stesso ring buffer cappato. */
+    int qmax, qwrite, qcount;
+    float *qx, *qy, *qhd, *qsz;
+    unsigned char *qvar, *qtr, *qtg, *qtb;
 };
 
 static unsigned hashu(unsigned a){ a^=a>>16; a*=2654435761u; a^=a>>13; a*=2246822519u; a^=a>>16; return a; }
@@ -65,6 +72,16 @@ static void decal_add(VatLayer *vl, float x, float y, float size, unsigned seed)
     vl->kx[k]=x; vl->ky[k]=y; vl->ksz[k]=size*(0.8f+(h&255)/255.0f*0.5f);
     float r=0.30f+((h>>8)&63)/63.0f*0.20f, g=0.02f+((h>>14)&15)/15.0f*0.03f, b=0.02f; /* rosso sangue scuro */
     vl->kr[k]=(unsigned char)(r*255); vl->kg[k]=(unsigned char)(g*255); vl->kb[k]=(unsigned char)(b*255);
+}
+
+/* aggiunge una sagoma-cadavere persistente (ring buffer cappato): posizione,
+   heading del corpo alla morte, raggio mondo (scala dell'agente), variante (->
+   cella d'atlante) e tinta. */
+static void corpse_decal_add(VatLayer *vl, float x, float y, float hd, float sz,
+                             unsigned char var, unsigned char tr, unsigned char tg, unsigned char tb){
+    int q=vl->qwrite; vl->qwrite=(q+1)%vl->qmax; if(vl->qcount<vl->qmax)vl->qcount++;
+    vl->qx[q]=x; vl->qy[q]=y; vl->qhd[q]=hd; vl->qsz[q]=sz;
+    vl->qvar[q]=var; vl->qtr[q]=tr; vl->qtg[q]=tg; vl->qtb[q]=tb;
 }
 
 static void load_meta(VatMeta *m, const char *path){
@@ -125,6 +142,11 @@ VatLayer *vat_layer_create_multi(const char *const *meta_paths, int nvariants, i
     vl->kmax=8192; vl->kwrite=0; vl->kcount=0; int kp=vl->kmax;
     vl->kx=calloc(kp,4); vl->ky=calloc(kp,4); vl->ksz=calloc(kp,4);
     vl->kr=calloc(kp,1); vl->kg=calloc(kp,1); vl->kb=calloc(kp,1);
+    /* pool sagome-cadavere (cap fisso, ring buffer) — più piccolo: una sagoma
+       texturizzata è più "pesante" all'occhio di un disco, ne bastano meno. */
+    vl->qmax=4096; vl->qwrite=0; vl->qcount=0; int qp=vl->qmax;
+    vl->qx=calloc(qp,4); vl->qy=calloc(qp,4); vl->qhd=calloc(qp,4); vl->qsz=calloc(qp,4);
+    vl->qvar=calloc(qp,1); vl->qtr=calloc(qp,1); vl->qtg=calloc(qp,1); vl->qtb=calloc(qp,1);
     return vl;
 }
 VatLayer *vat_layer_create(const char *meta_path, int max_slots){
@@ -141,6 +163,7 @@ void vat_layer_destroy(VatLayer *vl){ if(!vl)return;
     free(vl->ghx);free(vl->ghy);free(vl->ghz);free(vl->gang);free(vl->gspin);
     free(vl->gr);free(vl->gg);free(vl->gb);free(vl->gact);
     free(vl->kx);free(vl->ky);free(vl->ksz);free(vl->kr);free(vl->kg);free(vl->kb);
+    free(vl->qx);free(vl->qy);free(vl->qhd);free(vl->qsz);free(vl->qvar);free(vl->qtr);free(vl->qtg);free(vl->qtb);
     free(vl); }
 int vat_layer_nvariants(const VatLayer *vl){ return vl->nvar; }
 const VatMeta *vat_layer_meta_variant(const VatLayer *vl, int variant){
@@ -335,6 +358,21 @@ int vat_layer_fill_decals(VatLayer *vl, float *out, int max_out){
     return c;
 }
 
+/* Emette le sagome-cadavere attive: 8 float/decal (x, y, heading, size, variante,
+   r, g, b). Il chiamante somma terrain_z(x,y), orienta il quad per heading e
+   campiona la cella d'atlante della variante. Ritorna il numero. */
+int vat_layer_fill_corpse_decals(VatLayer *vl, float *out, int max_out){
+    int c=0;
+    for(int q=0; q<vl->qcount && c<max_out; q++){
+        float *o=out+c*8;
+        o[0]=vl->qx[q]; o[1]=vl->qy[q]; o[2]=vl->qhd[q]; o[3]=vl->qsz[q];
+        o[4]=(float)vl->qvar[q];
+        o[5]=vl->qtr[q]/255.0f; o[6]=vl->qtg[q]/255.0f; o[7]=vl->qtb[q]/255.0f;
+        c++;
+    }
+    return c;
+}
+
 /* Emette i gib attivi: 10 float/pezzo (x, y, z_sul_suolo, hx, hy, hz, ang, r,g,b).
    Il chiamante somma terrain_z(x,y) a z e costruisce un box per pezzo. */
 int vat_layer_fill_gibs(VatLayer *vl, float *out, int max_out){
@@ -366,8 +404,10 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
     /* avanza il pool decessi (indipendente dagli agenti vivi): clip una volta poi
        tiene l'ultimo frame; libera lo slot a TTL scaduto. */
     for(int d=0; d<vl->dmax; d++) if(vl->dactive[d]){
-        vl->dttl[d]-=dt; if(vl->dttl[d]<=0.0f){       /* fine vita: lascia la macchia e svanisce */
+        vl->dttl[d]-=dt; if(vl->dttl[d]<=0.0f){       /* fine vita: lascia macchia + sagoma e svanisce */
             decal_add(vl, vl->dx[d], vl->dy[d], vl->dsc[d]*0.55f, (unsigned)d*2654435761u);
+            corpse_decal_add(vl, vl->dx[d], vl->dy[d], vl->dhd[d], vl->dsc[d],
+                             vl->dvar[d], vl->dtr[d], vl->dtg[d], vl->dtb[d]);
             vl->dactive[d]=0; continue; }
         const VatClip *c=&vl->m[vl->dvar[d]].clip[vl->dclip[d]];
         float dur=c->duration>0?c->duration:1.0f;

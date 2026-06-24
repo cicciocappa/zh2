@@ -130,7 +130,7 @@ vat_view: vat/vat_view.c vat/glad.c vat/stb_impl.c vat/vat.vs vat/vat.fs
 
 # Orda reale del core sim_particles resa in 3D VAT (vat_layer + vat_horde) su
 # scena vettoriale (scene.c). Ostacoli estrusi via vat/flat.vs/.fs.
-vat_horde: vat/vat_horde.c vat/vat_layer.c sim_particles.c scene.c defense.c terrain.c props.c vat/glad.c vat/stb_impl.c vat/cgltf_impl.c vat/vat.vs vat/vat.fs vat/flat.vs vat/flat.fs vat/ground.vs vat/ground.fs sim_particles.h vat/vat_layer.h vat/vat_gl.h vat/cgltf.h terrain.h scene.h defense.h props.h
+vat_horde: vat/vat_horde.c vat/vat_layer.c sim_particles.c scene.c defense.c terrain.c props.c vat/glad.c vat/stb_impl.c vat/cgltf_impl.c vat/vat.vs vat/vat.fs vat/flat.vs vat/flat.fs vat/ground.vs vat/ground.fs vat/shadow.vs vat/shadow.fs vat/decal.vs vat/decal.fs vat/mound_shadow.vs vat/corpse_decal.vs vat/corpse_decal.fs sim_particles.h vat/vat_layer.h vat/vat_gl.h vat/cgltf.h terrain.h scene.h defense.h props.h
 	$(CC) -O2 -w -Ivat $(SDL_CFLAGS) -c vat/glad.c -o vat/glad.o
 	$(CC) -O2 -w -Ivat -c vat/stb_impl.c -o vat/stb_impl.o
 	$(CC) -O2 -w -Ivat -c vat/cgltf_impl.c -o vat/cgltf_impl.o
