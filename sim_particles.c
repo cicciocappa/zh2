@@ -131,6 +131,14 @@ struct SimP {
     float *corpse_height;  /* gw*gh, derived, refreshed end of step */
     bool   corpse_active;  /* any pile field still non-negligible */
 
+    /* blood-fear "danger" field (CORPSE_DESIGN.md, 2026-06-25): the anti-choke
+     * pivot. Deposited at death alongside the blood decal, decays with
+     * danger_hl; the k_danger nav-cost term routes the horde AWAY from cells
+     * soaked in other zombies' blood (animal instinct). Same machinery shape as
+     * the corpse fields, but a single decaying scalar. */
+    float *danger;         /* gw*gh */
+    bool   danger_active;  /* danger still non-negligible somewhere */
+
     /* slot map: stable handles over swap-and-pop (see header) */
     int      *slot_to_index;  /* cap : slot -> dense index, -1 if free   */
     int      *index_to_slot;  /* cap : dense index -> slot               */
@@ -244,6 +252,13 @@ static void nav_phi_begin(SimP *s) {
      * -> the Dijkstra reroutes the horde to break the barricade. */
     const float kc = s->params.k_corpse;
     const float inv_wall_h = (s->params.wall_h > 0.0f) ? 1.0f / s->params.wall_h : 0.0f;
+    /* blood-fear (2026-06-25): GRADUATED term k_danger*min(danger/danger_ref,1).
+     * Light blood -> soft reroute between open paths (the PBD still shoves the
+     * front in, so a big horde floods through); a sustained killbox saturates to
+     * the wall-scale k_danger ceiling, so the horde breaks the player's barricades
+     * instead of feeding the box (anti-killbox). Stays < WALL_ENTER per cell. */
+    const float kdg = s->params.k_danger;
+    const float inv_dref = (s->params.danger_ref > 0.0f) ? 1.0f / s->params.danger_ref : 0.0f;
     for (int i = 0; i < n; i++) {
         float m = 1.0f + s->cost_user[i];
         if (kd > 0.0f) {
@@ -257,6 +272,10 @@ static void nav_phi_begin(SimP *s) {
         if (kc > 0.0f) {
             float t = s->corpse_height[i] * inv_wall_h;
             m += kc * (t > 1.0f ? 1.0f : t);
+        }
+        if (kdg > 0.0f) {
+            float t = s->danger[i] * inv_dref;
+            m += kdg * (t > 1.0f ? 1.0f : t);
         }
         s->cost_mult[i] = m < 0.2f ? 0.2f : m;
     }
@@ -563,13 +582,22 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->params.k_density = 2.0f;
     s->params.k_jam     = 8.0f;
     s->params.flow_period = 0.5f;
-    s->params.k_corpse  = 300.0f;
+    /* §7-bis corpse->nav cost RETIRED (2026-06-25): the anti-choke pivot moved to
+     * blood-fear (k_danger below). Machinery kept but OFF by default; callers that
+     * still want it set k_corpse explicitly (e.g. test_corpse_pile). */
+    s->params.k_corpse  = 0.0f;
     s->params.k_h       = 1.0f;
     s->params.k_pack    = 0.5f;
     s->params.corpse_mass_hl = 30.0f;
     s->params.corpse_pack_hl = 10.0f;
     s->params.pack_inc  = 1.0f;
     s->params.corpse_weight = 40.0f;
+    /* blood-fear: GRADUATED to wall-scale (anti-killbox). Light blood = soft
+     * reroute, a sustained killbox saturates to k_danger (out-costs a barricade).
+     * half-life matched to the blood decal lifetime (~30 s). */
+    s->params.k_danger  = 400.0f;
+    s->params.danger_ref = 8.0f;
+    s->params.danger_hl = 30.0f;
 
     const size_t n = (size_t)gw * gh;
     s->solid  = (uint8_t *)calloc(n, 1);
@@ -637,6 +665,8 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->corpse_pack   = (float *)calloc(n, sizeof(float));
     s->corpse_height = (float *)calloc(n, sizeof(float));
     s->corpse_active = false;
+    s->danger        = (float *)calloc(n, sizeof(float));
+    s->danger_active = false;
 
     /* slot map: all slots free, prefilled so the first pops give 0,1,2... */
     s->slot_to_index = (int *)malloc((size_t)max_agents * sizeof(int));
@@ -695,7 +725,7 @@ void simp_destroy(SimP *s) {
     free(s->aflags); free(s->stun); free(s->z); free(s->vz); free(s->landed);
     free(s->wall_pressure); free(s->wall_cell);
     free(s->cpx); free(s->cpy); free(s->crad); free(s->cttl);
-    free(s->corpse_mass); free(s->corpse_pack); free(s->corpse_height);
+    free(s->corpse_mass); free(s->corpse_pack); free(s->corpse_height); free(s->danger);
     free(s->slot_to_index); free(s->index_to_slot);
     free(s->slot_gen); free(s->slot_free);
     free(s->ccount); free(s->cstart); free(s->corder);
@@ -1269,6 +1299,31 @@ void simp_corpse_splat(SimP *s, float x, float y, float radius, float mass_scale
     s->corpse_active = true;
 }
 
+void simp_add_danger(SimP *s, float x, float y, float radius, float w) {
+    if (w == 0.0f || radius < 0.0f) return;
+    int hcx = clampi((int)(x * s->inv_cell), 0, s->gw - 1);
+    int hcy = clampi((int)(y * s->inv_cell), 0, s->gh - 1);
+    int cx0 = clampi((int)((x - radius) * s->inv_cell), 0, s->gw - 1);
+    int cx1 = clampi((int)((x + radius) * s->inv_cell), 0, s->gw - 1);
+    int cy0 = clampi((int)((y - radius) * s->inv_cell), 0, s->gh - 1);
+    int cy1 = clampi((int)((y + radius) * s->inv_cell), 0, s->gh - 1);
+    float r2 = radius * radius;
+    for (int cy = cy0; cy <= cy1; cy++) {
+        float dy = (cy + 0.5f) * s->cell - y;
+        for (int cx = cx0; cx <= cx1; cx++) {
+            float dx = (cx + 0.5f) * s->cell - x;
+            /* disc footprint, but the home cell always gets the deposit (so a
+             * radius below one cell still marks something) */
+            if (dx * dx + dy * dy > r2 && !(cx == hcx && cy == hcy)) continue;
+            s->danger[cy * s->gw + cx] += w;
+        }
+    }
+    s->danger_active = true;
+    s->cost_dirty = true;     /* fresh blood reroutes at the next throttle tick */
+}
+
+const float *simp_danger_arr(const SimP *s) { return s->danger; }
+
 int simp_corpse_count(const SimP *s) { return s->corpse_count; }
 const float *simp_corpse_px(const SimP *s)  { return s->cpx; }
 const float *simp_corpse_py(const SimP *s)  { return s->cpy; }
@@ -1653,7 +1708,8 @@ int simp_step(SimP *s, float dt) {
             bool density_on = (P->k_density > 0.0f || P->k_jam > 0.0f) &&
                 (s->count > 0 || s->corpse_count > 0 || s->rho_active);
             bool corpse_on = P->k_corpse > 0.0f && s->corpse_active;
-            if (density_on || corpse_on || s->cost_dirty) {
+            bool danger_on = P->k_danger > 0.0f && s->danger_active;
+            if (density_on || corpse_on || danger_on || s->cost_dirty) {
                 density_update(s);
                 nav_phi_begin(s);          /* seed the heap (frozen inputs) */
                 nav_phi_drain(s, s->nav_budget);
@@ -1779,6 +1835,23 @@ int simp_step(SimP *s, float dt) {
             if (mass > maxm) maxm = mass;
         }
         if (maxm <= 0.0f) s->corpse_active = false;
+    }
+
+    /* 5b'') blood-fear decay (2026-06-25): single scalar field, exponential
+     * decay with danger_hl (matched to the blood decal lifetime). Pointwise,
+     * gated like the corpse pile so it idles when no blood is fresh. The
+     * throttled flow recompute (danger_on) reroutes the horde back as it fades. */
+    if (s->danger_active) {
+        const int n = s->gw * s->gh;
+        const float ld = expf(-0.69314718f * dt / s->params.danger_hl);
+        float maxd = 0.0f;
+        for (int i = 0; i < n; i++) {
+            float d = s->danger[i] * ld;
+            if (d < 1e-4f) d = 0.0f;            /* settle to clean 0 */
+            s->danger[i] = d;
+            if (d > maxd) maxd = d;
+        }
+        if (maxd <= 0.0f) s->danger_active = false;
     }
 
     /* 5c) periodic cache-locality reorder (M4): permute the SoA into cell order

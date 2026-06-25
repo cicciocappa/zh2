@@ -1,5 +1,44 @@
 # Cadaveri come fattore di gioco: design tecnico
 
+> **SVOLTA (2026-06-25): il perno anti-choke passa da "cadaveri" a "sangue→paura".**
+> Decisione dell'utente. L'anti-degenere ("creo un choke point, piazzo le difese e
+> resto a guardare") NON è più affidato all'accumulo cadaveri→costo nav (§7-bis) né
+> ai mucchi visivi: è affidato a un **istinto animale** che fa **evitare le pozze di
+> sangue** degli altri zombie. Il sangue lo stampiamo GIÀ a ogni morte (decal), e il
+> costo nav lo abbiamo GIÀ (`simp_add_cost`, `w>0` = paura): alla morte basta
+> aggiungere un costo additivo sulla cella, decaduto come il sangue. Più semplice,
+> disaccoppia gameplay e rendering, e non è degenere perché il PBD shova comunque il
+> fronte nella killzone (l'orda grande inonda lo stesso, la sonda piccola devia).
+> Conseguenze su questo documento:
+> - **Mound 3D TAGLIATI (§10.2 tier 2, §10.3-10.6): RIMOSSI** da `vat_horde`
+>   (`build_mound`/`mnd_*`/`build_corpse_mounds` + ombre ellittiche + `mound_shadow.vs`
+>   eliminati, 2026-06-25). Erano brutti e renderli passabili costava troppo (serviva
+>   di fatto una ragdoll). Il cadavere resta: mesh in posa di morte (§10.2 tier 1) →
+>   sagoma a terra persistente (§10.7).
+> - **Sangue→paura: FATTO (2026-06-25), GRADUATO a scala-muro (anti-killbox).**
+>   Campo `danger` per cella (decade su `danger_hl`, default 30 s), termine d'arco
+>   **`k_danger·min(danger/danger_ref,1)`** in `nav_phi_begin` (`k_danger`=tetto
+>   scala-muro default 400, `danger_ref`=sangue per saturare default 8), API
+>   `simp_add_danger(x,y,r,w)` + `simp_danger_arr`. Cablato a ENTRAMBI i punti
+>   morte in `defense.c` (`die_light`/`gib`, `DANGER_R`/`DANGER_W`). Sangue sparso
+>   → nudge soft (reroute fra strade aperte, il PBD shova comunque il fronte → la
+>   massa inonda); killbox tenuto → satura a scala-muro → l'orda sfonda le
+>   barricate del giocatore invece di alimentare l'imbuto (contro "tutte le
+>   torrette in un punto + muri attorno"). Resta < WALL_ENTER per cella (palazzi
+>   intatti); vince il muro più economico (barricate prima dei palazzi). Verifica:
+>   `test_blood_fear.c` (reroute soft 90%→96%, scala-muro: pressione barricata
+>   0.06→90.9, decay a mezza-vita, determinismo, no-NaN).
+> - **Costo-nav-cadaveri §7-bis (`corpse_mass/pack/height`→Dijkstra): PENSIONATO**
+>   (`k_corpse` default 0). La macchina resta nel core, dormiente (riattivabile con
+>   `k_corpse`>0, es. `test_corpse_pile`); `simp_corpse_height` non è più letto dal render.
+> - **Anti-imbuto/reroute**: stessa funzione strategica, nuovo veicolo (campo di
+>   pericolo = sangue invece di altezza pila). Unifica anche lo "screamer che cerca il
+>   path più sicuro" (§7-bis, in fondo): è lo *stesso* campo.
+>
+> Quanto sotto (§1-§9, banner 2026-06-23) descrive il sistema cadaveri→nav previgente,
+> conservato come storia del design. Resta valida la **tabella armi §6** (produce/
+> rimuove cadaveri) e tutto §10.1/§10.2-tier1/§10.7 (rendering del cadavere singolo).
+>
 > **STATO (2026-06-23):** il **perno nav §7-bis** è IMPLEMENTATO (accumulo
 > `corpse_mass`/`corpse_pack` per cella + `corpse_height` derivata + termine
 > d'arco `k_corpse·min(height/wall_h,1)` a scala-muro; API `simp_corpse_height`
@@ -396,7 +435,11 @@ gratis e l'azimuth diventa un non-problema dove conta.
    "primaria" a "LOD distante". La transizione mesh→decal è su distanza/zoom, non
    sul tempo.
 
-### 10.3 Il mound: forma, crescita, dettaglio
+### 10.3 Il mound: forma, crescita, dettaglio — ~~IMPLEMENTATO~~ RIMOSSO (2026-06-25)
+
+> **RIMOSSO** da `vat_horde` (vedi banner in testa): i mound erano brutti e
+> renderli passabili costava troppo. §10.3-10.6 conservati come storia del design.
+
 
 **Forma — NON un tronco di piramide a base quadrata.** Una piramide tronca a 4
 facce ha spigoli netti che, ruotando l'azimuth, **telegrafano la primitiva** (a 0°

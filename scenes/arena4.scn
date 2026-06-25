@@ -1,0 +1,23 @@
+# arena4 — MAPPA 1: goal al centro, 4 mura UGUALI, spawn ai 4 lati.
+# Atteso: l'orda si distribuisce equamente sui 4 muri, li assedia tutti,
+# i muri cedono e gli zombie arrivano al target al centro.
+cell 0.5
+world 100 100
+set k_density 2.5
+set k_jam 8
+
+# target al centro
+goal 47 47 6 6
+
+# box di 4 mura distruttibili attorno al goal (hp 500, cost_mult 1.0 = uguali).
+# wall: hp cost_mult x y w h
+wall 500 1.0  35 35   30 1.5     # alto
+wall 500 1.0  35 63.5 30 1.5     # basso
+wall 500 1.0  35 36.5 1.5 27     # sinistro (interno fra alto e basso)
+wall 500 1.0  63.5 36.5 1.5 27   # destro
+
+# spawn ai 4 lati (bande perimetrali)
+spawn 10 2  80 4
+spawn 10 94 80 4
+spawn 2  10 4 80
+spawn 94 10 4 80

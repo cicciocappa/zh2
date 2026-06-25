@@ -157,6 +157,21 @@ typedef struct {
     float corpse_weight;/* corpse mass in walker units (§3): the crowd SHOVES a
                          * large-but-finite pile instead of being sealed out.
                          * <= 0 = infinite (legacy idealized seal). default 40.0 */
+    /* blood-fear "danger" -> cost (CORPSE_DESIGN.md, 2026-06-25). The anti-choke /
+     * anti-killbox pivot that REPLACES the corpse-pile nav cost (k_corpse, now 0):
+     * deposited at death with the blood decal, decays, routes the horde away from
+     * bloody killzones. GRADUATED like the old corpse term so one knob serves both
+     * scales: term = k_danger * min(danger/danger_ref, 1). Light/scattered blood
+     * (danger << ref) -> a SOFT nudge (reroute between open paths, the mass still
+     * floods). A sustained killbox (danger saturates) -> a WALL-SCALE cost, so the
+     * horde breaks the player's barricades elsewhere instead of feeding the killbox
+     * -> the "funnel everything through one turret box" strategy self-sabotages.
+     * k_danger stays < WALL_ENTER per cell (indestructible walls/sealed sieges
+     * untouched); the cheapest wall wins, so player barricades fall before map
+     * palazzi. */
+    float k_danger;     /* blood-fear->cost CEILING, wall-scale (0=off) default 400 */
+    float danger_ref;   /* blood amount that saturates the term        default 8.0  */
+    float danger_hl;    /* blood-fear half-life (s), match blood       default 30.0 */
 } SimPParams;
 
 typedef struct SimP SimP;
@@ -357,6 +372,17 @@ int   simp_corpse_add(SimP *s, float x, float y, float radius, float ttl);
  * cell out-costs a barricade). Decays on the corpse_mass half-life like any pile.
  * Typical caller: a gib (heavy/explosion) death, which leaves no real corpse. */
 void  simp_corpse_splat(SimP *s, float x, float y, float radius, float mass_scale);
+
+/* Blood-fear ("danger"): deposit fear into the nav cells within `radius` of
+ * world (x,y) — call at death, alongside the blood decal. Animal instinct: the
+ * horde reroutes AWAY from cells soaked in other zombies' blood. Accumulates
+ * (saturates at 1 in the k_danger cost term), decays with danger_hl (matched to
+ * the blood decal lifetime). w = fear per death (e.g. 0.4). NOT a hard block:
+ * the PBD still shoves the front in, so a big enough horde floods through anyway
+ * (fear deters probes, mass overrides). The anti-choke pivot (2026-06-25),
+ * replacing the corpse-pile nav cost. The home cell always gets the deposit. */
+void  simp_add_danger(SimP *s, float x, float y, float radius, float w);
+const float *simp_danger_arr(const SimP *s);     /* gw*gh, for overlays */
 
 int   simp_corpse_count(const SimP *s);
 const float *simp_corpse_px(const SimP *s);

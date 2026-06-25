@@ -30,6 +30,10 @@ static const ParamEntry PTAB[] = {
     { "wall_h",       offsetof(SimPParams, wall_h),       0 },
     { "k_density",    offsetof(SimPParams, k_density),    0 },
     { "k_jam",        offsetof(SimPParams, k_jam),        0 },
+    { "k_danger",     offsetof(SimPParams, k_danger),     0 },
+    { "danger_ref",   offsetof(SimPParams, danger_ref),   0 },
+    { "danger_hl",    offsetof(SimPParams, danger_hl),    0 },
+    { "k_corpse",     offsetof(SimPParams, k_corpse),     0 },
     { "flow_period",  offsetof(SimPParams, flow_period),  0 },
 };
 #define PTAB_N ((int)(sizeof PTAB / sizeof PTAB[0]))
@@ -145,6 +149,22 @@ int scene_load(const char *path, Scene *sc) {
             } else { err = -2; break; }
             if (parse_poly_verts(&save, p) != 0) { err = -2; break; }
             sc->n_poly++;
+        } else if (!strcmp(key, "wall")) {
+            if (sc->n_wall >= SCENE_MAX_RECT) { err = -2; break; }
+            char *t[6]; int ok = 1;
+            for (int i = 0; i < 6; i++) { t[i] = strtok_r(NULL, " \t", &save); if (!t[i]) ok = 0; }
+            if (!ok) { err = -2; break; }
+            SceneWall w = { (float)atof(t[2]), (float)atof(t[3]), (float)atof(t[4]),
+                            (float)atof(t[5]), (float)atof(t[0]), (float)atof(t[1]) };
+            sc->wall[sc->n_wall++] = w;
+        } else if (!strcmp(key, "turret")) {
+            if (sc->n_turret >= SCENE_MAX_RECT) { err = -2; break; }
+            char *x = strtok_r(NULL, " \t", &save), *y = strtok_r(NULL, " \t", &save);
+            char *rg = strtok_r(NULL, " \t", &save), *hv = strtok_r(NULL, " \t", &save);
+            if (!x || !y) { err = -2; break; }
+            SceneTurret t = { (float)atof(x), (float)atof(y),
+                              rg ? (float)atof(rg) : 30.0f, hv ? atoi(hv) : 0 };
+            sc->turret[sc->n_turret++] = t;
         } else if (!strcmp(key, "prop")) {
             if (sc->n_prop >= SCENE_MAX_PROP) { err = -2; break; }
             char *k = strtok_r(NULL, " \t", &save);
@@ -202,6 +222,13 @@ int scene_save(const char *path, const Scene *sc) {
             fprintf(f, " %g %g", (double)p->vx[v], (double)p->vy[v]);
         fputc('\n', f);
     }
+    for (int k = 0; k < sc->n_wall; k++)
+        fprintf(f, "wall %g %g %g %g %g %g\n", (double)sc->wall[k].hp, (double)sc->wall[k].cost_mult,
+                (double)sc->wall[k].x, (double)sc->wall[k].y,
+                (double)sc->wall[k].w, (double)sc->wall[k].h);
+    for (int k = 0; k < sc->n_turret; k++)
+        fprintf(f, "turret %g %g %g %d\n", (double)sc->turret[k].x, (double)sc->turret[k].y,
+                (double)sc->turret[k].range, sc->turret[k].heavy);
     for (int k = 0; k < sc->n_prop; k++)
         fprintf(f, "prop %s %g %g %g\n", sc->prop[k].key, (double)sc->prop[k].x,
                 (double)sc->prop[k].y, (double)sc->prop[k].rot);

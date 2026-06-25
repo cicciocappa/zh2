@@ -53,9 +53,24 @@ Il progetto ha DUE modelli di simulazione complementari:
      si preme. Vedi `SIMULAZIONE.md` §I.4 e `test_breakthrough.c`.
      Gli archi sono pesati per cella destinazione (M3.5+3.6+3.7):
      `dist · clamp(1 + k_density·min(rho/rho_max,1) + k_jam·min(jam/rho_max,1)
-     + cost_user, ≥0.2)`.
+     + k_danger·min(danger/danger_ref,1) + cost_user, ≥0.2)`.
      `cost_user` (`simp_add_cost`, clamp [-0.8,100]) = paura/fango (w>0) o
-     richiamo screamer (w<0); `rho` = densità per cella nav (istogramma +
+     richiamo screamer (w<0), PERMANENTE; `danger` (`simp_add_danger`, perno
+     anti-imbuto/anti-killbox 2026-06-25) = paura DA SANGUE, campo per-cella che
+     DECADE (`danger_hl`, ~30 s = vita del decal di sangue): ogni morte timbra
+     la cella (`defense.c` ai punti morte, accanto alla decal), l'orda evita per
+     istinto le killzone insanguinate. **GRADUATO** come il vecchio termine
+     cadaveri: `k_danger·min(danger/danger_ref,1)`, `k_danger`=tetto a
+     SCALA-MURO (default 400), `danger_ref`=sangue per saturare (default 8).
+     Sangue sparso (danger≪ref) → nudge SOFT (dirotta fra strade aperte, e il
+     PBD shova comunque il fronte → la massa inonda lo stesso); killbox tenuto
+     (danger satura) → costo SCALA-MURO → l'orda sfonda le BARRICATE del
+     giocatore invece di alimentare l'imbuto (la strategia "tutte le torrette
+     in un punto + muri attorno" si auto-sabota). Resta < `WALL_ENTER` per
+     cella (palazzi indistruttibili e assedi a goal murati intatti); vince il
+     muro più economico → cadono prima le barricate dei palazzi. SOSTITUISCE il
+     costo-nav-cadaveri §7-bis (`k_corpse` ora default 0, macchina dormiente);
+     `rho` = densità per cella nav (istogramma +
      blur 3×3 + EMA, cadaveri pesati ×2) → l'orda aggira gli ingorghi da sola
      (Continuum Crowds light); `jam` (M3.7) = stesso istogramma ma pesato per
      FERMEZZA, `(1−min(|v|/v_pref,1))²` per agente (cadaveri e dormienti a
@@ -110,8 +125,13 @@ Il progetto ha DUE modelli di simulazione complementari:
      nel pool a fine PBD (step 3b di `simp_step`).** Bloccano `simp_free_at`,
      invisibili a query e impulsi, MAI marcati nel nav grid: la deviazione del
      flusso attorno ai mucchi emerge da PBD + costo nav cadaveri (sotto).
-   - **Accumulo cadaveri → costo nav** (CORPSE_DESIGN.md §7-bis, perno
-     anti-imbuto, giugno 2026): tre campi per CELLA nav accanto a `rho`/`jam`.
+   - **Accumulo cadaveri → costo nav** (CORPSE_DESIGN.md §7-bis) —
+     **PENSIONATO (2026-06-25): `k_corpse` default 0, sostituito da
+     sangue→paura (`danger`, sopra).** L'anti-imbuto ora è il campo di
+     pericolo del sangue, non l'altezza della pila; i mound 3D di render sono
+     stati ELIMINATI (erano brutti). La macchina sotto resta nel core, dormiente
+     (riattivabile settando `k_corpse`>0, es. `test_corpse_pile`):
+     tre campi per CELLA nav accanto a `rho`/`jam`.
      `corpse_mass` += π·r² a ogni `simp_corpse_add` (decay lento `corpse_mass_hl`,
      indipendente dal TTL del pool: il volume marcisce per conto suo);
      `corpse_pack` += `pack_inc` per agente a terra che calpesta una cella con
@@ -257,6 +277,15 @@ Il progetto ha DUE modelli di simulazione complementari:
   decay→non permanenza, `simp_corpse_clear` riapre il varco, determinismo+no-NaN.
 - `test_types.c` / `test_density_route.c` / `test_jam.c` — verifica tipi +
   costo utente (M3.5), densità→costo (M3.6) e ingorgo→costo (M3.7).
+- `test_blood_fear.c` — verifica sangue→paura (`simp_add_danger`, perno
+  anti-imbuto/anti-killbox 2026-06-25): (1) reroute SOFT — killzone insanguinata
+  davanti al varco diretto → `k_danger` 0 va dritta (90%), `k_danger` 6 dirotta
+  sulla deviazione aperta (96%), entrambi drenano (dirotta, non sigilla);
+  (2) decay esatto a mezza-vita (0.500 su `danger_hl`); (3) determinismo + no-NaN;
+  (4) SCALA-MURO — varco aperto insanguinato vs barricata a basso costo: col
+  default wall-scale (400) la pressione sulla barricata salta 0.06→90.9 (l'orda
+  la preme invece di alimentare l'imbuto), il drain cala solo in parte (il varco
+  resta aperto, il PBD ne shova una frazione). Pinna `k_density=k_jam=0`.
 - `test_breakthrough.c` — verifica del costo di sfondamento PER-CELLA
   (`simp_set_wall_cost`): l'orda concentra l'assedio sul tier barricata (basso)
   invece dei palazzi (alto), 53% vs ~0% col tier uniforme.
@@ -269,11 +298,20 @@ Il progetto ha DUE modelli di simulazione complementari:
   `goal`/`spawn`/`pack`/`cost x y w h [w]`, e OSTACOLI `poly <height>
   solid|cost <w> x0 y0 x1 y1 …` = poligoni convessi con un'altezza di
   render (estrusione 3D) e un effetto nav (muro o costo Dijkstra).
-  Rasterizzazione scanline even-odd (gestisce anche concavi; il render fan
+  GAME-SIDE (memorizzati in scena ma APPLICATI dall'host `build_world`, non da
+  `scene_instantiate` — come i prop): `wall <hp> <cost_mult> x y w h` = muro
+  DISTRUTTIBILE (rect di celle = una struttura `def_add_structure`, costo di
+  sfondamento per-cella = `cost_mult·base`; breccia = gap fra segmenti, sezione
+  debole = segmento a hp+mult bassi) e `turret x y [range] [heavy]` = torretta
+  fissa. Rasterizzazione scanline even-odd (gestisce anche concavi; il render fan
   vuole convessi). `scene_instantiate` è deterministico (stessa scena ⇒
   stessi agenti). Modulo separato, il core non lo conosce; gli spawner
   (rect) restano del chiamante. `test_scene.c` = roundtrip + raster +
-  determinismo. Esempi in `scenes/` (`obstacles.scn`). NOTA: il vecchio
+  determinismo. Esempi in `scenes/` (`obstacles.scn`); MAPPE-BANCO (mura
+  distruttibili, 2026-06-25): `arena4` (4 mura uguali), `arena_weak` (3 forti
+  +1 debole), `arena_breach` (doppia cinta + breccia difesa da torrette vs
+  sezione debole = banco sangue→paura). `VAT_HORDE_RATE` accelera lo spawn per
+  osservare i crolli. NOTA: il vecchio
   sandbox 2D `sandbox_particles.c` usa ancora l'API a griglia e NON compila
   finché non è portato (TODO M7); non è nei target di default. I `.txt`
   legacy (`chokepoint`/`fortress`) sono nel vecchio formato, non più caricabili.

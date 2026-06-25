@@ -336,188 +336,6 @@ static int prop_box(float *buf, int c, float cx, float cz, float ox, float oz,
     return c;
 }
 
-// --- mucchio di cadaveri (CORPSE_DESIGN §10.3): cupola low-poly a molte facce,
-// silhouette IRREGOLARE (lobi verticali + jitter dei vertici) per reggere la
-// rotazione d'azimuth — un tronco di piramide a 4 facce telegraferebbe la
-// primitiva. Face-normal flat (faccette = lowpoly gore). Emerge dal suolo per
-// Y-position: la quota visibile = height (legata a corpse_height §7-bis), il
-// resto resta sotto zb e lo clippa il depth buffer del terreno. seed dà varietà.
-#define MOUND_NSEG 14
-#define MOUND_NRING 4
-#define MOUND_DOME_VERTS (((MOUND_NRING-1)*2 + 1) * MOUND_NSEG * 3)   // 294
-#define MOUND_LIMBS 8                                                  // arti hero max
-#define MOUND_VERTS_EACH (MOUND_DOME_VERTS + MOUND_LIMBS*36)           // +box 12 tris/arto
-#define MOUNDMAX 256                                                   // mound (componenti) max
-static unsigned mnd_hash(unsigned x){ x^=x>>16; x*=0x7feb352dU; x^=x>>15; x*=0x846ca68bU; x^=x>>16; return x; }
-static float    mnd_rand(unsigned s){ return (mnd_hash(s)&0xffffffU)/(float)0x1000000; } // [0,1)
-
-// colore per-faccia: mescola il base verso una piccola palette carne/stoffa/sangue
-// (la massa legge come TANTI corpi, non un blob unico) + jitter di luminosità.
-static void mnd_facecol(unsigned s, float br,float bg,float bb, float *o){
-    static const float PAL[3][3]={{0.40f,0.24f,0.19f},{0.17f,0.15f,0.19f},{0.42f,0.07f,0.05f}};
-    const float *p=PAL[mnd_hash(s)%3]; float m=0.35f+0.30f*mnd_rand(s^0x55u);
-    float lum=0.82f+0.36f*mnd_rand(s^0xa3u);
-    o[0]=(br*(1-m)+p[0]*m)*lum; o[1]=(bg*(1-m)+p[1]*m)*lum; o[2]=(bb*(1-m)+p[2]*m)*lum;
-}
-// box orientato lungo una direzione (arto che sbuca): base (bx,by,bz), asse fwd,
-// lunghezza len, semi-spessori tw/th. Face-normal flat. 6 facce = 36 verti.
-static int mnd_limb(float *buf,int c, float bx,float by,float bz,
-                    float fx,float fy,float fz, float len,float tw,float th,
-                    float r,float g,float b){
-    float fl=sqrtf(fx*fx+fy*fy+fz*fz); if(fl<1e-6f){fx=0;fy=1;fz=0;fl=1;} fx/=fl;fy/=fl;fz/=fl;
-    float rx=fz, ry=0, rz=-fx; float rl=sqrtf(rx*rx+rz*rz);            // right = fwd x up
-    if(rl<1e-6f){rx=1;ry=0;rz=0;rl=1;} rx/=rl;rz/=rl;
-    float vx=ry*fz-rz*fy, vy=rz*fx-rx*fz, vz=rx*fy-ry*fx;              // up' = right x fwd
-    float P[8][3];
-    for(int i=0;i<8;i++){ float a=(i&1)?len:0.0f, s=(i&2)?tw:-tw, t=(i&4)?th:-th;
-        P[i][0]=bx+fx*a+rx*s+vx*t; P[i][1]=by+fy*a+ry*s+vy*t; P[i][2]=bz+fz*a+rz*s+vz*t; }
-    static const int F[6][4]={{0,1,3,2},{4,6,7,5},{0,2,6,4},{1,5,7,3},{0,4,5,1},{2,3,7,6}};
-#define LQ(q) do{ const int*ix=F[q]; float *p0=P[ix[0]],*p1=P[ix[1]],*p2=P[ix[2]],*p3=P[ix[3]]; \
-    float ux=p1[0]-p0[0],uy=p1[1]-p0[1],uz=p1[2]-p0[2], wx=p2[0]-p0[0],wy=p2[1]-p0[1],wz=p2[2]-p0[2]; \
-    float nx=uy*wz-uz*wy,ny=uz*wx-ux*wz,nz=ux*wy-uy*wx; float ln=sqrtf(nx*nx+ny*ny+nz*nz); \
-    if(ln>1e-6f){nx/=ln;ny/=ln;nz/=ln;} float*o; \
-    float*qq[6]={p0,p1,p2,p0,p2,p3}; for(int k=0;k<6;k++){ o=buf+c*9; \
-        o[0]=qq[k][0];o[1]=qq[k][1];o[2]=qq[k][2];o[3]=nx;o[4]=ny;o[5]=nz;o[6]=r;o[7]=g;o[8]=b;c++; } }while(0)
-    for(int q=0;q<6;q++) LQ(q);
-#undef LQ
-    return c;
-}
-// Footprint ELLITTICO (semi-assi ra>=rb lungo l'asse caxis/saxis) per seguire
-// pile allungate; nlimb arti hero (scalati col footprint dal chiamante).
-static int build_mound(float *buf, int c, float cx, float cz, float zb,
-                       float ra, float rb, float caxis, float saxis,
-                       float height, int nlimb, unsigned seed,
-                       float r, float g, float b) {
-    // due lobi a frequenza diversa -> profilo orizzontale ondulato (bitorzoluto)
-    float ph3 = mnd_rand(seed)*6.2832f, ph5 = mnd_rand(seed^0x9e3779b9U)*6.2832f;
-    // (EX,EZ) in spazio cerchio unitario -> mondo: scala ellittica + rotazione asse
-#define XF(EX,EZ, OX,OZ) do{ float _px=ra*(EX), _pz=rb*(EZ); \
-    (OX)=cx+_px*caxis-_pz*saxis; (OZ)=cz+_px*saxis+_pz*caxis; }while(0)
-    float rx[MOUND_NRING][MOUND_NSEG], ry[MOUND_NRING][MOUND_NSEG], rz[MOUND_NRING][MOUND_NSEG];
-    for(int ri=0; ri<MOUND_NRING; ri++){
-        float f  = ri/(float)MOUND_NRING;            // 0 base .. ->apice
-        float yy = height*sinf(f*1.5708f);           // salita arrotondata
-        for(int si=0; si<MOUND_NSEG; si++){
-            float th = si*(6.2832f/MOUND_NSEG), ct=cosf(th), st=sinf(th);
-            float lobe = 1.0f + 0.18f*sinf(th*3.0f+ph3) + 0.11f*sinf(th*5.0f+ph5);
-            float jr = (mnd_rand(seed ^ (unsigned)(ri*131+si*17))-0.5f)*0.22f*(1.0f-f);
-            float jy = (mnd_rand(seed ^ (unsigned)(ri*977+si*53))-0.5f)*0.12f*height;
-            float urad = (1.0f-f)*lobe + jr;          // raggio in spazio unitario
-            XF(urad*ct, urad*st, rx[ri][si], rz[ri][si]);
-            ry[ri][si] = zb + yy + jy;
-        }
-    }
-    float ax=cx, ay=zb+height*1.02f, az=cz;          // apice (leggermente bombato)
-    float fc[3];
-#define MTRI(AX,AY,AZ,BX,BY,BZ,CX2,CY2,CZ2) do{ \
-    float ux=(BX)-(AX),uy=(BY)-(AY),uz=(BZ)-(AZ), vx=(CX2)-(AX),vy=(CY2)-(AY),vz=(CZ2)-(AZ); \
-    float nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx; \
-    float ln=sqrtf(nx*nx+ny*ny+nz*nz); if(ln>1e-6f){nx/=ln;ny/=ln;nz/=ln;} \
-    if(ny<0){nx=-nx;ny=-ny;nz=-nz;} /* normali verso l'alto: lit dal cielo NW */ \
-    float*o; \
-    o=buf+c*9;o[0]=(AX);o[1]=(AY);o[2]=(AZ);o[3]=nx;o[4]=ny;o[5]=nz;o[6]=fc[0];o[7]=fc[1];o[8]=fc[2];c++; \
-    o=buf+c*9;o[0]=(BX);o[1]=(BY);o[2]=(BZ);o[3]=nx;o[4]=ny;o[5]=nz;o[6]=fc[0];o[7]=fc[1];o[8]=fc[2];c++; \
-    o=buf+c*9;o[0]=(CX2);o[1]=(CY2);o[2]=(CZ2);o[3]=nx;o[4]=ny;o[5]=nz;o[6]=fc[0];o[7]=fc[1];o[8]=fc[2];c++; \
-}while(0)
-    for(int ri=0; ri<MOUND_NRING-1; ri++){           // bande fra anelli consecutivi
-        for(int si=0; si<MOUND_NSEG; si++){
-            int s1=(si+1)%MOUND_NSEG;
-            mnd_facecol(seed^(unsigned)(ri*2654435761U+si*40503U), r,g,b, fc);
-            MTRI(rx[ri][si],ry[ri][si],rz[ri][si], rx[ri][s1],ry[ri][s1],rz[ri][s1], rx[ri+1][s1],ry[ri+1][s1],rz[ri+1][s1]);
-            MTRI(rx[ri][si],ry[ri][si],rz[ri][si], rx[ri+1][s1],ry[ri+1][s1],rz[ri+1][s1], rx[ri+1][si],ry[ri+1][si],rz[ri+1][si]);
-        }
-    }
-    int top=MOUND_NRING-1;                            // cappello -> apice
-    for(int si=0; si<MOUND_NSEG; si++){ int s1=(si+1)%MOUND_NSEG;
-        mnd_facecol(seed^(unsigned)(0x7000U+si*40503U), r,g,b, fc);
-        MTRI(rx[top][si],ry[top][si],rz[top][si], rx[top][s1],ry[top][s1],rz[top][s1], ax,ay,az); }
-#undef MTRI
-    // arti "hero": pochi pezzi (braccio/gamba/testa) che sbucano dalla pila a
-    // rompere l'outline e dire "sono CORPI" (CORPSE_DESIGN §10.3). Sbucano
-    // radialmente verso l'alto da metà cupola; si spalmano sull'ellisse.
-    int nl = height<0.35f ? 0 : nlimb; if(nl>MOUND_LIMBS) nl=MOUND_LIMBS;
-    float rrep = sqrtf(ra*rb);                        // raggio rappresentativo
-    for(int i=0;i<nl;i++){
-        unsigned ls = mnd_hash(seed ^ (unsigned)(0x1b0b*(i+1)));
-        float th = (ls&0xffff)/65535.0f*6.2832f, ct=cosf(th), st=sinf(th);
-        float f  = 0.30f + 0.45f*mnd_rand(ls^0x11u);  // quota lungo la cupola
-        float urr = (1.0f-f)*(1.0f+0.15f*sinf(th*3.0f+ph3));
-        float bx,bz; XF(urr*ct, urr*st, bx,bz);
-        float by = zb+height*sinf(f*1.5708f);
-        float out = 0.55f + 0.4f*mnd_rand(ls^0x22u);  // quanto punta in fuori vs su
-        float odx=ra*ct, odz=rb*st;                   // normale ellittica (approx)
-        float wdx=odx*caxis-odz*saxis, wdz=odx*saxis+odz*caxis;
-        float dl=sqrtf(wdx*wdx+wdz*wdz); if(dl>1e-6f){wdx/=dl;wdz/=dl;}
-        float dx=wdx*out, dz=wdz*out, dy=0.7f;
-        int kind = ls%3;                              // 0 braccio,1 gamba,2 testa
-        float len = kind==2 ? rrep*0.20f : rrep*(kind==1?0.60f:0.46f);
-        float tw  = kind==2 ? rrep*0.15f : rrep*(kind==1?0.11f:0.08f);
-        float th2 = tw;
-        float lc[3]; mnd_facecol(ls, kind==2?0.50f:0.46f, kind==2?0.34f:0.28f, kind==2?0.28f:0.22f, lc);
-        c = mnd_limb(buf,c, bx,by,bz, dx,dy,dz, len,tw,th2, lc[0],lc[1],lc[2]);
-    }
-#undef XF
-    return c;
-}
-
-// Aggrega le celle di corpse_height sopra soglia in COMPONENTI connesse (flood
-// 8-vicini) e rende UN mound per componente: footprint = ellisse della covarianza
-// (segue pile allungate), altezza = picco, arti scalati col numero di celle. Il
-// seed e' QUANTIZZATO su griglia coarse (~2.5 m) cosi' la lumpiness/arti non
-// sfarfallano mentre il centroide deriva (fix completo = tracking persistente
-// delle componenti fra i frame, follow-up). comp/stack = scratch gw*gh.
-// shad (opzionale): per ogni mound emette un'istanza di contact-shadow ellittico
-// (cx,cy,cz, ra,rb, cos,sin = 7 float) alla quota del terreno; *nshad = quante.
-static int build_corpse_mounds(float *buf, int maxmounds,
-                               const float *ch, int gw, int gh, float cs,
-                               int *comp, int *stack,
-                               float *shad, int *nshad){
-    const float THR = 0.20f;                          // soglia §10.4
-    int nc = gw*gh, vc = 0, nmound = 0;
-    if(nshad) *nshad = 0;
-    for(int i=0;i<nc;i++) comp[i] = (ch[i]>=THR) ? -1 : 0;   // -1 = da visitare
-    for(int c0=0;c0<nc && nmound<maxmounds;c0++){
-        if(comp[c0]!=-1) continue;
-        int sp=0; stack[sp++]=c0; comp[c0]=1;
-        double W=0,Sx=0,Sz=0,Sxx=0,Szz=0,Sxz=0; float hmax=0; int n=0;
-        while(sp>0){
-            int idx=stack[--sp], cyy=idx/gw, cxx=idx%gw;
-            float h=ch[idx], x=(cxx+0.5f)*cs, z=(cyy+0.5f)*cs, w=h;
-            W+=w; Sx+=w*x; Sz+=w*z; Sxx+=w*x*x; Szz+=w*z*z; Sxz+=w*x*z;
-            if(h>hmax)hmax=h; n++;
-            for(int dyy=-1;dyy<=1;dyy++) for(int dxx=-1;dxx<=1;dxx++){
-                if(!dxx&&!dyy) continue; int nx=cxx+dxx, ny=cyy+dyy;
-                if(nx<0||ny<0||nx>=gw||ny>=gh) continue; int ni=ny*gw+nx;
-                if(comp[ni]==-1){ comp[ni]=1; stack[sp++]=ni; }
-            }
-        }
-        if(W<=0.0||n==0) continue;
-        float mcx=(float)(Sx/W), mcz=(float)(Sz/W);
-        float Cxx=(float)(Sxx/W)-mcx*mcx, Czz=(float)(Szz/W)-mcz*mcz, Cxz=(float)(Sxz/W)-mcx*mcz;
-        if(Cxx<0)Cxx=0; if(Czz<0)Czz=0;
-        float tr=Cxx+Czz, det=Cxx*Czz-Cxz*Cxz;
-        float disc=sqrtf(fmaxf(tr*tr*0.25f-det,0.0f));
-        float l1=tr*0.5f+disc, l2=tr*0.5f-disc; if(l2<0)l2=0;
-        float ang=0.5f*atan2f(2.0f*Cxz, Cxx-Czz);
-        float ra=2.0f*sqrtf(l1)+cs*0.7f, rb=2.0f*sqrtf(l2)+cs*0.7f;
-        if(ra<cs*0.8f)ra=cs*0.8f; if(rb<cs*0.8f)rb=cs*0.8f; if(rb>ra)rb=ra;
-        int qx=(int)floorf(mcx/2.5f), qz=(int)floorf(mcz/2.5f);  // seed stabile
-        unsigned seed=mnd_hash((unsigned)(qx*73856093) ^ (unsigned)(qz*19349663));
-        int nlimb = 2 + n/3; if(nlimb>MOUND_LIMBS) nlimb=MOUND_LIMBS;
-        float ca=cosf(ang), sa=sinf(ang);
-        vc = build_mound(buf, vc, mcx, mcz, ter_z(mcx,mcz),
-                         ra, rb, ca, sa, hmax, nlimb, seed,
-                         0.30f,0.11f,0.09f);
-        if(shad){                                     // contact-shadow ellittico (§10.3)
-            float *o = shad + (*nshad)*7;             // hugga il rim (1.12×)
-            o[0]=mcx; o[1]=ter_z(mcx,mcz)+0.03f; o[2]=mcz;
-            o[3]=ra*1.12f; o[4]=rb*1.12f; o[5]=ca; o[6]=sa; (*nshad)++;
-        }
-        nmound++;
-    }
-    return vc;
-}
-
 #define PROP_VERTS_EACH 60   // corpo (30) + montante (30)
 static float *build_prop_mesh(const Scene *sc, const PropCatalog *cat, int *out_nv) {
     int nv = sc->n_prop * PROP_VERTS_EACH;
@@ -576,11 +394,14 @@ static float *build_turret_mesh(DefGame *g, int *out_nv){
     *out_nv=c; return buf;
 }
 
-// --- §7 base & siege (gated on VAT_HORDE_BASE): two concentric wall rings of
-// nav cells around the base center, sealing the central goal. The horde sieges
-// them (def_update), HP drops, cells free on collapse. State kept file-scope so
-// the per-frame mesh rebuild and HUD can read it.
-static int gBaseOn=0, gCoreId=-1, gOuterId=-1, gBaseCX=0, gBaseCY=0, gBaseHO=0;
+// --- §7 structures & siege: groups of wall nav cells sharing one HP pool; the
+// horde sieges them (def_update), HP drops, cells free on collapse. Two sources:
+// the legacy demo base (VAT_HORDE_BASE, two concentric rings) and data-driven
+// `wall` entries from the scene (the test maps). State file-scope so the
+// per-frame mesh rebuild and HUD can read it. gStX0..gStY1 = bbox of ALL
+// structure cells (mesh sweep); gCoreId >= 0 only for the legacy base.
+static int gStructOn=0, gCoreId=-1, gOuterId=-1;
+static int gStX0=0, gStY0=0, gStX1=-1, gStY1=-1;
 static void build_base(DefGame *g, SimP *s, float cell, float bcx, float bcy){
     int cx0=(int)(bcx/cell), cy0=(int)(bcy/cell), hc=6, ho=16;
     gCoreId  = def_add_structure(g, 1200.0f, 1);   // innermost = loss
@@ -590,15 +411,37 @@ static void build_base(DefGame *g, SimP *s, float cell, float bcx, float bcy){
     for(int cy=cy0-ho;cy<=cy0+ho;cy++)for(int cx=cx0-ho;cx<=cx0+ho;cx++)
         if(cx==cx0-ho||cx==cx0+ho||cy==cy0-ho||cy==cy0+ho) def_struct_cell(g,gOuterId,cx,cy);
     simp_terrain_commit(s);
-    gBaseCX=cx0; gBaseCY=cy0; gBaseHO=ho; gBaseOn=1;
+    gStX0=cx0-ho; gStY0=cy0-ho; gStX1=cx0+ho; gStY1=cy0+ho; gStructOn=1;
+}
+// data-driven destructible walls from the scene (§7 test maps): one structure
+// per `wall` rect, HP = wall.hp, per-cell breakthrough cost = cost_mult x base
+// (a BREACH is a gap between segments; a WEAK section a low hp + low mult one).
+static void build_walls_from_scene(DefGame *g, SimP *s, const Scene *sc){
+    int gw=simp_grid_w(s), gh=simp_grid_h(s);
+    float base=simp_wall_base_cost();
+    int x0=gw, y0=gh, x1=-1, y1=-1;
+    for(int k=0;k<sc->n_wall;k++){
+        const SceneWall *w=&sc->wall[k];
+        int id=def_add_structure(g, w->hp, 0);
+        int cx0=(int)floorf(w->x/sc->cell), cy0=(int)floorf(w->y/sc->cell);
+        int cx1=(int)floorf((w->x+w->w)/sc->cell-1e-4f), cy1=(int)floorf((w->y+w->h)/sc->cell-1e-4f);
+        if(cx0<0)cx0=0; if(cy0<0)cy0=0; if(cx1>=gw)cx1=gw-1; if(cy1>=gh)cy1=gh-1;
+        for(int cy=cy0;cy<=cy1;cy++)for(int cx=cx0;cx<=cx1;cx++){
+            def_struct_cell(g,id,cx,cy);                    // raises wall + barricade cost
+            simp_set_wall_cost(s,cx,cy, w->cost_mult*base); // override tier (forte/debole)
+            if(cx<x0)x0=cx; if(cy<y0)y0=cy; if(cx>x1)x1=cx; if(cy>y1)y1=cy;
+        }
+    }
+    simp_terrain_commit(s);
+    if(x1>=x0){ gStX0=x0; gStY0=y0; gStX1=x1; gStY1=y1; gStructOn=1; }
 }
 // rebuild the live structure mesh each frame from def_cell_struct: collapsed
 // cells vanish, surviving cells darken as their structure's HP drops. A box per
 // live cell, 9-float flat layout. Returns vertex count.
 static int build_struct_mesh(DefGame *g, float cell, float *buf){
     int c=0; float H=2.8f;
-    for(int cy=gBaseCY-gBaseHO-1; cy<=gBaseCY+gBaseHO+1; cy++)
-    for(int cx=gBaseCX-gBaseHO-1; cx<=gBaseCX+gBaseHO+1; cx++){
+    for(int cy=gStY0-1; cy<=gStY1+1; cy++)
+    for(int cx=gStX0-1; cx<=gStX1+1; cx++){
         int id=def_cell_struct(g,cx,cy); if(id<0) continue;
         float frac=def_struct_hp(g,id)/ (def_struct_hp_max(g,id)+1e-3f); // 1..0
         float t=0.35f+0.65f*frac;                         // darken with damage
@@ -661,32 +504,51 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
         bcx=sx/sc->n_goal; bcy=sy/sc->n_goal; }
     float mn = sc->world_w<sc->world_h?sc->world_w:sc->world_h;
     float TR_R = 0.22f*mn;
-    int nt_want=getenv("VAT_HORDE_TURRETS")?atoi(getenv("VAT_HORDE_TURRETS")):NT;
-    if(nt_want>NT)nt_want=NT; if(nt_want<0)nt_want=0;
     def_set_budget(g, getenv("VAT_HORDE_BUDGET")?atoi(getenv("VAT_HORDE_BUDGET")):1000);
     int placed=0;
-    for(int i=0;i<nt_want;i++){ float th=(float)i*(6.2831853f/(float)NT);
-        float tx=bcx+TR_R*cosf(th), ty=bcy+TR_R*sinf(th);
-        if(tx<1.0f||tx>sc->world_w-1.0f||ty<1.0f||ty>sc->world_h-1.0f) continue;
-        DefTurret t={0};
-        t.x=tx; t.y=ty; t.ang=th;
-        float ha=3.15f; t.arc_min=th-ha; t.arc_max=th+ha;
-        t.sweep_dir=1; t.sweep_speed=3.0f; t.range=55.0f;
-        t.heavy=(i%4==2); t.piercing=(i%4==0);
-        t.fire_period=t.heavy?0.5f:0.10f; t.damage=t.heavy?0.0f:55.0f;
-        // override per livelli di test (es. rallentare per osservare ferita->morte,
-        // o forzare pesante per vedere i gib)
-        if(getenv("VAT_HORDE_THEAVY")) t.heavy=atoi(getenv("VAT_HORDE_THEAVY"));
-        if(getenv("VAT_HORDE_TFIRE")) t.fire_period=atof(getenv("VAT_HORDE_TFIRE"));
-        if(getenv("VAT_HORDE_TDMG"))  t.damage=atof(getenv("VAT_HORDE_TDMG"));
-        def_add_turret(g,&t); placed++; }
-    printf("torrette: %d piazzate (anello r=%.1f m attorno alla base (%.1f,%.1f))\n",
-           placed,(double)TR_R,(double)bcx,(double)bcy);
+    // a "designed" scene (walls and/or turrets authored) owns its turrets: place
+    // ONLY the scene's (possibly zero). A legacy scene gets the demo auto-ring.
+    int designed = (sc->n_wall>0 || sc->n_turret>0);
+    if(designed){
+        for(int k=0;k<sc->n_turret;k++){ const SceneTurret *st=&sc->turret[k];
+            DefTurret t={0};
+            t.x=st->x; t.y=st->y; t.ang=0.0f;
+            t.arc_min=-3.1416f; t.arc_max=3.1416f;        // full sweep: engage anything in range
+            t.sweep_dir=1; t.sweep_speed=3.0f; t.range=st->range;
+            t.heavy=st->heavy; t.piercing=0;
+            t.fire_period=st->heavy?0.5f:0.10f; t.damage=st->heavy?0.0f:55.0f;
+            if(getenv("VAT_HORDE_TFIRE")) t.fire_period=atof(getenv("VAT_HORDE_TFIRE"));
+            if(getenv("VAT_HORDE_TDMG"))  t.damage=atof(getenv("VAT_HORDE_TDMG"));
+            def_add_turret(g,&t); placed++; }
+        printf("torrette (scena): %d\n", placed);
+    } else {
+        int nt_want=getenv("VAT_HORDE_TURRETS")?atoi(getenv("VAT_HORDE_TURRETS")):NT;
+        if(nt_want>NT)nt_want=NT; if(nt_want<0)nt_want=0;
+        for(int i=0;i<nt_want;i++){ float th=(float)i*(6.2831853f/(float)NT);
+            float tx=bcx+TR_R*cosf(th), ty=bcy+TR_R*sinf(th);
+            if(tx<1.0f||tx>sc->world_w-1.0f||ty<1.0f||ty>sc->world_h-1.0f) continue;
+            DefTurret t={0};
+            t.x=tx; t.y=ty; t.ang=th;
+            float ha=3.15f; t.arc_min=th-ha; t.arc_max=th+ha;
+            t.sweep_dir=1; t.sweep_speed=3.0f; t.range=55.0f;
+            t.heavy=(i%4==2); t.piercing=(i%4==0);
+            t.fire_period=t.heavy?0.5f:0.10f; t.damage=t.heavy?0.0f:55.0f;
+            if(getenv("VAT_HORDE_THEAVY")) t.heavy=atoi(getenv("VAT_HORDE_THEAVY"));
+            if(getenv("VAT_HORDE_TFIRE")) t.fire_period=atof(getenv("VAT_HORDE_TFIRE"));
+            if(getenv("VAT_HORDE_TDMG"))  t.damage=atof(getenv("VAT_HORDE_TDMG"));
+            def_add_turret(g,&t); placed++; }
+        printf("torrette: %d piazzate (anello r=%.1f m attorno alla base (%.1f,%.1f))\n",
+               placed,(double)TR_R,(double)bcx,(double)bcy);
+    }
 
-    if(getenv("VAT_HORDE_BASE")){ build_base(g,s,sc->cell,bcx,bcy);
-        printf("base: core HP %.0f + ring HP %.0f attorno a cella (%d,%d)\n",
-               (double)def_struct_hp_max(g,gCoreId),(double)def_struct_hp_max(g,gOuterId),
-               gBaseCX,gBaseCY); }
+    // structures: scene `wall` entries (test maps) take priority; else the
+    // legacy concentric base behind VAT_HORDE_BASE.
+    if(sc->n_wall>0){ build_walls_from_scene(g,s,sc);
+        printf("strutture (scena): %d muri distruttibili, bbox celle [%d,%d]-[%d,%d]\n",
+               sc->n_wall, gStX0,gStY0,gStX1,gStY1); }
+    else if(getenv("VAT_HORDE_BASE")){ build_base(g,s,sc->cell,bcx,bcy);
+        printf("base: core HP %.0f + ring HP %.0f\n",
+               (double)def_struct_hp_max(g,gCoreId),(double)def_struct_hp_max(g,gOuterId)); }
 
     if(fillN){ int got=prefill_lattice(s,g,vl,sc,fillN);
         printf("prefill: target %d -> %d agenti piazzati\n", fillN, got); }
@@ -786,19 +648,6 @@ int main(int argc, char **argv){
     SpawnCtx spctx={NULL,vl};
     SimP *s=NULL; DefGame *g=NULL; DefDirector *dir=NULL;
     if(build_world(&sc, vl, fillN, &spctx, &s, &g, &dir)!=0) return 1;
-
-    // VAT_HORDE_PILE=1: inietta pile di cadaveri di prova (un disco + una banda
-    // allungata) per verificare l'AGGREGAZIONE celle->mound unico (§10): il blob
-    // tondo deve dare un mound tondo, la banda un mound stirato lungo il suo asse.
-    if(getenv("VAT_HORDE_PILE")){
-        unsigned rs=12345u; float W=sc.world_w, H=sc.world_h;
-        #define PRND() ((rs=rs*1103515245u+12345u),(rs>>9)/(float)0x800000)
-        for(int i=0;i<450;i++){ float a=PRND()*6.2832f, rr=3.0f*sqrtf(PRND());
-            simp_corpse_add(s, W*0.40f+rr*cosf(a), H*0.50f+rr*sinf(a), 0.30f, 1e6f); }
-        for(int i=0;i<350;i++){ float u=PRND()*2.0f-1.0f, v=PRND()*2.0f-1.0f;
-            simp_corpse_add(s, W*0.65f+u*6.0f, H*0.50f+v*1.6f, 0.30f, 1e6f); }
-        #undef PRND
-    }
 
     const char *shot=getenv("VAT_HORDE_SHOT");
     int shot_frames = shot? atoi(shot):0; if(shot&&shot_frames<=0)shot_frames=600;
@@ -952,36 +801,6 @@ int main(int argc, char **argv){
     glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
     glBindVertexArray(0);
 
-    // --- mucchi di cadaveri (CORPSE_DESIGN §10): cupole lumpy ricostruite CPU
-    // ogni frame dal campo corpse_height (poche celle sopra soglia), flat shader.
-    // M = toggle; VAT_HORDE_MOUNDTEST=1 = fila di mound di prova (valuta la sola
-    // silhouette ruotando l'azimuth, scollegata dalla sim).
-    float *mndmesh = malloc((size_t)MOUNDMAX*MOUND_VERTS_EACH*9*sizeof(float));
-    int *mnd_comp = malloc((size_t)simp_grid_w(s)*simp_grid_h(s)*sizeof(int));   // scratch flood-fill
-    int *mnd_stack= malloc((size_t)simp_grid_w(s)*simp_grid_h(s)*sizeof(int));
-    GLuint mndVao,mndVbo; glGenVertexArrays(1,&mndVao);glBindVertexArray(mndVao);
-    glGenBuffers(1,&mndVbo);glBindBuffer(GL_ARRAY_BUFFER,mndVbo);
-    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)MOUNDMAX*MOUND_VERTS_EACH*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
-    glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
-    glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
-    glBindVertexArray(0);
-    int show_mounds=1, mound_test=getenv("VAT_HORDE_MOUNDTEST")?1:0;
-
-    // contact-shadow ellittico dei mound (§10.3): un'istanza per mound, disco
-    // unitario condiviso (shDisc) scalato sui semi-assi + ruotato. Riusa shadow.fs.
-    static float mndshad[MOUNDMAX*7];                 // cx,cy,cz, ra,rb, cos,sin
-    GLuint progMndSh=vg_shader("vat/mound_shadow.vs","vat/shadow.fs");
-    GLint uVPmndsh=glGetUniformLocation(progMndSh,"uVP");
-    GLuint mndShVao,mndShInst; glGenVertexArrays(1,&mndShVao);glBindVertexArray(mndShVao);
-    glBindBuffer(GL_ARRAY_BUFFER,shDisc);             // unit disc (cond. con le ombre agente)
-    glVertexAttribPointer(0,2,GL_FLOAT,0,2*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
-    glGenBuffers(1,&mndShInst);glBindBuffer(GL_ARRAY_BUFFER,mndShInst);
-    glBufferData(GL_ARRAY_BUFFER,sizeof mndshad,NULL,GL_DYNAMIC_DRAW);
-    glVertexAttribPointer(1,3,GL_FLOAT,0,7*sizeof(float),(void*)0);glEnableVertexAttribArray(1);glVertexAttribDivisor(1,1);
-    glVertexAttribPointer(2,4,GL_FLOAT,0,7*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(2);glVertexAttribDivisor(2,1);
-    glBindVertexArray(0);
-
     // stato editor (EDITOR_DESIGN fase 1): VAT_HORDE_EDIT=1 parte in EDIT, TAB
     // commuta. In EDIT la sim NON steppa, si edita la Scene e si salva (F2).
     Editor ed; ed_init(&ed); ed.active = getenv("VAT_HORDE_EDIT")?1:0;
@@ -1005,10 +824,10 @@ int main(int argc, char **argv){
     glBindVertexArray(0);
 
     // strutture della base (dinamico: ricostruito ogni frame dallo stato vivo).
-    int stMaxV = gBaseOn ? (2*gBaseHO+3)*(2*gBaseHO+3)*30 : 0;
+    int stMaxV = gStructOn ? (gStX1-gStX0+3)*(gStY1-gStY0+3)*30 : 0;
     float *stBuf = stMaxV ? malloc((size_t)stMaxV*9*sizeof(float)) : NULL;
     GLuint stVao=0,stVbo=0;
-    if(gBaseOn){ glGenVertexArrays(1,&stVao);glBindVertexArray(stVao);
+    if(gStructOn){ glGenVertexArrays(1,&stVao);glBindVertexArray(stVao);
         glGenBuffers(1,&stVbo);glBindBuffer(GL_ARRAY_BUFFER,stVbo);
         glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)stMaxV*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
         glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
@@ -1235,7 +1054,6 @@ int main(int argc, char **argv){
                 default: break;
             } else switch(e.key.key){                             // --- tasti PLAY ---
                 case SDLK_C:cam_free=!cam_free;break; case SDLK_T:useTex=!useTex;break;
-                case SDLK_M:show_mounds=!show_mounds;break;   // mucchi cadaveri (§10)
                 case SDLK_SPACE:paused=!paused;break;
                 case SDLK_E:blast_x=cx;blast_y=cz;blast_pending=1;break;
                 default: break;
@@ -1347,44 +1165,8 @@ int main(int argc, char **argv){
               glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)gc*9*sizeof(float),gibmesh);
               glDrawArrays(GL_TRIANGLES,0,gc); } }
 
-        // mucchi di cadaveri (CORPSE_DESIGN §10): cupole lumpy dal campo
-        // corpse_height (o di prova). Stesso flat shader dei gib.
-        if(show_mounds){
-            int mc=0, mnsh=0;
-            float col[3]={0.30f,0.11f,0.09f};         // carne/sangue scuro
-            if(mound_test){
-                // fila di mound di altezza crescente al centro scena: valuta la
-                // silhouette ruotando l'azimuth (C per camera libera, frecce).
-                float bx=sc.world_w*0.5f-9.0f, bz=sc.world_h*0.82f;
-                float hs[4]={0.6f,1.1f,1.6f,2.1f};
-                for(int i=0;i<4;i++){ float wx=bx+i*6.0f;
-                    mc=build_mound(mndmesh,mc, wx,bz, ter_z(wx,bz),
-                                   2.4f,2.4f, 1.0f,0.0f, hs[i], 4, 1234u+i*101u,
-                                   col[0],col[1],col[2]);
-                    float *o=mndshad+mnsh*7;           // ombra circolare per i mound di prova
-                    o[0]=wx; o[1]=ter_z(wx,bz)+0.03f; o[2]=bz;
-                    o[3]=2.4f*1.12f; o[4]=2.4f*1.12f; o[5]=1.0f; o[6]=0.0f; mnsh++; }
-            } else {
-                mc=build_corpse_mounds(mndmesh, MOUNDMAX, simp_corpse_height(s),
-                                       simp_grid_w(s), simp_grid_h(s), simp_cell_size(s),
-                                       mnd_comp, mnd_stack, mndshad, &mnsh);
-            }
-            // contact-shadow PRIMA delle cupole opache (blend, no depth write): le
-            // inchioda a terra (§10.3, "o il mound galleggia").
-            if(mnsh){ glUseProgram(progMndSh);glUniformMatrix4fv(uVPmndsh,1,GL_FALSE,vp);
-                glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);
-                glBindVertexArray(mndShVao);glBindBuffer(GL_ARRAY_BUFFER,mndShInst);
-                glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)mnsh*7*sizeof(float),mndshad);
-                glDrawArraysInstanced(GL_TRIANGLE_FAN,0,SHADN,mnsh);
-                glDepthMask(GL_TRUE);glDisable(GL_BLEND); }
-            if(mc){ glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
-                glBindVertexArray(mndVao);glBindBuffer(GL_ARRAY_BUFFER,mndVbo);
-                glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)mc*9*sizeof(float),mndmesh);
-                glDrawArrays(GL_TRIANGLES,0,mc); }
-        }
-
-        // strutture della base (rebuild dallo stato vivo: celle crollate spariscono)
-        if(gBaseOn){ int sv=build_struct_mesh(g,sc.cell,stBuf);
+        // strutture (rebuild dallo stato vivo: celle crollate spariscono)
+        if(gStructOn){ int sv=build_struct_mesh(g,sc.cell,stBuf);
             if(sv){ glBindVertexArray(stVao);glBindBuffer(GL_ARRAY_BUFFER,stVbo);
                 glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)sv*9*sizeof(float),stBuf);
                 glDrawArrays(GL_TRIANGLES,0,sv); } }
@@ -1480,9 +1262,12 @@ int main(int argc, char **argv){
                 ed.dirty?" *":"");
             SDL_SetWindowTitle(win,t); acc_sim=acc_lay=acc_ren=0; acc_n=0; }
         else if(acc_n>=30){ char title[384]; double S=acc_sim/acc_n,L=acc_lay/acc_n,R=acc_ren/acc_n;
-            char base[96]=""; if(gBaseOn){ int pc=(int)(100.0f*def_struct_hp(g,gCoreId)/(def_struct_hp_max(g,gCoreId)+1e-3f));
+            char base[96]="";
+            if(gCoreId>=0){ int pc=(int)(100.0f*def_struct_hp(g,gCoreId)/(def_struct_hp_max(g,gCoreId)+1e-3f));
                 int po=(int)(100.0f*def_struct_hp(g,gOuterId)/(def_struct_hp_max(g,gOuterId)+1e-3f));
                 snprintf(base,sizeof base, def_lost(g)?" | BASE PERSA":" | ring %d%% core %d%%", po<0?0:po, pc<0?0:pc); }
+            else if(gStructOn){ int ns=def_struct_count(g),up=0; for(int q=0;q<ns;q++) if(!def_struct_collapsed(g,q)) up++;
+                snprintf(base,sizeof base," | mura %d/%d", up, ns); }
             char wv[48]=""; if(dir) snprintf(wv,sizeof wv," | ondata %d budget %d",def_director_wave(dir),def_budget(g));
             snprintf(title,sizeof title,"vat_horde — %d agenti%s | kills %d crawler %d%s | sim %.2f ren %.2f ms | %.0f fps",
                      total,wv,def_kills(g),def_count_wound(g,DW_CRAWLING),base,S,R,1000.0/(S+L+R));
@@ -1508,15 +1293,17 @@ int main(int argc, char **argv){
             printf("frame %d: %d agenti | shots %d kills %d, crawler %d, bloody %d, arm %d | sim %.2f render %.2f ms -> vat_horde_shot.bmp\n",
                    frame,total,def_shots(g),def_kills(g),def_count_wound(g,DW_CRAWLING),
                    def_count_wound(g,DW_BLOODY),def_count_wound(g,DW_MAIMED_ARM),sim_ms,ren_ms);
-            if(gBaseOn) printf("  base: ring HP %.0f/%.0f%s | core HP %.0f/%.0f%s | %s\n",
+            if(gCoreId>=0) printf("  base: ring HP %.0f/%.0f%s | core HP %.0f/%.0f%s | %s\n",
                    (double)def_struct_hp(g,gOuterId),(double)def_struct_hp_max(g,gOuterId),
                    def_struct_collapsed(g,gOuterId)?" CROLLATO":"",
                    (double)def_struct_hp(g,gCoreId),(double)def_struct_hp_max(g,gCoreId),
                    def_struct_collapsed(g,gCoreId)?" CROLLATO":"", def_lost(g)?"BASE PERSA":"base regge");
+            else if(gStructOn){ int ns=def_struct_count(g),up=0; for(int q=0;q<ns;q++) if(!def_struct_collapsed(g,q)) up++;
+                printf("  strutture: %d/%d in piedi\n", up, ns); }
             shot_done=1; running=0; }
         SDL_GL_SwapWindow(win);
     }
-    free(stBuf); free(mndmesh); free(mnd_comp); free(mnd_stack); if(dir) def_director_destroy(dir);
+    free(stBuf); if(dir) def_director_destroy(dir);
     if(gTerOn) terrain_free(&gTer);
     def_destroy(g); vat_layer_destroy(vl); simp_destroy(s); scene_free(&sc);
     SDL_GL_DestroyContext(ctx);SDL_DestroyWindow(win);SDL_Quit(); return 0;

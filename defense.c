@@ -31,6 +31,11 @@ static const DefEnemyDef ENEMY[BT_COUNT] = {
                               * §7-bis). No physical disc (torn apart).        */
 #define MAXPIERCE  64        /* max agents a piercing shot resolves          */
 #define TURRET_CAP 256
+/* blood-fear (CORPSE_DESIGN.md, 2026-06-25): every death stains the cell; the
+ * horde's animal instinct reroutes around bloody killzones. ~4 deaths in a
+ * cell saturate the cost term. Deposited where the blood decal is emitted. */
+#define DANGER_R   0.7f      /* blood-fear deposit radius (m) per death       */
+#define DANGER_W   0.25f     /* blood-fear added per death (saturates at 1)   */
 
 /* §7 siege of structures — same discrete-attack model as test_siege.c */
 #define STRUCT_CAP    64
@@ -141,6 +146,7 @@ static void gib(DefGame *g, int i) {           /* heavy kill: no intact corpse *
      * Same effective radius (r*0.9) as a normal corpse so DISMEMBER_NAV reads as
      * a clean fraction of one: 0.5 -> 8 splats == 4 corpses. */
     simp_corpse_splat(g->s, x, y, r * 0.9f, DISMEMBER_NAV);
+    simp_add_danger(g->s, x, y, DANGER_R, DANGER_W);     /* bloody killzone */
     if (g->ev_cb) g->ev_cb(g->ev_user, simp_slot_of(g->s, i), i,
                            (DefBody)g->body[simp_slot_of(g->s, i)], DEF_EV_GIB);
     simp_kill(g->s, i);
@@ -153,6 +159,7 @@ static void die_light(DefGame *g, int i, int slot) {
     uint32_t h = hash_u32((uint32_t)slot * 2654435761u ^ 0x00C0FFEEu);
     if ((h & 1023u) < (uint32_t)(P_CORPSE * 1024.0f))
         simp_corpse_add(g->s, x, y, r * 0.9f, CORPSE_TTL);
+    simp_add_danger(g->s, x, y, DANGER_R, DANGER_W);     /* bloody killzone */
     if (g->ev_cb) g->ev_cb(g->ev_user, slot, i, (DefBody)g->body[slot], DEF_EV_DEATH);
     simp_kill(g->s, i);
     g->kills++;

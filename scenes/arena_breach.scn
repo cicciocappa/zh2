@@ -1,0 +1,48 @@
+# arena_breach — MAPPA 3: doppia cinta. Cinta INTERNA (4 mura) attorno al goal.
+# Cinta ESTERNA (4 mura): 2 intatte, 1 con BRECCIA (varco aperto), 1 con SEZIONE
+# DEBOLE centrale (hp + peso Dijkstra inferiori). 2 torrette difendono la breccia,
+# nessuna difende la sezione debole. Spawn ai 4 lati.
+# Atteso (banco sangue->paura): l'orda prima passa dalla breccia, ma le torrette
+# uccidono lì -> il sangue alza il costo -> si sposta sulla sezione debole; il
+# sangue decade -> torna alla breccia... oscilla finche' non sfonda la sezione
+# debole e dilaga.
+cell 0.5
+world 100 100
+set k_density 2.5
+set k_jam 8
+# blood-fear (k_danger/danger_ref/danger_hl) ora ai DEFAULT globali wall-scale:
+# un killbox sostenuto satura a scala-muro -> l'orda devia. Override qui solo per tarare.
+
+goal 47 47 6 6
+
+# --- cinta INTERNA (forte, hp 600, mult 2.0) attorno al goal ---
+wall 600 2.0  42 42   16 1.5     # alto
+wall 600 2.0  42 56.5 16 1.5     # basso
+wall 600 2.0  42 43.5 1.5 13     # sinistro
+wall 600 2.0  56.5 43.5 1.5 13   # destro
+
+# --- cinta ESTERNA (box x[25..75] y[25..75]) ---
+# lato ALTO: intatto (forte)
+wall 1500 3.0  25 25   50 1.5
+# lato DESTRO: intatto (forte)
+wall 1500 3.0  73.5 26.5 1.5 47
+# lato BASSO: BRECCIA centrale (gap x 43..57) = due segmenti forti
+wall 1500 3.0  25 73.5 18 1.5
+wall 1500 3.0  57 73.5 18 1.5
+# lato SINISTRO: SEZIONE DEBOLE centrale (hp 350, mult 0.6) fra due tratti forti
+wall 1500 3.0  25 26.5 1.5 17.5  # alto-sx (forte)
+wall 350  0.6  25 44   1.5 12    # CENTRO (debole)
+wall 1500 3.0  25 56   1.5 17.5  # basso-sx (forte)
+
+# 4 torrette che blindano la breccia (basso-centro): blanket totale del varco
+# (x 43..57) per assicurare che NESSUNO passi -> l'orda deve cercare altra strada.
+# Nessuna torretta sulla sezione debole. turret: x y [range] [heavy]
+turret 44 70 25 0
+turret 56 70 25 0
+turret 50 69 26 0
+turret 50 78 26 0
+
+spawn 10 2  80 4
+spawn 10 94 80 4
+spawn 2  10 4 80
+spawn 94 10 4 80

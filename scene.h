@@ -25,7 +25,18 @@
  *     cost  20 30 8 8 5.0             # rect x y w h weight (Dijkstra cost)
  *     poly  4.0 solid     30 20 40 20 40 35 30 35    # building (wall, h=4m)
  *     poly  0.4 cost 6.0  60 40 70 40 65 50           # hazard (cost 6, h=0.4m)
+ *     wall  800 1.0  48 20 24 1.5                     # destructible: hp cost_mult x y w h
+ *     turret 60 30 30 0                               # turret: x y [range] [heavy]
  *     prop  bench 24 30 90                            # decor: catalog key x y rot(deg)
+ *
+ * `wall` is a DESTRUCTIBLE structure (game-side, defense.c): the rect is
+ * rasterized to nav cells sharing one HP pool (hp), each cell carrying a
+ * breakthrough cost of cost_mult x the base wall toll (>1 = strong/avoided,
+ * <1 = weak/preferred siege target). A BREACH is just a gap left between two
+ * `wall` segments; a WEAK SECTION is a short segment with low hp + cost_mult.
+ * `turret` places a fixed sweeping turret (range default 30 m, heavy != 0 =
+ * gibs). Both are STORED in the scene but applied by the host (build_world),
+ * not by scene_instantiate (which, like props, ignores them).
  *
  * A `poly` line is: height, then `solid` OR `cost <weight>`, then >=3 vertex
  * pairs (convex, CCW or CW both fine). Grid size is round(world/cell).
@@ -56,6 +67,14 @@ typedef struct {
 
 typedef struct { float x, y, w, h, weight; } SceneRect;  /* meters; weight = cost only */
 
+/* Destructible wall structure (applied by the host via defense.c, not by
+ * scene_instantiate): rect of nav cells sharing one HP pool. cost_mult scales
+ * the per-cell breakthrough toll (>1 strong/avoided, <1 weak/preferred). */
+typedef struct { float x, y, w, h, hp, cost_mult; } SceneWall;   /* meters + hp + mult */
+
+/* Fixed sweeping turret (applied by the host). range in m; heavy != 0 = gibs. */
+typedef struct { float x, y, range; int heavy; } SceneTurret;
+
 /* Pure-decor prop instance: catalog key + world position + Y-rotation (deg).
  * Render-only (no sim effect); resolved against props/catalog.txt by the host. */
 typedef struct { char key[SCENE_PROP_KEY_LEN]; float x, y, rot; } SceneProp;
@@ -73,6 +92,8 @@ typedef struct {
     SceneRect spawn[SCENE_MAX_RECT];  int n_spawn;
     SceneRect pack[SCENE_MAX_RECT];   int n_pack;
     SceneRect cost[SCENE_MAX_RECT];   int n_cost;   /* rect cost patches */
+    SceneWall wall[SCENE_MAX_RECT];   int n_wall;   /* destructible structures (host-side) */
+    SceneTurret turret[SCENE_MAX_RECT]; int n_turret; /* fixed turrets (host-side) */
     SceneProp prop[SCENE_MAX_PROP];   int n_prop;   /* pure-decor instances (render-only) */
 } Scene;
 

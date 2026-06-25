@@ -1,0 +1,22 @@
+# arena_weak — MAPPA 2: goal al centro, 4 mura: 3 FORTI + 1 DEBOLE, spawn ai 4 lati.
+# Atteso: l'orda punta il muro debole (cost_mult basso = bersaglio d'assedio
+# preferito), la calca si infittisce e parte di essa si distribuisce sugli
+# altri muri; il muro debole (hp basso) cede per primo e tutti passano da lì.
+cell 0.5
+world 100 100
+set k_density 2.5
+set k_jam 8
+
+goal 47 47 6 6
+
+# 3 mura FORTI (hp 1500, cost_mult 4.0 = l'orda le evita) + 1 DEBOLE in basso
+# (hp 400, cost_mult 0.5 = la preferisce).  wall: hp cost_mult x y w h
+wall 1500 4.0  35 35   30 1.5     # alto  (forte)
+wall 1500 4.0  35 36.5 1.5 27     # sinistro (forte)
+wall 1500 4.0  63.5 36.5 1.5 27   # destro (forte)
+wall 400  0.5  35 63.5 30 1.5     # basso (DEBOLE)
+
+spawn 10 2  80 4
+spawn 10 94 80 4
+spawn 2  10 4 80
+spawn 94 10 4 80

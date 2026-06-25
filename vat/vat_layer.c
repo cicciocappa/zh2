@@ -12,8 +12,12 @@ static const char *st_prefix[ST_N] = {"idle","walk","run","attack","scream","hit
 #define BLEND_DUR     0.25f
 #define MOVE_MIN      0.30f   /* sotto = heading congelato (anti-piroetta)   */
 #define HEADING_OFFSET 0.0f  /* allinea il forward del modello (Mixamo +Y) a +v */
-#define ATTACK_PRESS  0.006f  /* wall_pressure oltre cui l'agente "attacca": allineato
-                                 ad ATTACK_MIN_P di defense.c (animazione ⇔ assedio reale) */
+#define ATTACK_PRESS  0.0004f /* wall_pressure oltre cui l'agente "attacca". PIU' BASSA
+                                 di ATTACK_MIN_P (0.006) di defense.c di proposito: il
+                                 danno reale richiede pressione sostenuta, ma VISIVAMENTE
+                                 vogliamo che chiunque si appoggi al muro lo colpisca (la
+                                 pressione e' minuscola e spiky, vedi atk[]/ATTACK_HOLD). */
+#define ATTACK_HOLD   1.0f    /* s di tenuta dell'animazione d'attacco dopo l'ultimo spike */
 #define DECEDENT_HOLD 2.0f    /* s di tenuta dell'ultimo frame morte prima di liberare */
 
 struct VatLayer {
@@ -36,6 +40,10 @@ struct VatLayer {
        ([osF0, osF0+osLen) frame): flinch piu' corto + varieta' (ogni colpo una
        fetta diversa). hit_ctr desincronizza colpi sullo stesso slot. */
     float *osT, *osPh; int *osClip, *osF0, *osLen;   /* osT[slot]>0 = flinch in corso */
+    float *atk;          /* atk[slot]>0 = sta assediando un muro: hold dell'animazione
+                            d'attacco. La pressione d'assedio (wall_pressure) e' SPIKY
+                            (il PBD tiene gli agenti fuori dal muro) -> latch + decay
+                            la rende un'animazione continua e niente flicker. */
     unsigned hit_ctr;
     /* pool decessi renderer-side: visuali che riproducono la clip morte una volta
        e poi tengono l'ultimo frame, indipendenti dall'agente sim gia' rimosso. */
@@ -133,6 +141,7 @@ VatLayer *vat_layer_create_multi(const char *const *meta_paths, int nvariants, i
     vl->outfit=calloc(n,1); vl->var=calloc(n,1); vl->tr=calloc(n,1); vl->tg=calloc(n,1); vl->tb=calloc(n,1);
     vl->osT=calloc(n,4); vl->osPh=calloc(n,4); vl->osClip=calloc(n,sizeof(int));
     vl->osF0=calloc(n,sizeof(int)); vl->osLen=calloc(n,sizeof(int));
+    vl->atk=calloc(n,4);
     /* pool decessi: dimensionato a ~min(max,4096) come i cadaveri (M3.3) */
     vl->dmax = max_slots<4096?max_slots:4096; vl->dwrite=0;
     int d=vl->dmax;
@@ -172,7 +181,7 @@ void vat_layer_destroy(VatLayer *vl){ if(!vl)return;
     free(vl->seen);free(vl->hx);free(vl->hy);free(vl->spd);free(vl->phaseA);free(vl->phaseB);
     free(vl->blendF);free(vl->hmul);free(vl->clipA);free(vl->clipB);free(vl->pin);free(vl->force_clip);free(vl->state);free(vl->target);
     free(vl->blending);free(vl->outfit);free(vl->var);free(vl->tr);free(vl->tg);free(vl->tb);
-    free(vl->osT);free(vl->osPh);free(vl->osClip);free(vl->osF0);free(vl->osLen);
+    free(vl->osT);free(vl->osPh);free(vl->osClip);free(vl->osF0);free(vl->osLen);free(vl->atk);
     free(vl->dx);free(vl->dy);free(vl->dz);free(vl->dhd);free(vl->dsc);free(vl->dph);free(vl->dttl);
     free(vl->dvar);free(vl->dclip);free(vl->dout);free(vl->dtr);free(vl->dtg);free(vl->dtb);free(vl->dactive);
     free(vl->gx);free(vl->gy);free(vl->gz);free(vl->gvx);free(vl->gvy);free(vl->gvz);free(vl->gttl);
@@ -561,6 +570,8 @@ static int want_state(int cur,float spd){
 void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
     const float *vx=simp_vx(s),*vy=simp_vy(s); const unsigned char *fl=simp_flags_arr(s);
     const float *wp=simp_wall_pressure(s);                 /* sensore d'assedio (M5/SIEGE) */
+    const float *px=simp_px(s), *py=simp_py(s);            /* per orientare l'attacco verso il muro */
+    const int   *wcell=simp_wall_cell(s); int sgw=simp_grid_w(s); float scell=simp_cell_size(s);
     int n=simp_count(s);
     float alpha=1.0f-expf(-dt/HEADING_TAU), beta=1.0f-expf(-dt/SPEED_TAU);
     /* avanza il pool decessi (indipendente dagli agenti vivi): clip una volta poi
@@ -600,7 +611,7 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
             unsigned r=hashu(h); float ang=(r&0xffff)*(6.2831853f/65536.0f);
             vl->seen[slot]=h; vl->hx[slot]=sinf(ang)*0.01f; vl->hy[slot]=cosf(ang)*0.01f;
             vl->spd[slot]=1.0f; vl->state[slot]=ST_WALK; vl->blending[slot]=0;
-            vl->osT[slot]=0.0f; vl->force_clip[slot]=-1;  /* niente flinch/override dal precedente slot */
+            vl->osT[slot]=0.0f; vl->atk[slot]=0.0f; vl->force_clip[slot]=-1;  /* niente flinch/override/assedio dal precedente slot */
             /* body: pinnato (tipo di gioco, es. crawler) o random fra le cosmetiche */
             int body = vl->pin[slot] ? vl->pin[slot]-1 : (int)(hashu(h+333u)%(unsigned)vl->nrandom);
             vl->pin[slot]=0;                          /* consuma: slot riusato torna libero */
@@ -619,8 +630,9 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
         float sp=sqrtf(vx[i]*vx[i]+vy[i]*vy[i]);
         vl->spd[slot]+=beta*(sp-vl->spd[slot]);
 
-        /* heading EMA, congelato se quasi fermo (anti-piroetta) o in volo */
-        if(sp>MOVE_MIN && !(fl[i]&SIMP_FLYING)){
+        /* heading EMA, congelato se quasi fermo (anti-piroetta), in volo, o mentre
+           assedia (sotto: l'attacco punta il muro, non la velocita' di spinta) */
+        if(sp>MOVE_MIN && !(fl[i]&SIMP_FLYING) && !(vl->atk[slot]>0.0f)){
             vl->hx[slot]+=alpha*(vx[i]-vl->hx[slot]); vl->hy[slot]+=alpha*(vy[i]-vl->hy[slot]); }
 
         int body=vl->var[slot];
@@ -648,7 +660,20 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
            raggiungere il goal oltre (sensore d'assedio wall_pressure). */
         int cur=vl->state[slot];
         int want=(fl[i]&SIMP_DORMANT)?ST_IDLE:want_state(cur,vl->spd[slot]);
-        if(wp && wp[i]>ATTACK_PRESS && !(fl[i]&SIMP_FLYING) && vl->group_n[body][ST_ATTACK]>0)
+        /* assedio: la pressione contro un muro e' SPIKY (il PBD tiene gli agenti
+           appena fuori dal muro -> push>0 solo a sprazzi). La latcho in atk[slot]
+           con hold+decay, cosi' chi preme un muro suona l'animazione d'attacco in
+           continuo invece di lampeggiare fra walk e attack. */
+        if(wp && wp[i]>ATTACK_PRESS && !(fl[i]&SIMP_FLYING)){
+            vl->atk[slot]=ATTACK_HOLD;
+            int cell=wcell[i];                           /* punta il muro assediato */
+            if(cell>=0){ int wcx=cell%sgw, wcy=cell/sgw;
+                float dx=((float)wcx+0.5f)*scell-px[i], dy=((float)wcy+0.5f)*scell-py[i];
+                float l=sqrtf(dx*dx+dy*dy);
+                if(l>1e-4f){ vl->hx[slot]=dx/l; vl->hy[slot]=dy/l; } }
+        }
+        else if(vl->atk[slot]>0.0f) vl->atk[slot]-=dt;
+        if(vl->atk[slot]>0.0f && !(fl[i]&SIMP_FLYING) && vl->group_n[body][ST_ATTACK]>0)
             want=ST_ATTACK;
         int eff=vl->blending[slot]?vl->target[slot]:cur;
         if(want!=eff && vl->group_n[body][want]>0){

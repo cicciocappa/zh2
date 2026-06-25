@@ -15,5 +15,7 @@ void main() {
     vec3 world = iPosHd.xyz + vec3(r.x, 0.0, r.y);
     gl_Position = uVP * vec4(world, 1.0);
     vec2 uv = aQuad*0.5 + 0.5;            // [0,1] dentro la cella
+    uv.x = 1.0 - uv.x;                    // la bake (occhio +Y, up +Z) specchia
+                                          // l'asse X del modello: lo riallineo qui
     vUV = vec2((uv.x + iSizeCell.y)/uNCells, uv.y);
 }
