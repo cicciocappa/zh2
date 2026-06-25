@@ -158,12 +158,23 @@ int  vat_layer_fill_mesh_gibs(VatLayer *vl, float *out, int max_out);
  * blended a terra. Ritorna il numero di decal. */
 int  vat_layer_fill_decals(VatLayer *vl, float *out, int max_out);
 
+/* Pose di morte distinte bakate per body: il decedente sceglie a caso fra il
+ * gruppo 'dying' (pose 0) e 'death' (pose 1) — falle a terra ~90° diverse — quindi
+ * la sagoma deve combaciare con la posa che è stata effettivamente giocata, o
+ * appare ruotata. La COLONNA d'atlante = variante*VAT_CORPSE_NPOSE + posa. */
+#define VAT_CORPSE_NPOSE 2
+/* La RIGA d'atlante = outfit BASE (0..15) del modello; l'albedo è bakato sempre
+ * con la versione INSANGUINATA (outfit+16) perché un cadavere è sempre insanguinato
+ * → 16 righe, non 32. La normal map NON dipende dall'outfit (stessa geometria) →
+ * una sola riga. Il fill emette outfit&15 (scarta il bit insanguinato: già implicito). */
+#define VAT_CORPSE_NOUTFIT 16
+
 /* Sagome-cadavere PERSISTENTI: come i decal di sangue ma orientate e tipizzate
- * per variante. Il chiamante le rende come quad texturizzati campionando un
- * atlante di sprite top-down bakati dai modelli VAT in posa di morte (una cella
- * per variante). Emesse quando un decedente svanisce, oltre alla macchia.
- * Ring buffer cappato (niente decay). 8 float/decal: x, y, heading(rad),
- * size(raggio mondo), variante, r, g, b. Ritorna il numero. */
+ * per variante+posa+outfit. Il chiamante le rende come quad texturizzati
+ * campionando l'atlante (colonna = variante*VAT_CORPSE_NPOSE + posa, riga =
+ * outfit). Emesse quando un decedente svanisce, oltre alla macchia. Ring buffer
+ * cappato (niente decay). 6 float/decal: x, y, heading(rad), size(raggio mondo),
+ * colonna d'atlante, outfit. Ritorna il numero. */
 int  vat_layer_fill_corpse_decals(VatLayer *vl, float *out, int max_out);
 
 /* Riempie inst_buf (12 float/istanza: pos.xyz, heading, scala, gA, gB, mix,

@@ -26,6 +26,7 @@
 #include "vat_gl.h"
 #include "vat_layer.h"
 #include "sim_particles.h"
+#include "fx_particles.h"
 #include "scene.h"
 #include "defense.h"
 #include "cgltf.h"
@@ -83,36 +84,78 @@ static void spawn_enemy(DefGame *g, SimP *s, VatLayer *vl, float x, float y, uns
 
 // §8: il director sceglie posizione+tipo (mix che si indurisce per ondata); qui
 // agganciamo solo la variante VAT cosmetica all'agente appena nato.
-typedef struct { SimP *s; VatLayer *vl; } SpawnCtx;
+// terreno render-only (EDITOR_DESIGN §9): quota per posare sprite/strutture; zero
+// effetto sim. Dichiarato qui perché lo usano i callback eventi (sangue a terra).
+static Terrain gTer; static int gTerOn = 0;
+static float ter_z(float x, float y){ return gTerOn ? terrain_z(&gTer, x, y) : 0.0f; }
+// ground per il particle system (gocce di sangue): coord orizzontali (x,z)=(x,y).
+static float fx_ground(float x, float z, void *ud){ (void)ud; return ter_z(x,z); }
+
+// schizzo sangue (FX_LAB step 2, identico a fxlab): burst fine di gocce rosso scuro
+// con gravità che arcano e si posano (ground_stop). BURST = versione abbondante
+// per la morte esplosiva.
+static const FxEmitterDef BLOOD_DEF = {
+    .count=28, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.05f, .spawn_box_z=0.05f,
+    .spawn_offset_y_min=-0.05f, .spawn_offset_y_max=0.10f,
+    .speed_xy_min=1.2f, .speed_xy_max=4.0f, .speed_y_min=1.2f, .speed_y_max=4.5f,
+    .gravity=9.81f, .drag=0.6f, .lifetime_min=0.5f, .lifetime_max=1.2f,
+    .start_scale_min=0.05f, .start_scale_max=0.11f, .end_scale_min=0.02f, .end_scale_max=0.05f,
+    .start_color={0.50f,0.02f,0.02f,1.0f}, .end_color={0.22f,0.0f,0.0f,0.55f},
+    .color_variants={ {0.55f,0.03f,0.03f,1.0f},{0.42f,0.0f,0.0f,1.0f},{0.60f,0.08f,0.04f,1.0f} },
+    .color_variant_count=3, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.3f, .ground_stop=true, .blend=FX_BLEND_ALPHA, .rate=20.0f,
+};
+static const FxEmitterDef BLOOD_BURST_DEF = {
+    .count=90, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.10f, .spawn_box_z=0.10f,
+    .spawn_offset_y_min=-0.05f, .spawn_offset_y_max=0.20f,
+    .speed_xy_min=1.5f, .speed_xy_max=6.0f, .speed_y_min=2.0f, .speed_y_max=7.0f,
+    .gravity=9.81f, .drag=0.55f, .lifetime_min=0.6f, .lifetime_max=1.6f,
+    .start_scale_min=0.06f, .start_scale_max=0.16f, .end_scale_min=0.02f, .end_scale_max=0.06f,
+    .start_color={0.50f,0.02f,0.02f,1.0f}, .end_color={0.20f,0.0f,0.0f,0.5f},
+    .color_variants={ {0.55f,0.03f,0.03f,1.0f},{0.42f,0.0f,0.0f,1.0f},{0.60f,0.08f,0.04f,1.0f} },
+    .color_variant_count=3, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.3f, .ground_stop=true, .blend=FX_BLEND_ALPHA, .rate=20.0f,
+};
+
+typedef struct { SimP *s; VatLayer *vl; FxParticles *fx; } SpawnCtx;
 static void on_director_spawn(void *user, SimPHandle h, DefBody body, unsigned roll){
     SpawnCtx *c=(SpawnCtx*)user;
     int i=simp_index_of(c->s,h); if(i<0) return;
     vat_layer_pin_variant(c->vl, simp_slot_of(c->s,i), body_variant(body, roll>>7));
 }
 
-// hook eventi defense → animazioni one-shot del render layer: HIT = flinch su
-// colpo non letale; DEATH = decedente (clip morte) prima che lo slot sia riusato;
-// GIB = morte esplosiva, burst grande di pezzi balistici (niente cadavere);
-// WOUND_* = gore d'impatto di una ferita fresca (gib piccoli + arti volanti).
+// hook eventi defense → effetti one-shot del render layer (gli stessi testati in
+// fxlab): HIT = flinch + schizzo di sangue; DEATH = decedente (clip morte) → poi
+// cadavere; GIB = morte esplosiva (burst grande + schizzo abbondante); WOUND_ARM/
+// LEGS = mutilazione con mesh-gib 3D (arto reciso + frammenti) + sangue. Il cambio
+// body (ARM/CRAWLER) e l'outfit insanguinato li applica il poll su def_wound nel
+// loop (qui solo gli one-shot). L'insanguinamento al colpo lo fa il poll DW_BLOODY.
 static void on_def_event(void *user, int slot, int i, DefBody body, DefEvent ev){
     SpawnCtx *c=(SpawnCtx*)user; (void)body;
     float x=simp_px(c->s)[i], y=simp_py(c->s)[i], r=simp_radius_arr(c->s)[i];
     unsigned seed=simp_handle_of(c->s,i);
+    float hd=atan2f(simp_vy(c->s)[i], simp_vx(c->s)[i]);   // direzione di marcia → lato del taglio
+    float o[3]={x, ter_z(x,y)+1.0f, y};                    // origine schizzo (~torace)
     if(ev==DEF_EV_HIT){ float dur=vat_layer_hit(c->vl, slot);   /* flinch + plant l'agente */
-        if(dur>0.0f) simp_stun(c->s, i, dur); }                /* niente foot-sliding sotto la hit */
+        if(dur>0.0f) simp_stun(c->s, i, dur);                  /* niente foot-sliding sotto la hit */
+        fx_emit(c->fx, o, &BLOOD_DEF, 0.0f, -1.0f); }          /* schizzo sangue */
     else if(ev==DEF_EV_DEATH)
         vat_layer_die(c->vl, slot, x, y, r);
-    else if(ev==DEF_EV_GIB)
+    else if(ev==DEF_EV_GIB){
         vat_layer_gib(c->vl, slot, x, y, r, seed);
-    else if(ev==DEF_EV_WOUND_BLEED)
+        fx_emit(c->fx, o, &BLOOD_BURST_DEF, 0.0f, -1.0f); }
+    else if(ev==DEF_EV_WOUND_BLEED){
         vat_layer_gib_wound(c->vl, slot, x, y, r, seed);
-    else if(ev==DEF_EV_WOUND_ARM){                              /* schizzi + 1 braccio */
-        vat_layer_gib_wound(c->vl, slot, x, y, r, seed);
-        vat_layer_limb(c->vl, slot, x, y, r, seed^0x1u); }
-    else if(ev==DEF_EV_WOUND_LEGS){                             /* schizzi + 2 gambe */
-        vat_layer_gib_wound(c->vl, slot, x, y, r, seed);
-        vat_layer_limb(c->vl, slot, x, y, r, seed^0x2u);
-        vat_layer_limb(c->vl, slot, x, y, r, seed^0x3u); }
+        fx_emit(c->fx, o, &BLOOD_DEF, 0.0f, -1.0f); }
+    else if(ev==DEF_EV_WOUND_ARM){                              /* braccio reciso (mesh-gib) + sangue */
+        vat_layer_maim_arm(c->vl, slot, x, y, r, hd, seed^0x1u);
+        fx_emit(c->fx, o, &BLOOD_DEF, 0.0f, -1.0f); }
+    else if(ev==DEF_EV_WOUND_LEGS){                             /* gambe recise (mesh-gib) + sangue */
+        vat_layer_maim_legs(c->vl, slot, x, y, r, hd, seed^0x2u);
+        float ol[3]={x, ter_z(x,y)+0.6f, y};                   // schizzo più basso (anca)
+        fx_emit(c->fx, ol, &BLOOD_DEF, 0.0f, -1.0f); }
 }
 
 // Benchmark prefill: popola il campo a `target` agenti su un lattice jitterato
@@ -135,10 +178,71 @@ static int prefill_lattice(SimP *s, DefGame *g, VatLayer *vl, const Scene *sc, i
 
 typedef struct { GLuint vao, texP, texN, texD; int ni, hasTex; const VatMeta *M; } Asset;
 
-// --- terreno render-only (EDITOR_DESIGN §9): mesh .glb del suolo (cgltf) +
-// heightmap .zhm per posare sprite/strutture sulla quota. Zero effetto sim.
-static Terrain gTer; static int gTerOn = 0;
-static float ter_z(float x, float y){ return gTerOn ? terrain_z(&gTer, x, y) : 0.0f; }
+// --- gore mesh-gibs (FX_LAB): mesh di blend/gibs.glb (arm/frammenti/gambe) in un
+// VAO ciascuna, CENTRATE sul centroide (il tumble ruota attorno al centro).
+// mesh_id = ordine di nodo. UV sul diffuse del corpo. (copia di fxlab.load_gib_meshes)
+typedef struct { GLuint vao; int nidx; } GibMesh;
+static int load_gib_meshes(const char *path, GibMesh *out, int maxn){
+    cgltf_options opt={0}; cgltf_data *data=NULL;
+    if(cgltf_parse_file(&opt,path,&data)!=cgltf_result_success){ fprintf(stderr,"gibs: parse fail %s\n",path); return 0; }
+    if(cgltf_load_buffers(&opt,data,path)!=cgltf_result_success){ fprintf(stderr,"gibs: load buffers fail\n"); cgltf_free(data); return 0; }
+    int got=0;
+    for(size_t n=0;n<data->nodes_count && got<maxn;n++){
+        cgltf_node *nd=&data->nodes[n]; if(!nd->mesh||nd->mesh->primitives_count<1) continue;
+        cgltf_primitive *pr=&nd->mesh->primitives[0];
+        if(pr->type!=cgltf_primitive_type_triangles||!pr->indices) continue;
+        cgltf_accessor *pos=NULL,*nrm=NULL,*uv=NULL;
+        for(size_t a=0;a<pr->attributes_count;a++){ cgltf_attribute *at=&pr->attributes[a];
+            if(at->type==cgltf_attribute_type_position) pos=at->data;
+            else if(at->type==cgltf_attribute_type_normal) nrm=at->data;
+            else if(at->type==cgltf_attribute_type_texcoord && at->index==0) uv=at->data; }
+        if(!pos) continue;
+        float M[16]; cgltf_node_transform_world(nd,M);
+        size_t nv=pos->count, ni=pr->indices->count;
+        float *verts=malloc(nv*8*sizeof(float)); unsigned short *idx=malloc(ni*sizeof(unsigned short));
+        float cmin[3]={1e30f,1e30f,1e30f}, cmax[3]={-1e30f,-1e30f,-1e30f};
+        for(size_t v=0;v<nv;v++){ float P[3]={0,0,0}; cgltf_accessor_read_float(pos,v,P,3);
+            float wx=M[0]*P[0]+M[4]*P[1]+M[8]*P[2]+M[12];
+            float wy=M[1]*P[0]+M[5]*P[1]+M[9]*P[2]+M[13];
+            float wz=M[2]*P[0]+M[6]*P[1]+M[10]*P[2]+M[14];
+            float *o=verts+v*8; o[0]=wx; o[1]=wy; o[2]=wz;
+            if(wx<cmin[0])cmin[0]=wx; if(wx>cmax[0])cmax[0]=wx;
+            if(wy<cmin[1])cmin[1]=wy; if(wy>cmax[1])cmax[1]=wy;
+            if(wz<cmin[2])cmin[2]=wz; if(wz>cmax[2])cmax[2]=wz; }
+        float ctr[3]={(cmin[0]+cmax[0])*0.5f,(cmin[1]+cmax[1])*0.5f,(cmin[2]+cmax[2])*0.5f};
+        for(size_t v=0;v<nv;v++){ float *o=verts+v*8; o[0]-=ctr[0]; o[1]-=ctr[1]; o[2]-=ctr[2];
+            float N[3]={0,1,0},T[2]={0,0};
+            if(nrm) cgltf_accessor_read_float(nrm,v,N,3);
+            if(uv)  cgltf_accessor_read_float(uv,v,T,2);
+            o[3]=M[0]*N[0]+M[4]*N[1]+M[8]*N[2]; o[4]=M[1]*N[0]+M[5]*N[1]+M[9]*N[2];
+            o[5]=M[2]*N[0]+M[6]*N[1]+M[10]*N[2]; o[6]=T[0]; o[7]=T[1]; }
+        for(size_t k=0;k<ni;k++) idx[k]=(unsigned short)cgltf_accessor_read_index(pr->indices,k);
+        GLuint vao,vbo,ebo; glGenVertexArrays(1,&vao);glBindVertexArray(vao);
+        glGenBuffers(1,&vbo);glBindBuffer(GL_ARRAY_BUFFER,vbo);
+        glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)nv*8*sizeof(float),verts,GL_STATIC_DRAW);
+        glVertexAttribPointer(0,3,GL_FLOAT,0,8*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1,3,GL_FLOAT,0,8*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
+        glVertexAttribPointer(2,2,GL_FLOAT,0,8*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
+        glGenBuffers(1,&ebo);glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER,(GLsizeiptr)ni*sizeof(unsigned short),idx,GL_STATIC_DRAW);
+        glBindVertexArray(0); free(verts); free(idx);
+        out[got].vao=vao; out[got].nidx=(int)ni; got++;
+    }
+    cgltf_free(data); return got;
+}
+// model matrix: T(world) * rot(axis,angle) * uniform scale (copia di fxlab.gib_model)
+static void gib_model(mat4 m, float tx,float ty,float tz,
+                      float ax,float ay,float az, float ang, float sc){
+    float c=cosf(ang), s=sinf(ang), C=1.0f-c;
+    float R[9]={ ax*ax*C+c,    ax*ay*C-az*s, ax*az*C+ay*s,
+                 ay*ax*C+az*s, ay*ay*C+c,    ay*az*C-ax*s,
+                 az*ax*C-ay*s, az*ay*C+ax*s, az*az*C+c };
+    m[0]=R[0]*sc; m[1]=R[3]*sc; m[2]=R[6]*sc; m[3]=0.0f;
+    m[4]=R[1]*sc; m[5]=R[4]*sc; m[6]=R[7]*sc; m[7]=0.0f;
+    m[8]=R[2]*sc; m[9]=R[5]*sc; m[10]=R[8]*sc; m[11]=0.0f;
+    m[12]=tx; m[13]=ty; m[14]=tz; m[15]=1.0f;
+}
+#define GIB_UNIT 0.01f   // unità Blender -> metri (braccio ~0.53 m); = fxlab
 // veto editor (§10): non si piazza nulla su una cella-statico (buco palazzo).
 static int ter_blocked(float x, float y){ return gTerOn && terrain_hole(&gTer, x, y); }
 
@@ -645,7 +749,8 @@ int main(int argc, char **argv){
 
     // Mondo vivo derivato dalla Scene (build_world): sim + torrette + base +
     // director. spctx persiste (il director ne tiene il puntatore come user).
-    SpawnCtx spctx={NULL,vl};
+    FxParticles fx; fx_init(&fx, 0xC0FFEEu);   // particle system (sangue), renderer-agnostic
+    SpawnCtx spctx={NULL,vl,&fx};
     SimP *s=NULL; DefGame *g=NULL; DefDirector *dir=NULL;
     if(build_world(&sc, vl, fillN, &spctx, &s, &g, &dir)!=0) return 1;
 
@@ -736,21 +841,23 @@ int main(int argc, char **argv){
 #define CORPSEDECMAX 4096
 #define CORPSE_CELL  256                  // px per cella d'atlante
 #define CORPSE_HALF  1.15f                // semi-lato ortho del bake (m): un corpo disteso
-    static float cdecraw[CORPSEDECMAX*8];  // x,y,hd,size,var,r,g,b (da vat_layer)
-    static float cdecinst[CORPSEDECMAX*6]; // cx,gy,cz,hd, half,cell (istanza GL)
+    static float cdecraw[CORPSEDECMAX*6];  // x,y,hd,size,colonna,outfit (da vat_layer)
+    static float cdecinst[CORPSEDECMAX*7]; // cx,gy,cz,hd, half,colonna,outfit (istanza GL)
     static const float cquad[12]={-1,-1, 1,-1, 1,1, -1,-1, 1,1, -1,1};
     GLuint cdProg=vg_shader("vat/corpse_decal.vs","vat/corpse_decal.fs");
-    GLint uVPcd=glGetUniformLocation(cdProg,"uVP"), uNCellsCd=glGetUniformLocation(cdProg,"uNCells");
+    GLint uVPcd=glGetUniformLocation(cdProg,"uVP"), uNColsCd=glGetUniformLocation(cdProg,"uNCols"),
+          uNOutCd=glGetUniformLocation(cdProg,"uNOutfit"), uNormLitCd=glGetUniformLocation(cdProg,"uNormalLit");
     GLuint cdVao,cdQuad,cdInst; glGenVertexArrays(1,&cdVao);glBindVertexArray(cdVao);
     glGenBuffers(1,&cdQuad);glBindBuffer(GL_ARRAY_BUFFER,cdQuad);
     glBufferData(GL_ARRAY_BUFFER,sizeof cquad,cquad,GL_STATIC_DRAW);
     glVertexAttribPointer(0,2,GL_FLOAT,0,2*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
     glGenBuffers(1,&cdInst);glBindBuffer(GL_ARRAY_BUFFER,cdInst);
     glBufferData(GL_ARRAY_BUFFER,sizeof cdecinst,NULL,GL_DYNAMIC_DRAW);
-    glVertexAttribPointer(1,4,GL_FLOAT,0,6*sizeof(float),(void*)0);glEnableVertexAttribArray(1);glVertexAttribDivisor(1,1);
-    glVertexAttribPointer(2,2,GL_FLOAT,0,6*sizeof(float),(void*)(4*sizeof(float)));glEnableVertexAttribArray(2);glVertexAttribDivisor(2,1);
+    glVertexAttribPointer(1,4,GL_FLOAT,0,7*sizeof(float),(void*)0);glEnableVertexAttribArray(1);glVertexAttribDivisor(1,1);
+    glVertexAttribPointer(2,3,GL_FLOAT,0,7*sizeof(float),(void*)(4*sizeof(float)));glEnableVertexAttribArray(2);glVertexAttribDivisor(2,1);
     glBindVertexArray(0);
-    GLuint corpseAtlas=0; int corpseNCells=NVAR;   // riempito dal bake init-time
+    GLuint corpseAlb=0,corpseNrm=0;            // albedo (griglia colonna×outfit) + normal (riga)
+    int corpseNCols=NVAR*VAT_CORPSE_NPOSE, corpseNOut=VAT_CORPSE_NOUTFIT;
 
     // --- ostacoli: programma flat + mesh statica estrusa dalla scena (il quad
     // suolo flat si salta quando c'è il terreno glb).
@@ -869,59 +976,80 @@ int main(int argc, char **argv){
     glEnable(GL_DEPTH_TEST);
     GLint uVP=glGetUniformLocation(prog,"uVP"),uTS=glGetUniformLocation(prog,"texSize"),uRPF=glGetUniformLocation(prog,"rowsPerFrame"),uHas=glGetUniformLocation(prog,"uHasTex");
 
-    // --- BAKE atlante sagome-cadavere (init-time): per ogni variante render
-    // ortho TOP-DOWN del modello VAT nell'ultimo frame di una clip morte (corpo
-    // disteso) in una cella RGBA; alpha=1 dove c'è il corpo, 0 fuori (cutout).
-    // Lo sprite È il modello reale (shading NW bakato) -> niente asset esterni.
-    {   int W=CORPSE_CELL*corpseNCells, H=CORPSE_CELL;
-        glGenTextures(1,&corpseAtlas);glBindTexture(GL_TEXTURE_2D,corpseAtlas);
-        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,W,H,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
-        GLuint fbo,depth; glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,corpseAtlas,0);
-        glGenRenderbuffers(1,&depth);glBindRenderbuffer(GL_RENDERBUFFER,depth);
-        glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT24,W,H);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_RENDERBUFFER,depth);
-        if(glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE) fprintf(stderr,"corpse atlas FBO incompleto\n");
-        glDisable(GL_BLEND); glClearColor(0,0,0,0); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-        // camera ortho dall'alto (guarda -Y), up = +Z mondo
+    // --- BAKE atlante sagome-cadavere (init-time): ortho TOP-DOWN del modello VAT
+    // nell'ultimo frame della posa di morte. ALBEDO = griglia (colonna=var*posa ×
+    // riga=outfit), NORMAL = una sola riga (outfit-indipendente) per il relight
+    // per-pixel. Colonna = v*NPOSE+p; posa 0='dying', 1='death' (devono combaciare
+    // con vat_layer_die, le due falle a terra differiscono di ~90°).
+    GLuint bakeProg=vg_shader("vat/vat.vs","vat/corpsebake.fs");
+    GLint uVPb=glGetUniformLocation(bakeProg,"uVP"),uTSb=glGetUniformLocation(bakeProg,"texSize"),
+          uRPFb=glGetUniformLocation(bakeProg,"rowsPerFrame"),uHasb=glGetUniformLocation(bakeProg,"uHasTex"),
+          uModeb=glGetUniformLocation(bakeProg,"uMode");
+    {   int Wc=CORPSE_CELL*corpseNCols, Hg=CORPSE_CELL*corpseNOut;     // albedo grid
+        GLuint *tex[2]={&corpseAlb,&corpseNrm}; int texH[2]={Hg,CORPSE_CELL};
+        for(int t=0;t<2;t++){
+            glGenTextures(1,tex[t]);glBindTexture(GL_TEXTURE_2D,*tex[t]);
+            glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,Wc,texH[t],0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        }
         mat4 cproj,cview,cvp; m_ortho(cproj,-CORPSE_HALF,CORPSE_HALF,-CORPSE_HALF,CORPSE_HALF,-10,10);
         float ceye[3]={0,5,0},cctr[3]={0,0,0},cup[3]={0,0,1};
         m_lookat(cview,ceye,cctr,cup); m_mul(cvp,cproj,cview);
-        glUseProgram(prog); glUniformMatrix4fv(uVP,1,GL_FALSE,cvp);
-        glUniform1i(glGetUniformLocation(prog,"texPos"),0);
-        glUniform1i(glGetUniformLocation(prog,"texNorm"),1);
-        glUniform1i(glGetUniformLocation(prog,"texDiff"),2);
-        for(int v=0;v<NVAR;v++){
-            const VatMeta *M=A[v].M; int fr=-1;          // ultimo frame di death/dying
-            for(int ci=0;ci<M->nclips;ci++) if(!strncmp(M->clip[ci].name,"death",5)||!strncmp(M->clip[ci].name,"dying",5)){
-                fr=M->clip[ci].startFrame+M->clip[ci].numFrames-1; break; }
-            if(fr<0) fr=0;                                // nessuna clip morte (raro): primo frame
-            // istanza singola: origine, heading 0, scala 1, frame fr, outfit 0
-            float one[12]={0,0,0, 0, 1.0f, (float)fr,(float)fr,0, 0, 0.55f,0.5f,0.5f};
-            glViewport(v*CORPSE_CELL,0,CORPSE_CELL,CORPSE_CELL);
-            glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferSubData(GL_ARRAY_BUFFER,0,12*sizeof(float),one);
-            glUniform2f(uTS,(float)M->texW,(float)M->texH);glUniform1f(uRPF,(float)M->rowsPerFrame);
-            glUniform1i(uHas,A[v].hasTex);
-            glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,A[v].texP);
-            glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,A[v].texN);
-            glActiveTexture(GL_TEXTURE2);glBindTexture(GL_TEXTURE_2D,A[v].texD);
-            glBindVertexArray(A[v].vao);glDrawElementsInstanced(GL_TRIANGLES,A[v].ni,GL_UNSIGNED_SHORT,0,1);
+        glUseProgram(bakeProg); glUniformMatrix4fv(uVPb,1,GL_FALSE,cvp);
+        glUniform1i(glGetUniformLocation(bakeProg,"texPos"),0);
+        glUniform1i(glGetUniformLocation(bakeProg,"texNorm"),1);
+        glUniform1i(glGetUniformLocation(bakeProg,"texDiff"),2);
+        glDisable(GL_BLEND);
+        const char *POSE_PFX[VAT_CORPSE_NPOSE]={"dying","death"};
+        // due passate: 0 = ALBEDO (per outfit, griglia corpseAlb), 1 = NORMAL (riga).
+        for(int pass=0;pass<2;pass++){
+            GLuint dst=pass?corpseNrm:corpseAlb; int Hh=pass?CORPSE_CELL:Hg;
+            int nout=pass?1:corpseNOut;
+            GLuint fbo,depth; glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,dst,0);
+            glGenRenderbuffers(1,&depth);glBindRenderbuffer(GL_RENDERBUFFER,depth);
+            glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT24,Wc,Hh);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_RENDERBUFFER,depth);
+            if(glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE) fprintf(stderr,"corpse atlas FBO incompleto\n");
+            glClearColor(0,0,0,0); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+            glUniform1i(uModeb,pass);
+            for(int v=0;v<NVAR;v++){
+                const VatMeta *M=A[v].M;
+                glUniform2f(uTSb,(float)M->texW,(float)M->texH);glUniform1f(uRPFb,(float)M->rowsPerFrame);
+                glUniform1i(uHasb,A[v].hasTex);
+                glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,A[v].texP);
+                glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,A[v].texN);
+                glActiveTexture(GL_TEXTURE2);glBindTexture(GL_TEXTURE_2D,A[v].texD);
+                glBindVertexArray(A[v].vao);
+                for(int p=0;p<VAT_CORPSE_NPOSE;p++){
+                    int fr=-1;
+                    for(int ci=0;ci<M->nclips;ci++) if(!strncmp(M->clip[ci].name,POSE_PFX[p],5)){
+                        fr=M->clip[ci].startFrame+M->clip[ci].numFrames-1; break; }
+                    if(fr<0) fr=0;                        // posa mancante (raro/crawler): cella inerte
+                    int col=v*VAT_CORPSE_NPOSE+p;
+                    for(int o=0;o<nout;o++){
+                        // riga o = outfit base; bake con la versione INSANGUINATA (o+16)
+                        float one[12]={0,0,0, 0, 1.0f, (float)fr,(float)fr,0, (float)(o+16), 0.55f,0.5f,0.5f};
+                        glViewport(col*CORPSE_CELL,o*CORPSE_CELL,CORPSE_CELL,CORPSE_CELL);
+                        glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferSubData(GL_ARRAY_BUFFER,0,12*sizeof(float),one);
+                        glDrawElementsInstanced(GL_TRIANGLES,A[v].ni,GL_UNSIGNED_SHORT,0,1);
+                    }
+                }
+            }
+            // debug: VAT_HORDE_CORPSE_ATLAS -> dump RGB (sagoma su magenta) della passata
+            if(getenv("VAT_HORDE_CORPSE_ATLAS")){
+                unsigned char *rgba=malloc((size_t)Wc*Hh*4); glReadPixels(0,0,Wc,Hh,GL_RGBA,GL_UNSIGNED_BYTE,rgba);
+                unsigned char *rgb=malloc((size_t)Wc*Hh*3);
+                for(int i=0;i<Wc*Hh;i++){ if(rgba[i*4+3]>10){rgb[i*3]=rgba[i*4];rgb[i*3+1]=rgba[i*4+1];rgb[i*3+2]=rgba[i*4+2];}
+                    else {rgb[i*3]=255;rgb[i*3+1]=0;rgb[i*3+2]=255;} }
+                char nm[64]; snprintf(nm,64,"corpse_atlas_%s.bmp",pass?"normal":"albedo");
+                vg_save_bmp(nm,Wc,Hh,rgb); free(rgba);free(rgb);
+                printf("corpse atlas -> %s (%dx%d)\n",nm,Wc,Hh);
+            }
+            glBindFramebuffer(GL_FRAMEBUFFER,0);
+            glDeleteRenderbuffers(1,&depth);glDeleteFramebuffers(1,&fbo);
         }
-        // debug: VAT_HORDE_CORPSE_ATLAS -> dump RGB (sagoma su magenta) e prosegui
-        if(getenv("VAT_HORDE_CORPSE_ATLAS")){
-            unsigned char *rgba=malloc((size_t)W*H*4); glReadPixels(0,0,W,H,GL_RGBA,GL_UNSIGNED_BYTE,rgba);
-            unsigned char *rgb=malloc((size_t)W*H*3);
-            for(int i=0;i<W*H;i++){ if(rgba[i*4+3]>10){rgb[i*3]=rgba[i*4];rgb[i*3+1]=rgba[i*4+1];rgb[i*3+2]=rgba[i*4+2];}
-                else {rgb[i*3]=255;rgb[i*3+1]=0;rgb[i*3+2]=255;} }
-            vg_save_bmp("corpse_atlas.bmp",W,H,rgb); free(rgba);free(rgb);
-            printf("corpse atlas -> corpse_atlas.bmp (%dx%d, %d celle)\n",W,H,corpseNCells);
-        }
-        glBindFramebuffer(GL_FRAMEBUFFER,0);
-        glDeleteRenderbuffers(1,&depth);glDeleteFramebuffers(1,&fbo);
     }
 
     float cx=sc.world_w*0.5f, cz=sc.world_h*0.30f, hh=15.0f, az=0.7f, el=0.40f; int cam_free=0,paused=0,useTex=1;
@@ -934,6 +1062,39 @@ int main(int argc, char **argv){
     float mouse_px=0,mouse_py=0;      // ultimo cursore in pixel
     float rot_px=0,rot_py=0;          // pixel di riferimento del rotate
     { const char*cs=getenv("VAT_HORDE_CAM"); if(cs) sscanf(cs,"%f,%f,%f,%f,%f",&cx,&cz,&hh,&az,&el); }
+
+    // --- gore mesh-gibs (FX_LAB): VAO delle mesh di blend/gibs.glb + shader mesh
+    // statica texturizzata (diffuse di zombie_man, A[0]). Pool fisico in vat_layer.
+    GibMesh GM[8]={0}; int nGibMesh=load_gib_meshes("blend/gibs.glb",GM,8);
+    GLuint mProg=vg_shader("vat/mesh.vs","vat/mesh.fs");
+    GLint uVPm=glGetUniformLocation(mProg,"uVP"), uModelm=glGetUniformLocation(mProg,"uModel");
+    static float meshgib[256*9];
+    printf("mesh-gib: %d mesh da blend/gibs.glb\n",nGibMesh);
+
+    // --- particle system (sangue): billboard istanziati, due passate (alpha/add).
+    static float pmat[FX_MAX_PARTICLES*16], pcol[FX_MAX_PARTICLES*4], pspr[FX_MAX_PARTICLES];
+    static const float pquad[18]={-0.5f,-0.5f,0, 0.5f,-0.5f,0, 0.5f,0.5f,0,
+                                  -0.5f,-0.5f,0, 0.5f,0.5f,0, -0.5f,0.5f,0};
+    GLuint pProg=vg_shader("vat/particle.vs","vat/particle.fs");
+    GLint uVPp=glGetUniformLocation(pProg,"uVP"), uHasAtl=glGetUniformLocation(pProg,"uHasAtlas"),
+          uAtlGrid=glGetUniformLocation(pProg,"uAtlasGrid");
+    GLuint pVao,pQuadVbo,pMatVbo,pColVbo,pSprVbo;
+    glGenVertexArrays(1,&pVao); glBindVertexArray(pVao);
+    glGenBuffers(1,&pQuadVbo); glBindBuffer(GL_ARRAY_BUFFER,pQuadVbo);
+    glBufferData(GL_ARRAY_BUFFER,sizeof pquad,pquad,GL_STATIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,0,3*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glGenBuffers(1,&pMatVbo); glBindBuffer(GL_ARRAY_BUFFER,pMatVbo);
+    glBufferData(GL_ARRAY_BUFFER,sizeof pmat,NULL,GL_DYNAMIC_DRAW);
+    for(int cc=0;cc<4;cc++){ glVertexAttribPointer(1+cc,4,GL_FLOAT,0,16*sizeof(float),(void*)(cc*4*sizeof(float)));
+        glEnableVertexAttribArray(1+cc); glVertexAttribDivisor(1+cc,1); }
+    glGenBuffers(1,&pColVbo); glBindBuffer(GL_ARRAY_BUFFER,pColVbo);
+    glBufferData(GL_ARRAY_BUFFER,sizeof pcol,NULL,GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(5,4,GL_FLOAT,0,4*sizeof(float),(void*)0);glEnableVertexAttribArray(5);glVertexAttribDivisor(5,1);
+    glGenBuffers(1,&pSprVbo); glBindBuffer(GL_ARRAY_BUFFER,pSprVbo);
+    glBufferData(GL_ARRAY_BUFFER,sizeof pspr,NULL,GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(6,1,GL_FLOAT,0,sizeof(float),(void*)0);glEnableVertexAttribArray(6);glVertexAttribDivisor(6,1);
+    glBindVertexArray(0);
+
     Uint64 pf=SDL_GetPerformanceFrequency();
     // timestep FISSO disaccoppiato dal framerate: accumulo il tempo reale e lo
     // consumo in passi da 1/60 → la sim avanza alla stessa velocità a 60 o 144 Hz
@@ -1097,6 +1258,7 @@ int main(int argc, char **argv){
                       if(wnd[slot]==DW_CRAWLING)        vat_layer_set_variant(vl,slot,CRAWLER_VAR);
                       else if(wnd[slot]==DW_MAIMED_ARM) vat_layer_set_variant(vl,slot,ARM_VAR); } }
                 vat_layer_update(vl,s,FIXED_DT);
+                fx_update(&fx,FIXED_DT,NULL,fx_ground,NULL);   // avanza le gocce di sangue
                 Uint64 t2=SDL_GetPerformanceCounter();
                 sim_ms+=(double)(t1-t0)*1000.0/pf;
                 lay_ms+=(double)(t2-t1)*1000.0/pf;
@@ -1165,6 +1327,19 @@ int main(int argc, char **argv){
               glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)gc*9*sizeof(float),gibmesh);
               glDrawArrays(GL_TRIANGLES,0,gc); } }
 
+        // gore mesh-gibs (arti recisi + frammenti): mesh 3D texturizzate, tumble 3D
+        if(nGibMesh>0){ int nm=vat_layer_fill_mesh_gibs(vl,meshgib,256);
+          if(nm){ glUseProgram(mProg);glUniformMatrix4fv(uVPm,1,GL_FALSE,vp);
+              glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,A[0].texD);
+              glUniform1i(glGetUniformLocation(mProg,"uTex"),0);
+              for(int gi=0;gi<nm;gi++){ float *p=meshgib+gi*9; int mid=(int)(p[0]+0.5f);
+                  if(mid<0||mid>=nGibMesh) continue;
+                  float wx=p[1], wz=p[2], wy=ter_z(p[1],p[2])+p[3];
+                  mat4 mm; gib_model(mm, wx,wy,wz, p[4],p[5],p[6], p[7], p[8]*GIB_UNIT);
+                  glUniformMatrix4fv(uModelm,1,GL_FALSE,mm);
+                  glBindVertexArray(GM[mid].vao);
+                  glDrawElements(GL_TRIANGLES,GM[mid].nidx,GL_UNSIGNED_SHORT,0); } } }
+
         // strutture (rebuild dallo stato vivo: celle crollate spariscono)
         if(gStructOn){ int sv=build_struct_mesh(g,sc.cell,stBuf);
             if(sv){ glBindVertexArray(stVao);glBindBuffer(GL_ARRAY_BUFFER,stVbo);
@@ -1186,16 +1361,19 @@ int main(int argc, char **argv){
         // sagome-cadavere persistenti (sopra il sangue, sotto l'orda): quad
         // orientati col modello bakato. Blended, no depth write. CORPSE_DESIGN §10.2.
         { int nq=vat_layer_fill_corpse_decals(vl,cdecraw,CORPSEDECMAX);
-          for(int i=0;i<nq;i++){ float *r=cdecraw+i*8,*o=cdecinst+i*6;
+          for(int i=0;i<nq;i++){ float *r=cdecraw+i*6,*o=cdecinst+i*7;
               o[0]=r[0]; o[1]=ter_z(r[0],r[1])+0.05f; o[2]=r[1]; o[3]=r[2];  // sopra la macchia (+0.05)
-              o[4]=CORPSE_HALF*r[3]; o[5]=r[4]; }                            // semi-lato = bake×scala, cella=variante
+              o[4]=CORPSE_HALF*r[3]; o[5]=r[4]; o[6]=r[5]; }                  // half, colonna, outfit
           if(nq){ glUseProgram(cdProg);glUniformMatrix4fv(uVPcd,1,GL_FALSE,vp);
-              glUniform1f(uNCellsCd,(float)corpseNCells);
-              glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,corpseAtlas);
-              glUniform1i(glGetUniformLocation(cdProg,"uAtlas"),0);
+              glUniform1f(uNColsCd,(float)corpseNCols); glUniform1f(uNOutCd,(float)corpseNOut);
+              glUniform1i(uNormLitCd,1);                                // relight per-pixel (anti-piattume)
+              glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,corpseAlb);
+              glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,corpseNrm);
+              glUniform1i(glGetUniformLocation(cdProg,"uAlbedo"),0);
+              glUniform1i(glGetUniformLocation(cdProg,"uNormal"),1);
               glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);
               glBindVertexArray(cdVao);glBindBuffer(GL_ARRAY_BUFFER,cdInst);
-              glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)nq*6*sizeof(float),cdecinst);
+              glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)nq*7*sizeof(float),cdecinst);
               glDrawArraysInstanced(GL_TRIANGLES,0,6,nq);
               glDepthMask(GL_TRUE);glDisable(GL_BLEND); } }
 
@@ -1248,6 +1426,24 @@ int main(int argc, char **argv){
             glBindVertexArray(A[v].vao);glDrawElementsInstanced(GL_TRIANGLES,A[v].ni,GL_UNSIGNED_SHORT,0,count);
         }
         glBindVertexArray(0);
+
+        // particle system (sangue): billboard istanziati, due passate (alpha poi additivo)
+        { glUseProgram(pProg); glUniformMatrix4fv(uVPp,1,GL_FALSE,vp);
+          glUniform1i(uHasAtl,0); glUniform1f(uAtlGrid,1.0f);
+          glEnable(GL_BLEND); glDepthMask(GL_FALSE);
+          glBindVertexArray(pVao);
+          float right[3]={view[0],view[4],view[8]}, up[3]={view[1],view[5],view[9]};
+          for(int pass=0;pass<2;pass++){
+              FxBlend bm = pass==0?FX_BLEND_ALPHA:FX_BLEND_ADD;
+              int pc=fx_collect(&fx,bm,right,up,pmat,pcol,pspr,FX_MAX_PARTICLES);
+              if(!pc) continue;
+              glBlendFunc(GL_SRC_ALPHA, bm==FX_BLEND_ADD?GL_ONE:GL_ONE_MINUS_SRC_ALPHA);
+              glBindBuffer(GL_ARRAY_BUFFER,pMatVbo);glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)pc*16*sizeof(float),pmat);
+              glBindBuffer(GL_ARRAY_BUFFER,pColVbo);glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)pc*4*sizeof(float),pcol);
+              glBindBuffer(GL_ARRAY_BUFFER,pSprVbo);glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)pc*sizeof(float),pspr);
+              glDrawArraysInstanced(GL_TRIANGLES,0,6,pc);
+          }
+          glBindVertexArray(0); glDepthMask(GL_TRUE); glDisable(GL_BLEND); }
       }   // fine if(!ed.active)
         glFinish();
         double ren_ms=(double)(SDL_GetPerformanceCounter()-r0)*1000.0/pf;

@@ -521,20 +521,24 @@ int main(int argc, char **argv){
 #define CORPSEDECMAX 1024
 #define CORPSE_CELL  256
 #define CORPSE_HALF  1.15f
-    static float cdecraw[CORPSEDECMAX*8], cdecinst[CORPSEDECMAX*6];
+    static float cdecraw[CORPSEDECMAX*6], cdecinst[CORPSEDECMAX*7];
     static const float cquad[12]={-1,-1, 1,-1, 1,1, -1,-1, 1,1, -1,1};
     GLuint cdProg=vg_shader("vat/corpse_decal.vs","vat/corpse_decal.fs");
-    GLint uVPcd=glGetUniformLocation(cdProg,"uVP"), uNCellsCd=glGetUniformLocation(cdProg,"uNCells");
+    GLint uVPcd=glGetUniformLocation(cdProg,"uVP"), uNColsCd=glGetUniformLocation(cdProg,"uNCols"),
+          uNOutCd=glGetUniformLocation(cdProg,"uNOutfit"), uNormLitCd=glGetUniformLocation(cdProg,"uNormalLit");
     GLuint cdVao,cdQuad,cdInst; glGenVertexArrays(1,&cdVao);glBindVertexArray(cdVao);
     glGenBuffers(1,&cdQuad);glBindBuffer(GL_ARRAY_BUFFER,cdQuad);
     glBufferData(GL_ARRAY_BUFFER,sizeof cquad,cquad,GL_STATIC_DRAW);
     glVertexAttribPointer(0,2,GL_FLOAT,0,2*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
     glGenBuffers(1,&cdInst);glBindBuffer(GL_ARRAY_BUFFER,cdInst);
     glBufferData(GL_ARRAY_BUFFER,sizeof cdecinst,NULL,GL_DYNAMIC_DRAW);
-    glVertexAttribPointer(1,4,GL_FLOAT,0,6*sizeof(float),(void*)0);glEnableVertexAttribArray(1);glVertexAttribDivisor(1,1);
-    glVertexAttribPointer(2,2,GL_FLOAT,0,6*sizeof(float),(void*)(4*sizeof(float)));glEnableVertexAttribArray(2);glVertexAttribDivisor(2,1);
+    glVertexAttribPointer(1,4,GL_FLOAT,0,7*sizeof(float),(void*)0);glEnableVertexAttribArray(1);glVertexAttribDivisor(1,1);
+    glVertexAttribPointer(2,3,GL_FLOAT,0,7*sizeof(float),(void*)(4*sizeof(float)));glEnableVertexAttribArray(2);glVertexAttribDivisor(2,1);
     glBindVertexArray(0);
-    GLuint corpseAtlas=0; int corpseNCells=NVAR;
+    GLuint corpseAlb=0,corpseNrm=0;            // albedo (griglia colonna×outfit) + normal (riga)
+    int corpseNCols=NVAR*VAT_CORPSE_NPOSE, corpseNOut=VAT_CORPSE_NOUTFIT;
+    int normal_lit=0;   // toggle `P`: relighting per-pixel della sagoma (anti-piattume)
+    { const char*ne=getenv("FXLAB_NORMAL"); if(ne) normal_lit=atoi(ne); }
 
     // gib (box balistici), flat shader.
 #define GIBMAX 512
@@ -612,42 +616,69 @@ int main(int argc, char **argv){
     static float meshgib[256*9];
 
     // BAKE atlante sagome-cadavere (copia di vat_horde): ortho top-down dell'ultimo
-    // frame death di ogni variante in una cella RGBA cutout.
-    {   int W=CORPSE_CELL*corpseNCells, H=CORPSE_CELL;
-        glGenTextures(1,&corpseAtlas);glBindTexture(GL_TEXTURE_2D,corpseAtlas);
-        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,W,H,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
-        GLuint fbo,depth; glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,corpseAtlas,0);
-        glGenRenderbuffers(1,&depth);glBindRenderbuffer(GL_RENDERBUFFER,depth);
-        glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT24,W,H);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_RENDERBUFFER,depth);
-        glDisable(GL_BLEND); glClearColor(0,0,0,0); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+    // frame della posa di morte. ALBEDO = griglia (colonna=var*posa × riga=outfit);
+    // NORMAL = una sola riga (outfit-indipendente). Relight per-pixel anti-piattume
+    // in corpse_decal.fs. Colonna = v*NPOSE+p; posa 0='dying', 1='death' (devono
+    // combaciare con vat_layer_die, le due falle a terra differiscono di ~90°).
+    GLuint bakeProg=vg_shader("vat/vat.vs","vat/corpsebake.fs");
+    GLint uVPb=glGetUniformLocation(bakeProg,"uVP"),uTSb=glGetUniformLocation(bakeProg,"texSize"),
+          uRPFb=glGetUniformLocation(bakeProg,"rowsPerFrame"),uHasb=glGetUniformLocation(bakeProg,"uHasTex"),
+          uModeb=glGetUniformLocation(bakeProg,"uMode");
+    {   int Wc=CORPSE_CELL*corpseNCols, Hg=CORPSE_CELL*corpseNOut;   // albedo grid
+        GLuint *tex[2]={&corpseAlb,&corpseNrm}; int texH[2]={Hg,CORPSE_CELL};
+        for(int t=0;t<2;t++){
+            glGenTextures(1,tex[t]);glBindTexture(GL_TEXTURE_2D,*tex[t]);
+            glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,Wc,texH[t],0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        }
         mat4 cproj,cview,cvp; m_ortho(cproj,-CORPSE_HALF,CORPSE_HALF,-CORPSE_HALF,CORPSE_HALF,-10,10);
         float ceye[3]={0,5,0},cctr[3]={0,0,0},cup[3]={0,0,1};
         m_lookat(cview,ceye,cctr,cup); m_mul(cvp,cproj,cview);
-        glUseProgram(prog); glUniformMatrix4fv(uVP,1,GL_FALSE,cvp);
-        glUniform1i(glGetUniformLocation(prog,"texPos"),0);
-        glUniform1i(glGetUniformLocation(prog,"texNorm"),1);
-        glUniform1i(glGetUniformLocation(prog,"texDiff"),2);
-        for(int v=0;v<NVAR;v++){
-            const VatMeta *M=A[v].M; int fr=-1;
-            for(int ci=0;ci<M->nclips;ci++) if(!strncmp(M->clip[ci].name,"death",5)||!strncmp(M->clip[ci].name,"dying",5)){
-                fr=M->clip[ci].startFrame+M->clip[ci].numFrames-1; break; }
-            if(fr<0) fr=0;
-            float one[12]={0,0,0, 0, 1.0f, (float)fr,(float)fr,0, 0, 0.55f,0.5f,0.5f};
-            glViewport(v*CORPSE_CELL,0,CORPSE_CELL,CORPSE_CELL);
-            glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferSubData(GL_ARRAY_BUFFER,0,12*sizeof(float),one);
-            glUniform2f(uTS,(float)M->texW,(float)M->texH);glUniform1f(uRPF,(float)M->rowsPerFrame);
-            glUniform1i(uHas,A[v].hasTex);
-            glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,A[v].texP);
-            glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,A[v].texN);
-            glActiveTexture(GL_TEXTURE2);glBindTexture(GL_TEXTURE_2D,A[v].texD);
-            glBindVertexArray(A[v].vao);glDrawElementsInstanced(GL_TRIANGLES,A[v].ni,GL_UNSIGNED_SHORT,0,1);
+        glUseProgram(bakeProg); glUniformMatrix4fv(uVPb,1,GL_FALSE,cvp);
+        glUniform1i(glGetUniformLocation(bakeProg,"texPos"),0);
+        glUniform1i(glGetUniformLocation(bakeProg,"texNorm"),1);
+        glUniform1i(glGetUniformLocation(bakeProg,"texDiff"),2);
+        glDisable(GL_BLEND);
+        const char *POSE_PFX[VAT_CORPSE_NPOSE]={"dying","death"};
+        // due passate: 0 = ALBEDO (per outfit, su corpseAlb griglia), 1 = NORMAL
+        // (riga unica, su corpseNrm). Frame della posa = funzione di (v,p) soltanto.
+        for(int pass=0;pass<2;pass++){
+            GLuint dst = pass?corpseNrm:corpseAlb; int Hh = pass?CORPSE_CELL:Hg;
+            int nout = pass?1:corpseNOut;                 // normal: una sola riga
+            GLuint fbo,depth; glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,dst,0);
+            glGenRenderbuffers(1,&depth);glBindRenderbuffer(GL_RENDERBUFFER,depth);
+            glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT24,Wc,Hh);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_RENDERBUFFER,depth);
+            glClearColor(0,0,0,0); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+            glUniform1i(uModeb,pass);
+            for(int v=0;v<NVAR;v++){
+                const VatMeta *M=A[v].M;
+                glUniform2f(uTSb,(float)M->texW,(float)M->texH);glUniform1f(uRPFb,(float)M->rowsPerFrame);
+                glUniform1i(uHasb,A[v].hasTex);
+                glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,A[v].texP);
+                glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,A[v].texN);
+                glActiveTexture(GL_TEXTURE2);glBindTexture(GL_TEXTURE_2D,A[v].texD);
+                glBindVertexArray(A[v].vao);
+                for(int p=0;p<VAT_CORPSE_NPOSE;p++){
+                    int fr=-1;
+                    for(int ci=0;ci<M->nclips;ci++) if(!strncmp(M->clip[ci].name,POSE_PFX[p],5)){
+                        fr=M->clip[ci].startFrame+M->clip[ci].numFrames-1; break; }
+                    if(fr<0) fr=0;   // posa mancante (es. crawler): cella inerte
+                    int col=v*VAT_CORPSE_NPOSE+p;
+                    for(int o=0;o<nout;o++){
+                        // riga o = outfit base; bake con la versione INSANGUINATA (o+16)
+                        float one[12]={0,0,0, 0, 1.0f, (float)fr,(float)fr,0, (float)(o+16), 0.55f,0.5f,0.5f};
+                        glViewport(col*CORPSE_CELL,o*CORPSE_CELL,CORPSE_CELL,CORPSE_CELL);
+                        glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferSubData(GL_ARRAY_BUFFER,0,12*sizeof(float),one);
+                        glDrawElementsInstanced(GL_TRIANGLES,A[v].ni,GL_UNSIGNED_SHORT,0,1);
+                    }
+                }
+            }
+            glBindFramebuffer(GL_FRAMEBUFFER,0);
+            glDeleteRenderbuffers(1,&depth);glDeleteFramebuffers(1,&fbo);
         }
-        glBindFramebuffer(GL_FRAMEBUFFER,0);
-        glDeleteRenderbuffers(1,&depth);glDeleteFramebuffers(1,&fbo);
     }
 
     // UI immediate-mode (nuklear): pannello body/outfit/effetti.
@@ -695,6 +726,7 @@ int main(int argc, char **argv){
                 else if(k==SDLK_SPACE) paused=!paused;
                 else if(k==SDLK_C) cam_free=!cam_free;
                 else if(k==SDLK_T) useTex=!useTex;
+                else if(k==SDLK_P){ normal_lit=!normal_lit; printf("[fxlab] sagoma-cadavere: %s\n", normal_lit?"NORMAL (relight per-pixel)":"FLAT (bake congelato)"); }
                 else if(k==SDLK_LEFTBRACKET && liveSlot>=0){ cur_var=(cur_var+NVAR-1)%NVAR; vat_layer_set_variant(vl,liveSlot,cur_var); }
                 else if(k==SDLK_RIGHTBRACKET && liveSlot>=0){ cur_var=(cur_var+1)%NVAR; vat_layer_set_variant(vl,liveSlot,cur_var); }
                 else if(k==SDLK_O && liveSlot>=0) vat_layer_make_bloody(vl,liveSlot);
@@ -903,15 +935,19 @@ int main(int argc, char **argv){
 
         // sagome-cadavere persistenti (quad orientati)
         { int nq=vat_layer_fill_corpse_decals(vl,cdecraw,CORPSEDECMAX);
-          for(int i=0;i<nq;i++){ float *r=cdecraw+i*8,*o=cdecinst+i*6;
-              o[0]=r[0]; o[1]=ter_z(r[0],r[1])+0.05f; o[2]=r[1]; o[3]=r[2]; o[4]=CORPSE_HALF*r[3]; o[5]=r[4]; }
+          for(int i=0;i<nq;i++){ float *r=cdecraw+i*6,*o=cdecinst+i*7;
+              o[0]=r[0]; o[1]=ter_z(r[0],r[1])+0.05f; o[2]=r[1]; o[3]=r[2];   // pos+heading
+              o[4]=CORPSE_HALF*r[3]; o[5]=r[4]; o[6]=r[5]; }                   // half, colonna, outfit
           if(nq){ glUseProgram(cdProg);glUniformMatrix4fv(uVPcd,1,GL_FALSE,vp);
-              glUniform1f(uNCellsCd,(float)corpseNCells);
-              glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,corpseAtlas);
-              glUniform1i(glGetUniformLocation(cdProg,"uAtlas"),0);
+              glUniform1f(uNColsCd,(float)corpseNCols); glUniform1f(uNOutCd,(float)corpseNOut);
+              glUniform1i(uNormLitCd,normal_lit);
+              glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,corpseAlb);
+              glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,corpseNrm);
+              glUniform1i(glGetUniformLocation(cdProg,"uAlbedo"),0);
+              glUniform1i(glGetUniformLocation(cdProg,"uNormal"),1);
               glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);
               glBindVertexArray(cdVao);glBindBuffer(GL_ARRAY_BUFFER,cdInst);
-              glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)nq*6*sizeof(float),cdecinst);
+              glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)nq*7*sizeof(float),cdecinst);
               glDrawArraysInstanced(GL_TRIANGLES,0,6,nq);
               glDepthMask(GL_TRUE);glDisable(GL_BLEND); } }
 

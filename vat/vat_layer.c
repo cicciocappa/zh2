@@ -49,7 +49,7 @@ struct VatLayer {
        e poi tengono l'ultimo frame, indipendenti dall'agente sim gia' rimosso. */
     int dmax, dwrite;
     float *dx, *dy, *dz, *dhd, *dsc, *dph, *dttl;
-    unsigned char *dvar, *dclip, *dout, *dtr, *dtg, *dtb, *dactive;
+    unsigned char *dvar, *dclip, *dpose, *dout, *dtr, *dtg, *dtb, *dactive;
     /* pool gib (GFX §5): pezzi frattaglia balistici renderer-side alle morti
        esplosive (gib pesante). Solo visuali, niente collisione (come M3.2):
        parabola + spin, atterrano e si posano fino al TTL. z = altezza-sul-suolo
@@ -75,7 +75,7 @@ struct VatLayer {
        decedente svanisce, sotto/oltre la macchia. Stesso ring buffer cappato. */
     int qmax, qwrite, qcount;
     float *qx, *qy, *qhd, *qsz;
-    unsigned char *qvar, *qtr, *qtg, *qtb;
+    unsigned char *qvar, *qpose, *qout, *qtr, *qtg, *qtb;
 };
 
 static unsigned hashu(unsigned a){ a^=a>>16; a*=2654435761u; a^=a>>13; a*=2246822519u; a^=a>>16; return a; }
@@ -93,10 +93,12 @@ static void decal_add(VatLayer *vl, float x, float y, float size, unsigned seed)
    heading del corpo alla morte, raggio mondo (scala dell'agente), variante (->
    cella d'atlante) e tinta. */
 static void corpse_decal_add(VatLayer *vl, float x, float y, float hd, float sz,
-                             unsigned char var, unsigned char tr, unsigned char tg, unsigned char tb){
+                             unsigned char var, unsigned char pose, unsigned char outfit,
+                             unsigned char tr, unsigned char tg, unsigned char tb){
     int q=vl->qwrite; vl->qwrite=(q+1)%vl->qmax; if(vl->qcount<vl->qmax)vl->qcount++;
     vl->qx[q]=x; vl->qy[q]=y; vl->qhd[q]=hd; vl->qsz[q]=sz;
-    vl->qvar[q]=var; vl->qtr[q]=tr; vl->qtg[q]=tg; vl->qtb[q]=tb;
+    vl->qvar[q]=var; vl->qpose[q]=pose; vl->qout[q]=outfit;
+    vl->qtr[q]=tr; vl->qtg[q]=tg; vl->qtb[q]=tb;
 }
 
 static void load_meta(VatMeta *m, const char *path){
@@ -147,7 +149,7 @@ VatLayer *vat_layer_create_multi(const char *const *meta_paths, int nvariants, i
     int d=vl->dmax;
     vl->dx=calloc(d,4); vl->dy=calloc(d,4); vl->dz=calloc(d,4); vl->dhd=calloc(d,4);
     vl->dsc=calloc(d,4); vl->dph=calloc(d,4); vl->dttl=calloc(d,4);
-    vl->dvar=calloc(d,1); vl->dclip=calloc(d,1); vl->dout=calloc(d,1);
+    vl->dvar=calloc(d,1); vl->dclip=calloc(d,1); vl->dpose=calloc(d,1); vl->dout=calloc(d,1);
     vl->dtr=calloc(d,1); vl->dtg=calloc(d,1); vl->dtb=calloc(d,1); vl->dactive=calloc(d,1);
     /* pool gib: cap fisso (bursts piccoli, TTL breve) */
     vl->gmax=2048; vl->gwrite=0; int gp=vl->gmax;
@@ -171,7 +173,7 @@ VatLayer *vat_layer_create_multi(const char *const *meta_paths, int nvariants, i
        texturizzata è più "pesante" all'occhio di un disco, ne bastano meno. */
     vl->qmax=4096; vl->qwrite=0; vl->qcount=0; int qp=vl->qmax;
     vl->qx=calloc(qp,4); vl->qy=calloc(qp,4); vl->qhd=calloc(qp,4); vl->qsz=calloc(qp,4);
-    vl->qvar=calloc(qp,1); vl->qtr=calloc(qp,1); vl->qtg=calloc(qp,1); vl->qtb=calloc(qp,1);
+    vl->qvar=calloc(qp,1); vl->qpose=calloc(qp,1); vl->qout=calloc(qp,1); vl->qtr=calloc(qp,1); vl->qtg=calloc(qp,1); vl->qtb=calloc(qp,1);
     return vl;
 }
 VatLayer *vat_layer_create(const char *meta_path, int max_slots){
@@ -183,7 +185,7 @@ void vat_layer_destroy(VatLayer *vl){ if(!vl)return;
     free(vl->blending);free(vl->outfit);free(vl->var);free(vl->tr);free(vl->tg);free(vl->tb);
     free(vl->osT);free(vl->osPh);free(vl->osClip);free(vl->osF0);free(vl->osLen);free(vl->atk);
     free(vl->dx);free(vl->dy);free(vl->dz);free(vl->dhd);free(vl->dsc);free(vl->dph);free(vl->dttl);
-    free(vl->dvar);free(vl->dclip);free(vl->dout);free(vl->dtr);free(vl->dtg);free(vl->dtb);free(vl->dactive);
+    free(vl->dvar);free(vl->dclip);free(vl->dpose);free(vl->dout);free(vl->dtr);free(vl->dtg);free(vl->dtb);free(vl->dactive);
     free(vl->gx);free(vl->gy);free(vl->gz);free(vl->gvx);free(vl->gvy);free(vl->gvz);free(vl->gttl);
     free(vl->ghx);free(vl->ghy);free(vl->ghz);free(vl->gang);free(vl->gspin);
     free(vl->gr);free(vl->gg);free(vl->gb);free(vl->gact);
@@ -191,7 +193,7 @@ void vat_layer_destroy(VatLayer *vl){ if(!vl)return;
     free(vl->mgttl);free(vl->mgsc);free(vl->mgax);free(vl->mgay);free(vl->mgaz);
     free(vl->mgang);free(vl->mgspin);free(vl->mgmesh);free(vl->mgact);
     free(vl->kx);free(vl->ky);free(vl->ksz);free(vl->kr);free(vl->kg);free(vl->kb);
-    free(vl->qx);free(vl->qy);free(vl->qhd);free(vl->qsz);free(vl->qvar);free(vl->qtr);free(vl->qtg);free(vl->qtb);
+    free(vl->qx);free(vl->qy);free(vl->qhd);free(vl->qsz);free(vl->qvar);free(vl->qpose);free(vl->qout);free(vl->qtr);free(vl->qtg);free(vl->qtb);
     free(vl); }
 int vat_layer_nvariants(const VatLayer *vl){ return vl->nvar; }
 const VatMeta *vat_layer_meta_variant(const VatLayer *vl, int variant){
@@ -303,6 +305,7 @@ void vat_layer_die(VatLayer *vl, int slot, float x, float y, float radius){
     vl->dx[d]=x; vl->dy[d]=y; vl->dz[d]=0.0f; vl->dhd[d]=atan2f(vl->hx[slot],vl->hy[slot])+HEADING_OFFSET;
     vl->dsc[d]=inst_scale(vl,body,slot,radius); vl->dph[d]=0.0f;
     vl->dvar[d]=(unsigned char)body; vl->dclip[d]=(unsigned char)pick_clip(vl,body,slot,st);
+    vl->dpose[d]=(st==ST_DEATH)?1:0;   /* posa bakata: 0=dying, 1=death (sagoma deve combaciare) */
     vl->dout[d]=vl->outfit[slot]; vl->dtr[d]=vl->tr[slot]; vl->dtg[d]=vl->tg[slot]; vl->dtb[d]=vl->tb[slot];
     vl->dttl[d]=vl->m[body].clip[vl->dclip[d]].duration + DECEDENT_HOLD;
     vl->dactive[d]=1;
@@ -529,16 +532,17 @@ int vat_layer_fill_decals(VatLayer *vl, float *out, int max_out){
     return c;
 }
 
-/* Emette le sagome-cadavere attive: 8 float/decal (x, y, heading, size, variante,
-   r, g, b). Il chiamante somma terrain_z(x,y), orienta il quad per heading e
-   campiona la cella d'atlante della variante. Ritorna il numero. */
+/* Emette le sagome-cadavere attive: 6 float/decal (x, y, heading, size, colonna,
+   outfit). colonna = variante*VAT_CORPSE_NPOSE + posa (la posa di morte giocata);
+   outfit = riga d'atlante (0..31). Il chiamante somma terrain_z(x,y), orienta il
+   quad per heading e campiona la cella (colonna,outfit). Ritorna il numero. */
 int vat_layer_fill_corpse_decals(VatLayer *vl, float *out, int max_out){
     int c=0;
     for(int q=0; q<vl->qcount && c<max_out; q++){
-        float *o=out+c*8;
+        float *o=out+c*6;
         o[0]=vl->qx[q]; o[1]=vl->qy[q]; o[2]=vl->qhd[q]; o[3]=vl->qsz[q];
-        o[4]=(float)vl->qvar[q];
-        o[5]=vl->qtr[q]/255.0f; o[6]=vl->qtg[q]/255.0f; o[7]=vl->qtb[q]/255.0f;
+        o[4]=(float)(vl->qvar[q]*VAT_CORPSE_NPOSE + vl->qpose[q]);
+        o[5]=(float)(vl->qout[q] & 15);   /* riga = outfit BASE; il bake è già insanguinato */
         c++;
     }
     return c;
@@ -580,7 +584,7 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
         vl->dttl[d]-=dt; if(vl->dttl[d]<=0.0f){       /* fine vita: lascia macchia + sagoma e svanisce */
             decal_add(vl, vl->dx[d], vl->dy[d], vl->dsc[d]*0.55f, (unsigned)d*2654435761u);
             corpse_decal_add(vl, vl->dx[d], vl->dy[d], vl->dhd[d], vl->dsc[d],
-                             vl->dvar[d], vl->dtr[d], vl->dtg[d], vl->dtb[d]);
+                             vl->dvar[d], vl->dpose[d], vl->dout[d], vl->dtr[d], vl->dtg[d], vl->dtb[d]);
             vl->dactive[d]=0; continue; }
         const VatClip *c=&vl->m[vl->dvar[d]].clip[vl->dclip[d]];
         float dur=c->duration>0?c->duration:1.0f;
