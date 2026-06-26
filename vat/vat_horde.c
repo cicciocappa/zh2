@@ -1340,8 +1340,11 @@ int main(int argc, char **argv){
                   glBindVertexArray(GM[mid].vao);
                   glDrawElements(GL_TRIANGLES,GM[mid].nidx,GL_UNSIGNED_SHORT,0); } } }
 
-        // strutture (rebuild dallo stato vivo: celle crollate spariscono)
+        // strutture (rebuild dallo stato vivo: celle crollate spariscono). Il pass
+        // mesh-gib sopra lascia attivo mProg → ri-bind ESPLICITO di progFlat (questo
+        // blocco non lo settava, ereditava lo stato dai draw flat precedenti).
         if(gStructOn){ int sv=build_struct_mesh(g,sc.cell,stBuf);
+            glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
             if(sv){ glBindVertexArray(stVao);glBindBuffer(GL_ARRAY_BUFFER,stVbo);
                 glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)sv*9*sizeof(float),stBuf);
                 glDrawArrays(GL_TRIANGLES,0,sv); } }
