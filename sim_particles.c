@@ -32,6 +32,7 @@ static inline float rng_fsym(uint32_t *st) {          /* [-1,1) */
 #define PHI_INF 1e30f
 #define GRAV 9.81f            /* fake-z gravity (m/s^2) */
 #define CORPSE_CAP 4096       /* fixed corpse pool: a cost guarantee */
+#define DRAG_CAP   1024       /* fixed draggable pool (DRAG_DESIGN.md) */
 #define TAKEOFF_VZ 1.0f       /* vertical speed that flips SIMP_FLYING */
 #define COST_MIN (-0.8f)      /* user cost clamp: edges stay positive */
 #define COST_MAX 100.0f       /* and never competitive with WALL_ENTER */
@@ -131,6 +132,14 @@ struct SimP {
     float *corpse_height;  /* gw*gh, derived, refreshed end of step */
     bool   corpse_active;  /* any pile field still non-negligible */
 
+    /* draggable pool (DRAG_DESIGN.md): finite-mass discs with momentum + friction,
+     * shoved by the crowd and colliding with walls / each other. Ghosts like
+     * corpses but carrying their own velocity; persistent (no TTL). dq = position
+     * before this step's integration, for velocity recovery from the PBD shove. */
+    int   drag_count;
+    float *dpx, *dpy, *dvx, *dvy, *drad, *dinvm, *dqx, *dqy;
+    float drag_rmax;       /* largest draggable radius (collision-grid reach) */
+
     /* blood-fear "danger" field (CORPSE_DESIGN.md, 2026-06-25): the anti-choke
      * pivot. Deposited at death alongside the blood decal, decays with
      * danger_hl; the k_danger nav-cost term routes the horde AWAY from cells
@@ -158,6 +167,9 @@ struct SimP {
     int  *corder;          /* cap + CORPSE_CAP : entries sorted by cell */
     int   grid_total;      /* agent count at the last rebuild */
     int   grid_ghosts;     /* corpse ghosts binned at the last rebuild */
+    int   grid_drag0;      /* first draggable-ghost index (= count+corpse_count);
+                              ghosts in [count, grid_drag0) are corpses, the PBD
+                              skips only corpse-corpse pairs */
     bool  grid_stale;      /* set by kill/corpse_add: indices unreliable */
 
     /* M4: periodic cache-locality reorder. The collision grid is sparse and the
@@ -598,6 +610,7 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->params.k_danger  = 400.0f;
     s->params.danger_ref = 8.0f;
     s->params.danger_hl = 30.0f;
+    s->params.drag_damp = 4.0f;       /* draggable friction (DRAG_DESIGN.md) */
 
     const size_t n = (size_t)gw * gh;
     s->solid  = (uint8_t *)calloc(n, 1);
@@ -631,10 +644,10 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     { const char *e = getenv("SIMP_REORDER"); if (e) s->reorder_period = atoi(e); }
 
     s->cap = max_agents;
-    /* px/py/rad/invm/seed carry CORPSE_CAP extra slots: corpse ghosts are
-     * appended there before binning so the PBD kernel sees them as plain
-     * zero-inverse-mass discs (no special cases in the hot loop) */
-    const size_t capg = (size_t)max_agents + CORPSE_CAP;
+    /* px/py/rad/invm/seed carry CORPSE_CAP + DRAG_CAP extra slots: corpse and
+     * draggable ghosts are appended there before binning so the PBD kernel sees
+     * them as plain discs (no special cases in the hot loop) */
+    const size_t capg = (size_t)max_agents + CORPSE_CAP + DRAG_CAP;
     s->px = (float *)malloc(capg * sizeof(float));
     s->py = (float *)malloc(capg * sizeof(float));
     s->qx = (float *)malloc((size_t)max_agents * sizeof(float));
@@ -661,6 +674,16 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->cttl = (float *)malloc(CORPSE_CAP * sizeof(float));
     s->corpse_count = 0;
     s->corpse_rmax = 0.0f;
+    s->dpx   = (float *)malloc(DRAG_CAP * sizeof(float));
+    s->dpy   = (float *)malloc(DRAG_CAP * sizeof(float));
+    s->dvx   = (float *)calloc(DRAG_CAP, sizeof(float));
+    s->dvy   = (float *)calloc(DRAG_CAP, sizeof(float));
+    s->drad  = (float *)malloc(DRAG_CAP * sizeof(float));
+    s->dinvm = (float *)malloc(DRAG_CAP * sizeof(float));
+    s->dqx   = (float *)malloc(DRAG_CAP * sizeof(float));
+    s->dqy   = (float *)malloc(DRAG_CAP * sizeof(float));
+    s->drag_count = 0;
+    s->drag_rmax = 0.0f;
     s->corpse_mass   = (float *)calloc(n, sizeof(float));
     s->corpse_pack   = (float *)calloc(n, sizeof(float));
     s->corpse_height = (float *)calloc(n, sizeof(float));
@@ -696,6 +719,7 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->reorder_tmp  = malloc((size_t)max_agents * sizeof(float)); /* 4B covers every per-agent array */
     s->grid_total = 0;
     s->grid_ghosts = 0;
+    s->grid_drag0 = 0;
     s->grid_stale = false;
 
     s->rng = 0x9E3779B9u;
@@ -725,6 +749,8 @@ void simp_destroy(SimP *s) {
     free(s->aflags); free(s->stun); free(s->z); free(s->vz); free(s->landed);
     free(s->wall_pressure); free(s->wall_cell);
     free(s->cpx); free(s->cpy); free(s->crad); free(s->cttl);
+    free(s->dpx); free(s->dpy); free(s->dvx); free(s->dvy);
+    free(s->drad); free(s->dinvm); free(s->dqx); free(s->dqy);
     free(s->corpse_mass); free(s->corpse_pack); free(s->corpse_height); free(s->danger);
     free(s->slot_to_index); free(s->index_to_slot);
     free(s->slot_gen); free(s->slot_free);
@@ -927,6 +953,7 @@ bool simp_free_at(const SimP *s, float x, float y, float r) {
     if (!s->grid_stale && s->grid_total <= s->count) {
         float rmax = s->grid_rmax;
         if (s->corpse_rmax > rmax) rmax = s->corpse_rmax;
+        if (s->drag_rmax > rmax) rmax = s->drag_rmax;
         float reach = r + rmax;
         int x0 = clampi((int)((x - reach) * s->inv_ccell), 0, s->cgw - 1);
         int x1 = clampi((int)((x + reach) * s->inv_ccell), 0, s->cgw - 1);
@@ -956,6 +983,11 @@ bool simp_free_at(const SimP *s, float x, float y, float r) {
     for (int j = 0; j < s->corpse_count; j++) {
         float dx = s->cpx[j] - x, dy = s->cpy[j] - y;
         float rs = r + s->crad[j];
+        if (dx * dx + dy * dy < rs * rs) return false;
+    }
+    for (int j = 0; j < s->drag_count; j++) {
+        float dx = s->dpx[j] - x, dy = s->dpy[j] - y;
+        float rs = r + s->drad[j];
         if (dx * dx + dy * dy < rs * rs) return false;
     }
     return true;
@@ -1360,6 +1392,56 @@ void simp_corpse_clear(SimP *s, float x, float y, float radius) {
     s->cost_dirty = true;        /* force a flow recompute (the pile is gone) */
 }
 
+/* ------------------------------------------------------------- draggables */
+
+int simp_drag_add(SimP *s, float x, float y, float radius, float mass) {
+    if (s->drag_count >= DRAG_CAP) return -1;
+    int i = s->drag_count++;
+    s->dpx[i] = x; s->dpy[i] = y;
+    s->dvx[i] = 0.0f; s->dvy[i] = 0.0f;
+    s->drad[i] = radius;
+    /* mass in walker units, like simp_spawn_desc: invm = 1/(mass*r0^2) */
+    float r0 = s->params.radius;
+    float m = mass > 1e-3f ? mass : 1e-3f;
+    s->dinvm[i] = 1.0f / (m * r0 * r0);
+    if (radius > s->drag_rmax) s->drag_rmax = radius;
+    /* a draggable larger than the grid was sized for would slip through the
+     * 5-cell PBD pair search: coarsen the grid (same as simp_spawn_desc). */
+    if (radius > s->grid_rmax) {
+        s->grid_rmax = radius;
+        s->ccell = 2.0f * s->grid_rmax * 1.05f;
+        s->inv_ccell = 1.0f / s->ccell;
+        s->cgw = (int)ceilf(s->world_w * s->inv_ccell) + 1;
+        s->cgh = (int)ceilf(s->world_h * s->inv_ccell) + 1;
+        build_wall_near(s);
+    }
+    s->grid_stale = true;        /* binned as a ghost at the next rebuild */
+    return i;
+}
+
+void simp_drag_remove(SimP *s, int i) {
+    if (i < 0 || i >= s->drag_count) return;
+    int last = --s->drag_count;
+    s->dpx[i] = s->dpx[last]; s->dpy[i] = s->dpy[last];
+    s->dvx[i] = s->dvx[last]; s->dvy[i] = s->dvy[last];
+    s->drad[i] = s->drad[last]; s->dinvm[i] = s->dinvm[last];
+    if (s->drag_count == 0) s->drag_rmax = 0.0f;
+    s->grid_stale = true;
+}
+
+void simp_drag_clear(SimP *s) {
+    s->drag_count = 0;
+    s->drag_rmax = 0.0f;
+    s->grid_stale = true;
+}
+
+int simp_drag_count(const SimP *s) { return s->drag_count; }
+const float *simp_drag_px(const SimP *s)  { return s->dpx; }
+const float *simp_drag_py(const SimP *s)  { return s->dpy; }
+const float *simp_drag_vx(const SimP *s)  { return s->dvx; }
+const float *simp_drag_vy(const SimP *s)  { return s->dvy; }
+const float *simp_drag_rad(const SimP *s) { return s->drad; }
+
 /* --------------------------------------------------------------- stepping */
 
 /* Permute the count-byte-per-element array `arr` by perm (newpos -> oldindex)
@@ -1436,7 +1518,19 @@ static void rebuild_grid(SimP *s) {
         s->invm[g] = cinvm;
         s->seed[g] = 0xC0FF1234u + (uint32_t)j;   /* determinism (d==0 path) */
     }
-    const int total = s->count + ng;
+    /* draggable ghosts (DRAG_DESIGN.md): appended past the corpses, each with its
+     * own finite invm. grid_drag0 marks the boundary so the PBD skips only
+     * corpse-corpse pairs (draggable-draggable / draggable-corpse collide). */
+    const int nd = s->drag_count;
+    s->grid_drag0 = s->count + ng;
+    for (int j = 0; j < nd; j++) {
+        int g = s->grid_drag0 + j;
+        s->px[g] = s->dpx[j]; s->py[g] = s->dpy[j];
+        s->rad[g] = s->drad[j];
+        s->invm[g] = s->dinvm[j];
+        s->seed[g] = 0xDA661234u + (uint32_t)j;   /* determinism (d==0 path) */
+    }
+    const int total = s->count + ng + nd;
     const uint8_t *fl = s->aflags;
     memset(s->ccount, 0, (size_t)(nc + 1) * sizeof(int));
     for (int i = 0; i < total; i++) {
@@ -1456,7 +1550,7 @@ static void rebuild_grid(SimP *s) {
         s->corder[s->ccount[cy * s->cgw + cx]++] = i;
     }
     s->grid_total = s->count;
-    s->grid_ghosts = ng;
+    s->grid_ghosts = ng + nd;
     s->grid_stale = false;
 }
 
@@ -1498,10 +1592,16 @@ static inline void pbd_cell(SimP *s, int cx, int cy, double *dsum, long *dn) {
                 float d2 = dx * dx + dy * dy;
                 if (d2 >= rsum * rsum) continue;
                 float wj = s->invm[j];
-                /* corpse-corpse (both ghosts, index >= count): skip, or a pile
+                /* corpse-corpse (both in [count, grid_drag0)): skip, or a pile
                  * built from overlapping discs would blow itself apart. Also
-                 * covers both-immovable (invm 0) under the legacy infinite mass. */
-                if (i >= s->count && j >= s->count) continue;
+                 * covers both-immovable (invm 0) under the legacy infinite mass.
+                 * Draggable ghosts (>= grid_drag0) are NOT skipped: draggable-
+                 * draggable / draggable-corpse collide so an accosted row holds
+                 * (DRAG_DESIGN.md). With no draggables grid_drag0 = count+ng, so
+                 * this is bit-identical to the old "both ghosts" test. */
+                int ic = (i >= s->count && i < s->grid_drag0);
+                int jc = (j >= s->count && j < s->grid_drag0);
+                if (ic && jc) continue;
                 if (wi + wj <= 0.0f) continue;  /* both immovable (infinite) */
                 float d = sqrtf(d2);
                 float nxv, nyv;
@@ -1758,6 +1858,16 @@ int simp_step(SimP *s, float dt) {
         }
     }
 
+    /* 2b) integrate draggables in the pool (DRAG_DESIGN.md): they carry their own
+     * momentum, so advance the pool positions before rebuild_grid copies them
+     * into ghost slots. dq = pre-integration position, for velocity recovery from
+     * the PBD shove (3b'). No gravity (planar). */
+    for (int j = 0; j < s->drag_count; j++) {
+        s->dqx[j] = s->dpx[j]; s->dqy[j] = s->dpy[j];
+        s->dpx[j] += s->dvx[j] * dt;
+        s->dpy[j] += s->dvy[j] * dt;
+    }
+
     /* 3) constraints: agent-agent (PBD, parallel colored tiles) + walls
      * (parallel per-agent), iterated. The siege sensor (SIEGE_DESIGN.md) is
      * reset, then filled on the FINAL wall projection. */
@@ -1787,6 +1897,37 @@ int simp_step(SimP *s, float dt) {
             s->cpx[j] = s->px[s->count + j];
             s->cpy[j] = s->py[s->count + j];
         }
+
+    /* 3b') draggables (DRAG_DESIGN.md): push the ghosts out of walls (they MOVE,
+     * unlike corpses — serial, they are few), then recover velocity from the PBD
+     * shove (v = (pos - dq)/dt, clamped), brake it by friction, and persist
+     * position + velocity to the pool. Ghosts live at grid_drag0+j; do it before
+     * the drain changes `count`. */
+    if (s->drag_count > 0) {
+        const float inv_dt = 1.0f / dt, vc = P->v_clamp;
+        const float dragf = clampf(1.0f - P->drag_damp * dt, 0.0f, 1.0f);
+        for (int j = 0; j < s->drag_count; j++) {
+            int g = s->grid_drag0 + j;
+            float r = s->drad[j];
+            /* wall projection (same SDF push as job_wall) */
+            float d = simp_sample_sdf(s, s->px[g], s->py[g]);
+            if (d < r) {
+                float gx, gy;
+                sdf_grad(s, s->px[g], s->py[g], &gx, &gy);
+                float push = r - d;
+                s->px[g] += gx * push; s->py[g] += gy * push;
+            }
+            s->px[g] = clampf(s->px[g], r, s->world_w - r);
+            s->py[g] = clampf(s->py[g], r, s->world_h - r);
+            /* recover + friction */
+            float nvx = (s->px[g] - s->dqx[j]) * inv_dt;
+            float nvy = (s->py[g] - s->dqy[j]) * inv_dt;
+            float sp2 = nvx * nvx + nvy * nvy;
+            if (sp2 > vc * vc) { float k = vc / sqrtf(sp2); nvx *= k; nvy *= k; }
+            s->dvx[j] = nvx * dragf; s->dvy[j] = nvy * dragf;
+            s->dpx[j] = s->px[g]; s->dpy[j] = s->py[g];
+        }
+    }
 
     /* 4) recover effective velocity from positional change (parallel). Flyers
      * keep their integrated velocity (no projections; clamping would cut hard

@@ -172,6 +172,11 @@ typedef struct {
     float k_danger;     /* blood-fear->cost CEILING, wall-scale (0=off) default 400 */
     float danger_ref;   /* blood amount that saturates the term        default 8.0  */
     float danger_hl;    /* blood-fear half-life (s), match blood       default 30.0 */
+    /* draggable objects (DRAG_DESIGN.md): friction that brakes a shoved object's
+     * recovered velocity each step. Strong by default (a heavy object on asphalt
+     * loses its glide fast once the crowd stops pushing). factor = clamp(1 -
+     * drag_damp*dt, 0, 1). */
+    float drag_damp;    /* draggable friction (1/s)                    default 4.0  */
 } SimPParams;
 
 typedef struct SimP SimP;
@@ -400,6 +405,32 @@ const float *simp_corpse_height(const SimP *s);
  * a flow recompute. The game-side "no-corpse" defenses (CORPSE_DESIGN.md §6)
  * use this to keep a pile from climbing to wall height. */
 void  simp_corpse_clear(SimP *s, float x, float y, float radius);
+
+/* ---- draggable objects (DRAG_DESIGN.md) ---------------------------------- *
+ * Finite-mass discs with MOMENTUM and FRICTION: a dumpster/car the horde shoves
+ * out of the way, or — placed in a row — a breakable barricade the crowd
+ * overruns. The third PBD body category: ghosts like corpses (passive, no
+ * steering, no goal, no drain, no TTL, invisible to queries/impulses/nav), but
+ * unlike a corpse they carry their own velocity (integrated + recovered from the
+ * PBD shove each step, then braked by drag_damp) and COLLIDE with walls and with
+ * each other (so an accosted row resists as one body until the crowd squeezes
+ * through). Not in the nav grid: the flow does not see them, the horde presses
+ * straight in and breaks through (intended for barricades). For a route-blocking
+ * obstacle use a wall (simp_set_wall) instead. */
+
+/* Add a draggable disc at (x,y). mass in walker units (1.0 = a default agent;
+ * a heavy object ~10-40). Returns the pool index, or -1 if the pool is full.
+ * The index is NOT stable across simp_drag_remove (swap-and-pop) and there are
+ * no handles: game code keying data to a draggable should track its own map. */
+int   simp_drag_add(SimP *s, float x, float y, float radius, float mass);
+void  simp_drag_remove(SimP *s, int i);   /* swap-and-pop removal */
+void  simp_drag_clear(SimP *s);           /* empty the pool */
+int   simp_drag_count(const SimP *s);
+const float *simp_drag_px(const SimP *s);  /* positions, simp_drag_count() long */
+const float *simp_drag_py(const SimP *s);
+const float *simp_drag_vx(const SimP *s);  /* velocities (m/s) */
+const float *simp_drag_vy(const SimP *s);
+const float *simp_drag_rad(const SimP *s);
 
 /* ---- stepping ------------------------------------------------------------ */
 

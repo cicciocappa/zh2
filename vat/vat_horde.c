@@ -472,6 +472,37 @@ static int upload_prop_mesh(GLuint vbo, const Scene *sc, const PropCatalog *cat)
     free(m); return nv;
 }
 
+// --- mesh dei draggable (DRAG_DESIGN.md): un cassonetto (box) per oggetto,
+// orientato sulla velocità (così si LEGGE che scivola), seatato sul terreno.
+// Rebuilt OGNI frame dalle posizioni della sim (gli oggetti si muovono). Stesso
+// layout 9-float del flat shader. Restituisce il conteggio vertici.
+#define DRAG_VERTS_EACH 30           // prop_box: top(6) + 4 pareti(24)
+#define DRAG_DRAW_CAP   256          // cassonetti renderizzati al massimo
+static int build_drag_mesh(SimP *s, float *buf){
+    int nd=simp_drag_count(s); if(nd>DRAG_DRAW_CAP) nd=DRAG_DRAW_CAP;
+    const float *px=simp_drag_px(s),*py=simp_drag_py(s);
+    const float *vx=simp_drag_vx(s),*vy=simp_drag_vy(s),*rad=simp_drag_rad(s);
+    int c=0;
+    for(int i=0;i<nd;i++){
+        float r=rad[i];
+        float a=(vx[i]*vx[i]+vy[i]*vy[i]>1e-4f)?atan2f(vy[i],vx[i]):0.0f;
+        float ca=cosf(a),sa=sinf(a), zb=ter_z(px[i],py[i]);
+        // box-cassonetto: footprint ~raggio, alto ~2·raggio, acciaio sporco
+        c=prop_box(buf,c, px[i],py[i], 0,0, zb, r*0.95f, r*0.78f, r*2.0f, ca,sa,
+                   0.40f,0.43f,0.48f);
+    }
+    return c;
+}
+
+// piazza una BARRICATA: fila verticale di dischi draggable accostati attorno a
+// (x,y), lunga `len` m, ognuno massa `mass`. Per la verifica visiva (env/tasto).
+static void place_barricade(SimP *s, float x, float y, float len, float mass){
+    float r=0.6f, step=r*1.95f;                 // accostati (collidono tra loro)
+    int n=(int)(len/step); if(n<1) n=1;
+    float y0=y-len*0.5f;
+    for(int k=0;k<=n;k++) simp_drag_add(s, x, y0+k*step, r, mass);
+}
+
 // --- mesh statica delle torrette: un pilastrino per torretta (arancio = leggera,
 // rosso = pesante). Stesso layout 9-float del flat shader (pos, normal, color).
 // Rebuilt each frame into a caller buffer (sized def_turret_count*30 verts): a
@@ -771,6 +802,14 @@ int main(int argc, char **argv){
     SimP *s=NULL; DefGame *g=NULL; DefDirector *dir=NULL;
     if(build_world(&sc, vl, fillN, &spctx, &s, &g, &dir)!=0) return 1;
 
+    // barricata di draggable per la verifica visiva (DRAG_DESIGN.md):
+    // VAT_HORDE_BARRICADE="x,y,len[,mass]" piazza una fila accostata che l'orda sfonda.
+    if(getenv("VAT_HORDE_BARRICADE")){ float bx=0,by=0,bl=8.0f,bm=14.0f;
+        sscanf(getenv("VAT_HORDE_BARRICADE"),"%f,%f,%f,%f",&bx,&by,&bl,&bm);
+        place_barricade(s,bx,by,bl,bm);
+        printf("barricata: %d cassonetti @ (%.1f,%.1f) len %.1f massa %.1f\n",
+               simp_drag_count(s),(double)bx,(double)by,(double)bl,(double)bm); }
+
     const char *shot=getenv("VAT_HORDE_SHOT");
     int shot_frames = shot? atoi(shot):0; if(shot&&shot_frames<=0)shot_frames=600;
 
@@ -937,6 +976,15 @@ int main(int argc, char **argv){
     GLuint turVao,turVbo; glGenVertexArrays(1,&turVao);glBindVertexArray(turVao);
     glGenBuffers(1,&turVbo);glBindBuffer(GL_ARRAY_BUFFER,turVbo);
     glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)turCap*30*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
+    glBindVertexArray(0);
+    // draggable (DRAG_DESIGN.md): box per oggetto, rebuilt ogni frame, flat shader
+    float *dragBuf=malloc((size_t)DRAG_DRAW_CAP*DRAG_VERTS_EACH*9*sizeof(float));
+    GLuint dragVao,dragVbo; glGenVertexArrays(1,&dragVao);glBindVertexArray(dragVao);
+    glGenBuffers(1,&dragVbo);glBindBuffer(GL_ARRAY_BUFFER,dragVbo);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)DRAG_DRAW_CAP*DRAG_VERTS_EACH*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
     glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
     glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
     glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
@@ -1236,6 +1284,14 @@ int main(int argc, char **argv){
                 case SDLK_C:cam_free=!cam_free;break; case SDLK_T:useTex=!useTex;break;
                 case SDLK_SPACE:paused=!paused;break;
                 case SDLK_E:blast_x=cx;blast_y=cz;blast_pending=1;break;
+                case SDLK_B:{   // piazza un cassonetto draggable sotto il cursore
+                    float wx,wy;
+                    if(pick_y0(vp,mouse_px,mouse_py,SW,SH,&wx,&wy)){
+                        float m=(e.key.mod&SDL_KMOD_SHIFT)?30.0f:12.0f;
+                        if(simp_drag_add(s,wx,wy,0.6f,m)>=0)
+                            printf("cassonetto @ (%.1f,%.1f) massa %.0f (tot %d)\n",
+                                   (double)wx,(double)wy,(double)m,simp_drag_count(s)); }
+                    break; }
                 default: break;
             }
             switch(e.key.key){                                    // --- camera (sempre) ---
@@ -1321,6 +1377,11 @@ int main(int argc, char **argv){
         glBindVertexArray(obVao);glDrawArrays(GL_TRIANGLES,0,obNV);
         // prop di decoro (placeholder render-only, §10 stadio 5b)
         if(prNV){ glBindVertexArray(prVao);glDrawArrays(GL_TRIANGLES,0,prNV); }
+        // draggable (cassonetti/barricate, DRAG_DESIGN.md): rebuild ogni frame
+        { int dNV=build_drag_mesh(s,dragBuf);
+          if(dNV){ glBindVertexArray(dragVao);glBindBuffer(GL_ARRAY_BUFFER,dragVbo);
+              glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)dNV*9*sizeof(float),dragBuf);
+              glDrawArrays(GL_TRIANGLES,0,dNV); } }
         // torrette (pilastrini, rebuild ogni frame: le distrutte spariscono)
         { int turNV=build_turret_mesh(g,turBuf);
           if(turNV){ glBindVertexArray(turVao);glBindBuffer(GL_ARRAY_BUFFER,turVbo);
@@ -1524,7 +1585,7 @@ int main(int argc, char **argv){
             shot_done=1; running=0; }
         SDL_GL_SwapWindow(win);
     }
-    free(stBuf); free(turBuf); if(dir) def_director_destroy(dir);
+    free(stBuf); free(turBuf); free(dragBuf); if(dir) def_director_destroy(dir);
     if(gTerOn) terrain_free(&gTer);
     def_destroy(g); vat_layer_destroy(vl); simp_destroy(s); scene_free(&sc);
     SDL_GL_DestroyContext(ctx);SDL_DestroyWindow(win);SDL_Quit(); return 0;
