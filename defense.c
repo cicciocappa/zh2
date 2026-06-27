@@ -60,6 +60,7 @@ typedef struct {
     int   is_core;       /* collapse = loss, not reroute */
     int   is_turret;     /* backs a destructible turret (host skips wall mesh) */
     int   collapsed;
+    float debris_mass;   /* >0 = Hybrid: scatter draggable debris on collapse   */
 } DefStruct;
 
 struct DefGame {
@@ -310,7 +311,15 @@ int def_add_structure(DefGame *g, float hp_max, int is_core) {
     g->structs[id].is_core = is_core ? 1 : 0;
     g->structs[id].is_turret = 0;
     g->structs[id].collapsed = 0;
+    g->structs[id].debris_mass = 0.0f;
     return id;
+}
+
+/* Hybrid barricade (DRAG_DESIGN.md): make structure id scatter draggable DEBRIS
+ * on collapse instead of vanishing cleanly. mass <= 0 disables it. */
+void def_struct_set_debris(DefGame *g, int id, float mass) {
+    if (id < 0 || id >= g->nstructs) return;
+    g->structs[id].debris_mass = mass > 0.0f ? mass : 0.0f;
 }
 
 /* Destructible structures (player barricades / base) sit at the BARRICATA tier
@@ -357,17 +366,25 @@ int def_struct_is_turret(const DefGame *g, int id) {
 }
 
 /* HP hit zero: free the structure's cells and recommit the nav so the horde
- * reroutes. The CORE is special — it doesn't reroute, its fall is the loss. */
+ * reroutes. The CORE is special — it doesn't reroute, its fall is the loss.
+ * Hybrid (debris_mass > 0, DRAG_DESIGN.md): each freed cell drops a draggable
+ * rubble disc, so the nav reroutes but the breach stays physically cluttered —
+ * the horde shoves the debris out of the way. */
 static void collapse_structure(DefGame *g, int id) {
     DefStruct *st = &g->structs[id];
     st->collapsed = 1;
     st->hp = 0.0f;
     if (st->is_core) { g->lost = 1; return; }
     int gw = g->gw, n = gw * g->gh;
+    float cs = simp_cell_size(g->s), dmass = st->debris_mass;
     for (int c = 0; c < n; c++)
         if (g->cell_struct[c] == (int16_t)id) {
-            simp_set_wall(g->s, c % gw, c / gw, false);
+            int cx = c % gw, cy = c / gw;
+            simp_set_wall(g->s, cx, cy, false);
             g->cell_struct[c] = -1;
+            if (dmass > 0.0f)   /* ~cell-sized chunk: a single-layer rubble line the
+                                 * crowd can disperse, not an overlapping boulder plug */
+                simp_drag_add(g->s, (cx + 0.5f) * cs, (cy + 0.5f) * cs, cs * 0.55f, dmass);
         }
     simp_terrain_commit(g->s);
 }

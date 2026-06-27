@@ -556,10 +556,14 @@ static void build_base(DefGame *g, SimP *s, float cell, float bcx, float bcy){
 static void build_walls_from_scene(DefGame *g, SimP *s, const Scene *sc){
     int gw=simp_grid_w(s), gh=simp_grid_h(s);
     float base=simp_wall_base_cost();
+    // Hybrid (DRAG_DESIGN.md): VAT_HORDE_DEBRIS=mass -> i muri della scena al
+    // crollo si sbriciolano in detriti draggable che l'orda shova fuori dalla breccia.
+    float debris=getenv("VAT_HORDE_DEBRIS")?atof(getenv("VAT_HORDE_DEBRIS")):0.0f;
     int x0=gw, y0=gh, x1=-1, y1=-1;
     for(int k=0;k<sc->n_wall;k++){
         const SceneWall *w=&sc->wall[k];
         int id=def_add_structure(g, w->hp, 0);
+        if(debris>0.0f) def_struct_set_debris(g,id,debris);
         int cx0=(int)floorf(w->x/sc->cell), cy0=(int)floorf(w->y/sc->cell);
         int cx1=(int)floorf((w->x+w->w)/sc->cell-1e-4f), cy1=(int)floorf((w->y+w->h)/sc->cell-1e-4f);
         if(cx0<0)cx0=0; if(cy0<0)cy0=0; if(cx1>=gw)cx1=gw-1; if(cy1>=gh)cy1=gh-1;

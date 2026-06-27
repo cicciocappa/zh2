@@ -87,6 +87,13 @@ int   def_add_structure(DefGame *g, float hp_max, int is_core);
  * simp_terrain_commit yourself once after assigning all cells. */
 void  def_struct_cell(DefGame *g, int id, int cx, int cy);
 
+/* Hybrid barricade (DRAG_DESIGN.md): make structure id scatter DRAGGABLE DEBRIS
+ * on collapse instead of just vanishing — one finite-mass rubble disc per freed
+ * cell (mass in walker units), which the horde then shoves out of the breach.
+ * The nav still reroutes (cells freed), but the lane stays physically cluttered.
+ * mass <= 0 (default) = clean collapse. No-op for the core. Set before stepping. */
+void  def_struct_set_debris(DefGame *g, int id, float mass);
+
 int   def_struct_count(const DefGame *g);
 /* Structure id owning nav cell (cx,cy), or -1 (none / freed on collapse). Lets
  * the renderer rebuild the live structure mesh (collapsed cells disappear). */
