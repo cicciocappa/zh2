@@ -1,0 +1,66 @@
+# siege_m — primo livello "realistico" su taglia M (256x192 m, nav cell 0.5 =
+# 197k celle, dentro budget 60 Hz fino a ~40k agenti, vedi bench).
+# ASSEDIO A BASE CENTRALE: la base e' al centro, l'orda converge a 360 dai 4
+# bordi. Due cinte distruttibili + un ultimo bastione interno; 4 isolati di
+# palazzi negli angoli incanalano l'orda verso le facce cardinali.
+#
+# Banco sangue->paura: la BRECCIA in alto (varco aperto) e' l'invito naturale,
+# ma 3 torrette la insanguinano -> il costo danger sale -> l'orda scivola sulla
+# SEZIONE DEBOLE in basso (non difesa, hp/mult bassi). Il sangue decade, oscilla,
+# finche' la sezione debole cede e l'orda dilaga sull'ultimo bastione.
+#
+# Carica in vat_horde come arena_breach (host applica wall/turret in build_world).
+# VAT_HORDE_RATE>1 accelera lo spawn per vedere i crolli.
+cell 0.5
+world 256 192
+set k_density 2.5
+set k_jam 8
+
+# --- la base: goal centrale 16x16 (centroid 128,96) ---
+goal 120 88 16 16
+
+# === ULTIMO BASTIONE interno (box x[104..152] y[72..120], hp 800 mult 2.5) ===
+# sigillato attorno alla base: cede solo a tarda fase d'assedio.
+wall 800 2.5  104 72   48 2     # alto
+wall 800 2.5  104 118  48 2     # basso
+wall 800 2.5  104 74   2 44     # sinistro
+wall 800 2.5  150 74   2 44     # destro
+
+# === CINTA ESTERNA (box x[72..184] y[56..136]) ===
+# lato ALTO: BRECCIA centrale (gap x 120..136) tra due tratti forti
+wall 1500 3.0  72 56   48 2     # alto-sx (forte)
+wall 1500 3.0  136 56  48 2     # alto-dx (forte)
+# lato BASSO: SEZIONE DEBOLE centrale (hp 300 mult 0.5) tra due tratti forti
+wall 1500 3.0  72 134  44 2     # basso-sx (forte)
+wall 300  0.5  116 134 24 2     # CENTRO (DEBOLE, non difeso)
+wall 1500 3.0  140 134 44 2     # basso-dx (forte)
+# lati verticali: intatti forti
+wall 1500 3.0  72 58   2 76     # sinistro
+wall 1500 3.0  182 58  2 76     # destro
+
+# === torrette: blindano la BRECCIA in alto; nulla sulla sezione debole ===
+# turret: x y [range] [heavy] [hp]. HP per-torretta = robustezza vs la calca
+# (0/omesso = default host VAT_HORDE_TURRET_HP). Le leggere della breccia cedono
+# in fretta sotto l'orda; il bunker pesante centrale regge di piu'; quelle
+# dell'ultimo bastione sono le piu' tenaci.
+turret 122 64 28 0 250
+turret 134 64 28 0 250
+turret 128 60 30 1 600
+# ultimo bastione: 2 torrette di copertura ravvicinata, tenaci
+turret 112 80 22 0 400
+turret 144 80 22 0 400
+
+# === isolati di palazzi negli angoli (poly solid, h 6 m) ===
+# fuori dagli assi cardinali: lasciano i corridoi verso breccia e sezione debole,
+# costringono l'orda a stringersi sulle facce. (niente commenti inline sui poly:
+# i token extra verrebbero letti come vertici)
+poly 6.0 solid   36 36   60 36   60 60   36 60
+poly 6.0 solid  196 36  220 36  220 60  196 60
+poly 6.0 solid   36 132   60 132   60 156   36 156
+poly 6.0 solid  196 132  220 132  220 156  196 156
+
+# === spawn ai 4 bordi ===
+spawn 8   2    240 4      # alto
+spawn 8   186  240 4      # basso
+spawn 2   8    4   176    # sinistro
+spawn 250 8    4   176    # destro

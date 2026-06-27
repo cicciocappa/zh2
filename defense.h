@@ -96,6 +96,32 @@ float def_struct_hp_max(const DefGame *g, int id);
 int   def_struct_collapsed(const DefGame *g, int id);
 int   def_lost(const DefGame *g);                   /* 1 once the core has fallen */
 
+/* ---- destructible turrets (siege-able like structures) ----
+ *
+ * A bare turret is a point: not solid, not a goal, so the horde streams past it
+ * and never attacks. Binding it to a structure makes its nav cell a solid wall
+ * (barricade tier) the horde PRESSES to reach the goal beyond — the existing
+ * SIEGE sensor + per-slot attack timer chip it for free. On collapse the turret
+ * stops firing (def_update skips it) and the cell frees. Strategic consequence:
+ * a turret is attacked only when it sits ON the path to a goal (e.g. inside a
+ * breached ring) — exposed turrets in the open get flanked, not assaulted.
+ *
+ * Call simp_terrain_commit() once after binding all turrets (def_struct_cell
+ * raises the walls but batches the recommit, like the wall structures). Returns
+ * the backing structure id, or -1 (bad turret id / structure table full). */
+int   def_turret_make_destructible(DefGame *g, int tid, float hp);
+/* 1 if turret tid is destructible AND its structure has collapsed (renderer:
+ * stop drawing/firing it). 0 for a live or indestructible turret. */
+int   def_turret_disabled(const DefGame *g, int tid);
+/* 1 if structure id backs a turret — the renderer skips it in the wall mesh so
+ * the turret model isn't double-drawn as a steel box. */
+int   def_struct_is_turret(const DefGame *g, int id);
+/* Tune the contact siege of turrets (a turret has few attackers vs a long wall,
+ * so it needs higher per-agent DPS + wider reach to fall at a comparable rate).
+ * dps = HP/s per contacting agent; reach = m beyond the emplacement half-cell.
+ * <= 0 keeps the current value. HP stays the per-turret toughness knob. */
+void  def_set_turret_contact(DefGame *g, float dps, float reach);
+
 /* Advance all turrets: acquire/dwell or sweep, fire on cadence (only with a
  * target in arc+range), apply damage → wounds / death. Then process the siege
  * on all structures (per-slot attack timers, collapse → reroute / loss).

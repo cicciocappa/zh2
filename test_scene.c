@@ -35,6 +35,9 @@ static int roundtrip(void) {
     a.n_prop = 2;
     strcpy(a.prop[0].key, "bench"); a.prop[0].x = 7.5f; a.prop[0].y = 12.0f; a.prop[0].rot = 90.0f;
     strcpy(a.prop[1].key, "sign");  a.prop[1].x = 3.0f; a.prop[1].y = 4.5f;  a.prop[1].rot = 0.0f;
+    a.n_turret = 2;
+    a.turret[0] = (SceneTurret){ 12, 8, 25.0f, 0, 400.0f };  /* tough emplacement */
+    a.turret[1] = (SceneTurret){ 20, 6, 30.0f, 1, 0.0f };    /* hp omitted -> default */
 
     int ok = scene_save(TMP, &a) == 0;
     Scene b;
@@ -51,12 +54,16 @@ static int roundtrip(void) {
     ok = ok && !b.poly[1].solid && fabsf(b.poly[1].cost - 6.0f) < 1e-6f &&
          b.poly[1].nverts == 3;
     ok = ok && strcmp(b.terrain, "meshes/level1.glb") == 0;
+    ok = ok && b.n_turret == 2 &&
+         fabsf(b.turret[0].range - 25.0f) < 1e-6f && b.turret[0].heavy == 0 &&
+         fabsf(b.turret[0].hp - 400.0f) < 1e-6f &&
+         b.turret[1].heavy == 1 && fabsf(b.turret[1].hp - 0.0f) < 1e-6f;
     ok = ok && b.n_prop == 2 &&
          strcmp(b.prop[0].key, "bench") == 0 && fabsf(b.prop[0].x - 7.5f) < 1e-6f &&
          fabsf(b.prop[0].rot - 90.0f) < 1e-6f &&
          strcmp(b.prop[1].key, "sign") == 0 && fabsf(b.prop[1].y - 4.5f) < 1e-6f;
-    printf("roundtrip: %dx%d set=%d poly=%d goal=%d prop=%d | %s\n",
-           b.gw, b.gh, b.n_set, b.n_poly, b.n_goal, b.n_prop, ok ? "ok" : "BAD");
+    printf("roundtrip: %dx%d set=%d poly=%d goal=%d prop=%d turret=%d | %s\n",
+           b.gw, b.gh, b.n_set, b.n_poly, b.n_goal, b.n_prop, b.n_turret, ok ? "ok" : "BAD");
     scene_free(&a); scene_free(&b);
     return ok;
 }

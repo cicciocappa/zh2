@@ -474,10 +474,12 @@ static int upload_prop_mesh(GLuint vbo, const Scene *sc, const PropCatalog *cat)
 
 // --- mesh statica delle torrette: un pilastrino per torretta (arancio = leggera,
 // rosso = pesante). Stesso layout 9-float del flat shader (pos, normal, color).
-static float *build_turret_mesh(DefGame *g, int *out_nv){
-    int nt=def_turret_count(g); int nv=nt*30;
-    float *buf=malloc((size_t)nv*9*sizeof(float)); int c=0;
+// Rebuilt each frame into a caller buffer (sized def_turret_count*30 verts): a
+// turret sieged to collapse (def_turret_disabled) vanishes. Returns vertex count.
+static int build_turret_mesh(DefGame *g, float *buf){
+    int nt=def_turret_count(g); int c=0;
     for(int id=0;id<nt;id++){ DefTurret *t=def_turret(g,id);
+        if(def_turret_disabled(g,id)) continue;            // destroyed: gone
         float cx=t->x, cz=t->y, hw=0.32f;
         float zb=ter_z(cx,cz), h=zb+1.6f;            // seat on terrain
         float cr=0.95f, cg=t->heavy?0.20f:0.55f, cb=0.10f;
@@ -495,7 +497,7 @@ static float *build_turret_mesh(DefGame *g, int *out_nv){
 #undef VT
 #undef QT
     }
-    *out_nv=c; return buf;
+    return c;
 }
 
 // --- §7 structures & siege: groups of wall nav cells sharing one HP pool; the
@@ -547,6 +549,7 @@ static int build_struct_mesh(DefGame *g, float cell, float *buf){
     for(int cy=gStY0-1; cy<=gStY1+1; cy++)
     for(int cx=gStX0-1; cx<=gStX1+1; cx++){
         int id=def_cell_struct(g,cx,cy); if(id<0) continue;
+        if(def_struct_is_turret(g,id)) continue;          // drawn as a turret pillar
         float frac=def_struct_hp(g,id)/ (def_struct_hp_max(g,id)+1e-3f); // 1..0
         float t=0.35f+0.65f*frac;                         // darken with damage
         float cr,cg,cb;
@@ -613,6 +616,15 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     // a "designed" scene (walls and/or turrets authored) owns its turrets: place
     // ONLY the scene's (possibly zero). A legacy scene gets the demo auto-ring.
     int designed = (sc->n_wall>0 || sc->n_turret>0);
+    // destructible turrets: a turret becomes a 1-cell solid the horde sieges to
+    // reach the goal beyond -> exposed turrets in a breached ring get assaulted
+    // and silenced (def_turret_make_destructible). HP from env, 0 = indestructible.
+    float turret_hp = getenv("VAT_HORDE_TURRET_HP")?atof(getenv("VAT_HORDE_TURRET_HP")):250.0f;
+    // contact-siege tuning (def_set_turret_contact): 0 = keep default. Lets the
+    // turrets be made tougher/weaker to the swarm at a glance, HP unchanged.
+    def_set_turret_contact(g,
+        getenv("VAT_HORDE_TURRET_DPS")?atof(getenv("VAT_HORDE_TURRET_DPS")):0.0f,
+        getenv("VAT_HORDE_TURRET_REACH")?atof(getenv("VAT_HORDE_TURRET_REACH")):0.0f);
     if(designed){
         for(int k=0;k<sc->n_turret;k++){ const SceneTurret *st=&sc->turret[k];
             DefTurret t={0};
@@ -623,8 +635,13 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
             t.fire_period=st->heavy?0.5f:0.10f; t.damage=st->heavy?0.0f:55.0f;
             if(getenv("VAT_HORDE_TFIRE")) t.fire_period=atof(getenv("VAT_HORDE_TFIRE"));
             if(getenv("VAT_HORDE_TDMG"))  t.damage=atof(getenv("VAT_HORDE_TDMG"));
-            def_add_turret(g,&t); placed++; }
-        printf("torrette (scena): %d\n", placed);
+            int tid=def_add_turret(g,&t);
+            float hp = st->hp>0.0f ? st->hp : turret_hp;   // per-turret HP, else default
+            if(hp>0.0f) def_turret_make_destructible(g,tid,hp);
+            placed++; }
+        if(turret_hp>0.0f) simp_terrain_commit(s);        // commit turret walls
+        printf("torrette (scena): %d%s\n", placed,
+               turret_hp>0.0f?" (distruttibili)":"");
     } else {
         int nt_want=getenv("VAT_HORDE_TURRETS")?atoi(getenv("VAT_HORDE_TURRETS")):NT;
         if(nt_want>NT)nt_want=NT; if(nt_want<0)nt_want=0;
@@ -913,15 +930,17 @@ int main(int argc, char **argv){
     Editor ed; ed_init(&ed); ed.active = getenv("VAT_HORDE_EDIT")?1:0;
     if(gCatN>0){ snprintf(ed.prop_key,sizeof ed.prop_key,"%s",gCatalog.defs[0].key); }
 
-    // torrette (statico) + tracer di fuoco (dinamico), stesso flat shader.
-    int turNV=0; float *turMesh=build_turret_mesh(g,&turNV);
+    // torrette (DINAMICO: una distruttibile sparisce al collasso) + tracer di
+    // fuoco, stesso flat shader. Buffer riusato ogni frame da build_turret_mesh.
+    int turCap=def_turret_count(g); if(turCap<NT) turCap=NT;   // >= tracer's NT cap
+    float *turBuf=malloc((size_t)turCap*30*9*sizeof(float));
     GLuint turVao,turVbo; glGenVertexArrays(1,&turVao);glBindVertexArray(turVao);
     glGenBuffers(1,&turVbo);glBindBuffer(GL_ARRAY_BUFFER,turVbo);
-    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)turNV*9*sizeof(float),turMesh,GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)turCap*30*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
     glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
     glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
     glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
-    glBindVertexArray(0); free(turMesh);
+    glBindVertexArray(0);
     GLuint trVao,trVbo; glGenVertexArrays(1,&trVao);glBindVertexArray(trVao);
     glGenBuffers(1,&trVbo);glBindBuffer(GL_ARRAY_BUFFER,trVbo);
     glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)NT*2*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
@@ -1302,8 +1321,11 @@ int main(int argc, char **argv){
         glBindVertexArray(obVao);glDrawArrays(GL_TRIANGLES,0,obNV);
         // prop di decoro (placeholder render-only, §10 stadio 5b)
         if(prNV){ glBindVertexArray(prVao);glDrawArrays(GL_TRIANGLES,0,prNV); }
-        // torrette (pilastrini statici)
-        glBindVertexArray(turVao);glDrawArrays(GL_TRIANGLES,0,turNV);
+        // torrette (pilastrini, rebuild ogni frame: le distrutte spariscono)
+        { int turNV=build_turret_mesh(g,turBuf);
+          if(turNV){ glBindVertexArray(turVao);glBindBuffer(GL_ARRAY_BUFFER,turVbo);
+              glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)turNV*9*sizeof(float),turBuf);
+              glDrawArrays(GL_TRIANGLES,0,turNV); } }
         // tracer di fuoco (linee, una per torretta che ha sparato di recente)
         { float trbuf[NT*2*9]; int tc=0;
           for(int id=0;id<def_turret_count(g);id++){ DefTurret *t=def_turret(g,id);
@@ -1502,7 +1524,7 @@ int main(int argc, char **argv){
             shot_done=1; running=0; }
         SDL_GL_SwapWindow(win);
     }
-    free(stBuf); if(dir) def_director_destroy(dir);
+    free(stBuf); free(turBuf); if(dir) def_director_destroy(dir);
     if(gTerOn) terrain_free(&gTer);
     def_destroy(g); vat_layer_destroy(vl); simp_destroy(s); scene_free(&sc);
     SDL_GL_DestroyContext(ctx);SDL_DestroyWindow(win);SDL_Quit(); return 0;

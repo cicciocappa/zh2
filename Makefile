@@ -36,7 +36,7 @@ all: test_particles test_impulse test_dormant test_stun test_handles test_query 
      test_corpse_pile \
      test_types test_density_route test_jam test_blood_fear test_scene test_siege test_turret \
      test_defense test_base test_director test_terrain test_pick test_editor \
-     test_breakthrough test_props test_vat_layer
+     test_breakthrough test_props test_vat_layer test_turret_siege
 
 test_particles: test_particles.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_particles.c sim_particles.c $(LDLIBS)
@@ -88,6 +88,9 @@ test_turret: test_turret.c sim_particles.c sim_particles.h
 
 test_defense: test_defense.c defense.c sim_particles.c defense.h sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_defense.c defense.c sim_particles.c $(LDLIBS)
+
+test_turret_siege: test_turret_siege.c defense.c sim_particles.c defense.h sim_particles.h
+	$(CC) $(CFLAGS) -o $@ test_turret_siege.c defense.c sim_particles.c $(LDLIBS)
 
 test_base: test_base.c defense.c sim_particles.c defense.h sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_base.c defense.c sim_particles.c $(LDLIBS)

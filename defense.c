@@ -43,10 +43,22 @@ static const DefEnemyDef ENEMY[BT_COUNT] = {
 #define ATTACK_DAMAGE 5.0f   /* HP per hit                                   */
 #define ATTACK_MIN_P  0.006f /* min wall_pressure to count as a real attack
                               * (gates out the tangential grazing leak)      */
+/* Turrets are attacked by CONTACT (the swarm mobbing the emplacement), not by
+ * flow-pressure: a lone turret cell in the open is flanked (the flow routes
+ * around it, into_wall ~ 0), so the wall-siege never fires on it. Instead every
+ * agent within contact range of the emplacement chips it — a turret swarmed by
+ * the horde falls; one with no neighbours is safe. A turret has FEW attackers
+ * (small perimeter) vs a long wall's many, so to fall at a comparable rate it
+ * needs a higher per-agent DPS and a wider reach (gathers the mob, not just the
+ * touching ring). Both tunable per-game (def_set_turret_contact) so HP stays the
+ * per-turret toughness knob. */
+#define TURRET_DPS_DEF    12.0f  /* HP/s per contacting agent (wall attacker = 6.25) */
+#define TURRET_REACH_DEF  0.90f  /* agent reach beyond the emplacement half-cell (m) */
 
 typedef struct {
     float hp, hp_max;
     int   is_core;       /* collapse = loss, not reroute */
+    int   is_turret;     /* backs a destructible turret (host skips wall mesh) */
     int   collapsed;
 } DefStruct;
 
@@ -58,6 +70,7 @@ struct DefGame {
     uint8_t *wound;     /* per slot: DefWound */
     uint8_t *hheat;     /* per slot: heavy hits absorbed (tank) */
     DefTurret turrets[TURRET_CAP];
+    int   turret_struct[TURRET_CAP];  /* backing structure id, -1 = indestructible */
     int   nturrets;
     int  *qbuf;         /* cap: acquire buffer (query_circle) */
     int   raybuf[MAXPIERCE];
@@ -72,6 +85,8 @@ struct DefGame {
     float    *atk_timer;    /* per slot: siege attack accumulator            */
     int       lost;         /* 1 once the core has collapsed                 */
     int       budget;       /* §8 placement budget                          */
+    float     turret_dps;   /* contact damage HP/s per agent (def_set_turret_contact) */
+    float     turret_reach; /* contact range beyond the emplacement half-cell (m)     */
     DefEventFn ev_cb; void *ev_user;  /* render hook: hit/death events        */
 };
 
@@ -94,6 +109,8 @@ DefGame *def_create(SimP *s, int cap) {
     g->cell_struct = (int16_t *)malloc(ncell * sizeof(int16_t));
     for (size_t k = 0; k < ncell; k++) g->cell_struct[k] = -1;
     g->atk_timer = (float *)calloc((size_t)cap, sizeof(float));
+    g->turret_dps = TURRET_DPS_DEF;
+    g->turret_reach = TURRET_REACH_DEF;
     return g;
 }
 
@@ -121,6 +138,7 @@ int def_add_turret(DefGame *g, const DefTurret *t) {
     if (g->nturrets >= TURRET_CAP) return -1;
     int id = g->nturrets++;
     g->turrets[id] = *t;
+    g->turret_struct[id] = -1;          /* indestructible until bound */
     if (g->turrets[id].sweep_dir == 0) g->turrets[id].sweep_dir = 1;
     return id;
 }
@@ -262,9 +280,20 @@ static void turret_update(DefGame *g, DefTurret *t, float dt) {
     t->tracer_ttl = TRACER_TTL;
 
     int max_out = t->piercing ? MAXPIERCE : 1;
-    int nh = simp_query_ray(s, t->x, t->y, cosf(t->ang), sinf(t->ang),
-                            t->range, g->raybuf, g->rayt, max_out, 0);
-    t->last_t = (nh > 0) ? g->rayt[0] : t->range;
+    /* muzzle: a DESTRUCTIBLE turret sits on its own solid cell, so a ray fired
+     * from the centre self-blocks (wall_ray_t returns 0 for a muzzle in a wall).
+     * Start it just beyond the emplacement cell. Free-standing turrets keep the
+     * centre origin -> identical behaviour (test_defense baseline). */
+    float mdx = cosf(t->ang), mdy = sinf(t->ang);
+    float ox = t->x, oy = t->y, moff = 0.0f;
+    float cs = simp_cell_size(s);
+    if (simp_is_wall(s, (int)(t->x / cs), (int)(t->y / cs))) {
+        moff = cs * 1.2f;                      /* clears the 1-cell emplacement */
+        ox += mdx * moff; oy += mdy * moff;
+    }
+    int nh = simp_query_ray(s, ox, oy, mdx, mdy,
+                            t->range - moff, g->raybuf, g->rayt, max_out, 0);
+    t->last_t = (nh > 0) ? g->rayt[0] + moff : t->range;
     if (nh <= 0) return;
     int count = t->piercing ? nh : 1;
     /* convert ALL hits to handles before any kill (M3.4 index trap) */
@@ -279,6 +308,7 @@ int def_add_structure(DefGame *g, float hp_max, int is_core) {
     int id = g->nstructs++;
     g->structs[id].hp = g->structs[id].hp_max = hp_max;
     g->structs[id].is_core = is_core ? 1 : 0;
+    g->structs[id].is_turret = 0;
     g->structs[id].collapsed = 0;
     return id;
 }
@@ -298,6 +328,32 @@ void def_struct_cell(DefGame *g, int id, int cx, int cy) {
     g->cell_struct[cy * g->gw + cx] = (int16_t)id;
     simp_set_wall(g->s, cx, cy, true);
     simp_set_wall_cost(g->s, cx, cy, BARRICADE_WALL_TIER * simp_wall_base_cost());
+}
+
+/* Bind turret tid to a fresh 1-cell structure at its (x,y): the cell turns into
+ * a barricade-tier solid wall (def_struct_cell), so the horde presses it and the
+ * siege chips its hp. Renderer reads def_turret_disabled / def_struct_is_turret.
+ * Caller commits the nav (simp_terrain_commit) once after binding all turrets. */
+int def_turret_make_destructible(DefGame *g, int tid, float hp) {
+    if (tid < 0 || tid >= g->nturrets) return -1;
+    int sid = def_add_structure(g, hp, 0);
+    if (sid < 0) return -1;
+    g->structs[sid].is_turret = 1;
+    float cs = simp_cell_size(g->s);
+    int cx = (int)(g->turrets[tid].x / cs), cy = (int)(g->turrets[tid].y / cs);
+    def_struct_cell(g, sid, cx, cy);    /* raises the wall (batched commit) */
+    g->turret_struct[tid] = sid;
+    return sid;
+}
+
+int def_turret_disabled(const DefGame *g, int tid) {
+    if (tid < 0 || tid >= g->nturrets) return 0;
+    int sid = g->turret_struct[tid];
+    return (sid >= 0) ? g->structs[sid].collapsed : 0;
+}
+
+int def_struct_is_turret(const DefGame *g, int id) {
+    return (id >= 0 && id < g->nstructs) ? g->structs[id].is_turret : 0;
 }
 
 /* HP hit zero: free the structure's cells and recommit the nav so the horde
@@ -328,6 +384,7 @@ static void siege_update(DefGame *g, float dt) {
         float p = wp[i];
         int cell = (p > 0.0f) ? wc[i] : -1;
         int sid  = (cell >= 0) ? g->cell_struct[cell] : -1;
+        if (sid >= 0 && g->structs[sid].is_turret) sid = -1;   /* turrets: contact, not flow */
         if (p >= ATTACK_MIN_P && sid >= 0 && !g->structs[sid].collapsed) {
             g->atk_timer[slot] += dt;
             if (g->atk_timer[slot] >= ATTACK_PERIOD) {
@@ -339,6 +396,30 @@ static void siege_update(DefGame *g, float dt) {
             g->atk_timer[slot] = 0.0f;   /* not really pressing: no free hit */
         }
     }
+}
+
+/* Contact siege of destructible turrets: every agent mobbing the emplacement
+ * (centre within half-cell + reach) chips the turret at TURRET_DPS, regardless
+ * of where it's heading. This is what lets a flanked turret in the open fall
+ * when swarmed (the wall-siege, gated on flow INTO the cell, never fires there).
+ * Only the count matters, so the M3.4 index trap (no kills here) doesn't bite. */
+static void turret_contact_update(DefGame *g, float dt) {
+    SimP *s = g->s;
+    float rad = simp_cell_size(s) * 0.5f + g->turret_reach;
+    for (int id = 0; id < g->nturrets; id++) {
+        int sid = g->turret_struct[id];
+        if (sid < 0 || g->structs[sid].collapsed) continue;
+        int n = simp_query_circle(s, g->turrets[id].x, g->turrets[id].y,
+                                  rad, g->qbuf, g->cap, 0);
+        if (n <= 0) continue;
+        g->structs[sid].hp -= (float)n * g->turret_dps * dt;
+        if (g->structs[sid].hp <= 0.0f) collapse_structure(g, sid);
+    }
+}
+
+void def_set_turret_contact(DefGame *g, float dps, float reach) {
+    if (dps   > 0.0f) g->turret_dps   = dps;
+    if (reach > 0.0f) g->turret_reach = reach;
 }
 
 int   def_struct_count(const DefGame *g) { return g->nstructs; }
@@ -358,9 +439,12 @@ int def_struct_collapsed(const DefGame *g, int id) {
 int def_lost(const DefGame *g) { return g->lost; }
 
 void def_update(DefGame *g, float dt) {
-    for (int id = 0; id < g->nturrets; id++)
+    for (int id = 0; id < g->nturrets; id++) {
+        if (def_turret_disabled(g, id)) { g->turrets[id].fired = 0; continue; }
         turret_update(g, &g->turrets[id], dt);
+    }
     siege_update(g, dt);
+    turret_contact_update(g, dt);
 }
 
 /* ---- §8 placement budget ---- */
