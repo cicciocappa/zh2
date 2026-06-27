@@ -189,6 +189,41 @@ static int test_wall_collision(void) {
     return ok;
 }
 
+/* ---- 6) explosion scatters a barricade --------------------------------- */
+/* A blast kicks draggables radially, scaled by 1/mass: a light piece flies far,
+ * a heavy one barely budges; both then coast to rest (friction). */
+static int test_impulse(void) {
+    SimP *s = simp_create(GW, GH, CELL, 100);
+    for (int x = 0; x < GW; x++) { simp_set_wall(s, x, 0, true); simp_set_wall(s, x, GH - 1, true); }
+    for (int y = 0; y < GH; y++) { simp_set_wall(s, 0, y, true); simp_set_wall(s, GW - 1, y, true); }
+    simp_terrain_commit(s);
+    /* light and heavy at equal distance on opposite sides of the blast center */
+    int li = simp_drag_add(s, 37.0f, 30.0f, 0.5f, 5.0f);
+    int hi = simp_drag_add(s, 43.0f, 30.0f, 0.5f, 40.0f);
+    float lx0 = simp_drag_px(s)[li], hx0 = simp_drag_px(s)[hi];
+
+    simp_apply_impulse(s, 40.0f, 30.0f, 8.0f, 30.0f);     /* explosion at center */
+    float lv_peak = 0.0f;
+    for (int step = 0; step < 200; step++) {
+        simp_step(s, DT);
+        check_finite(s);
+        float v = hypotf(simp_drag_vx(s)[li], simp_drag_vy(s)[li]);
+        if (step < 60 && v > lv_peak) lv_peak = v;
+    }
+    float l_disp = fabsf(simp_drag_px(s)[li] - lx0);
+    float h_disp = fabsf(simp_drag_px(s)[hi] - hx0);
+    float l_vlate = hypotf(simp_drag_vx(s)[li], simp_drag_vy(s)[li]);
+    simp_destroy(s);
+
+    int ok_kick  = lv_peak > 0.5f;                 /* the blast launched it     */
+    int ok_mass  = l_disp > 2.0f * h_disp && h_disp >= 0.0f;  /* light flies far  */
+    int ok_rest  = l_vlate < 0.05f;                /* friction brought it to rest */
+    printf("6) impulse: light disp=%.3f m (peak %.2f m/s) heavy disp=%.3f m late_v=%.4f"
+           "  kick=%d mass=%d rest=%d\n",
+           l_disp, lv_peak, h_disp, l_vlate, ok_kick, ok_mass, ok_rest);
+    return ok_kick && ok_mass && ok_rest;
+}
+
 int main(void) {
     int ok1 = test_momentum();
 
@@ -216,7 +251,9 @@ int main(void) {
     printf("5) determinism=%d (checksum %.3f vs %.3f, drain %d vs %d)  no-nan=%d\n",
            ok_det, cs_a, cs_b, dr_heavy, dr_heavy2, ok_nan);
 
-    int ok = ok1 && ok2 && ok3 && ok4 && ok_det && ok_nan;
+    int ok6 = test_impulse();
+
+    int ok = ok1 && ok2 && ok3 && ok4 && ok6 && ok_det && ok_nan;
     printf(ok ? "PASS\n" : "FAIL\n");
     return ok ? 0 : 1;
 }

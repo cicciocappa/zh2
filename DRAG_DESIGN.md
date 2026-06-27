@@ -76,12 +76,17 @@ non ci sono draggable; con 0 draggable il comportamento è bit-identico a prima)
 forte: il default `drag_damp` è alto perché un oggetto pesante su asfalto perde
 in fretta la velocità residua quando la folla smette di spingere. Manopola.
 
+**Impulsi (esplosioni):** `simp_apply_impulse[_ex]` shova anche i draggable —
+un kick radiale al pool (`dvx/dvy`) con falloff lineare, **scalato per 1/massa**
+(detriti leggeri volano, il cassonetto pesante si sposta poco) → una granata
+scompagina la barricata. Planare (i draggable non hanno asse z: niente lancio
+verticale, `up_ratio` ignorato per loro). Il kick atterra su `dvx/dvy` e
+l'integrazione (§2.1) lo porta come momento, esattamente come per gli agenti.
+Brute-force sul pool (è piccolo), indipendente dalla griglia.
+
 **Limite v1 annotato:** la wall projection draggable gira una volta a fine PBD
 (non dentro ogni iterazione). Per oggetti pesanti e lenti è invisibile; un
-agente schiacciato tra draggable e muro si risolve allo step dopo. Gli impulsi
-(esplosioni) per ora NON toccano i draggable (come i cadaveri) — far saltare in
-aria una barricata con una granata è un'estensione ovvia (applicare `dv` ai
-ghost), rimandata.
+agente schiacciato tra draggable e muro si risolve allo step dopo.
 
 ---
 
@@ -156,6 +161,8 @@ Manopola attrito globale: `SimPParams.drag_damp` (s⁻¹).
    pezzi e passa); pezzi leggeri sfondano prima dei pesanti.
 4. **Collisione muro**: un draggable spinto contro un muro non lo penetra (sdf≥−ε).
 5. **Determinismo** (due run identiche bit-a-bit) **+ no-NaN/out-of-bounds**.
+6. **Esplosione**: un blast scaglia i draggable per 1/massa (leggero vola lontano,
+   pesante quasi fermo) e poi si fermano per attrito.
 
 ---
 

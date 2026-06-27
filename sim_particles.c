@@ -1260,8 +1260,34 @@ static inline void impulse_one(SimP *s, int i, float x, float y,
     }
 }
 
+/* draggables (DRAG_DESIGN.md): a radial velocity kick scaled by 1/mass — light
+ * debris flies, a heavy dumpster barely budges — so a blast scompagina a
+ * barricade. Planar (no vertical launch: draggables have no z axis). The kick
+ * lands on dvx/dvy; integration (step 2b) then carries it as momentum, exactly
+ * as the agent path turns an impulse into motion. The pool is small, so a plain
+ * brute-force scan is fine and independent of the collision grid. */
+static void drag_impulse(SimP *s, float x, float y, float radius, float strength) {
+    const float r0 = s->params.radius;
+    for (int j = 0; j < s->drag_count; j++) {
+        float dx = s->dpx[j] - x, dy = s->dpy[j] - y;
+        float d2 = dx * dx + dy * dy;
+        if (d2 > radius * radius) continue;
+        float d = sqrtf(d2);
+        float fall = 1.0f - d / radius;
+        float nx, ny;
+        if (d > 1e-5f) { nx = dx / d; ny = dy / d; }
+        else { nx = rng_fsym(&s->rng); ny = rng_fsym(&s->rng);
+               float l = sqrtf(nx*nx + ny*ny) + 1e-6f; nx /= l; ny /= l; }
+        /* dinvm = 1/(mass*r0^2); *r0^2 leaves 1/mass, so mass=1 matches an agent */
+        float k = strength * fall * (s->dinvm[j] * r0 * r0);
+        s->dvx[j] += k * nx;
+        s->dvy[j] += k * ny;
+    }
+}
+
 void simp_apply_impulse_ex(SimP *s, float x, float y, float radius,
                            float strength, float up_ratio) {
+    if (s->drag_count > 0) drag_impulse(s, x, y, radius, strength);
     /* gridded path skips corpse ghosts and (being unbinned) the already-
      * airborne; the brute-force fallback boosts the airborne too */
     if (!s->grid_stale && s->grid_total == s->count) {
