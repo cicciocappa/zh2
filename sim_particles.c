@@ -33,6 +33,7 @@ static inline float rng_fsym(uint32_t *st) {          /* [-1,1) */
 #define GRAV 9.81f            /* fake-z gravity (m/s^2) */
 #define CORPSE_CAP 4096       /* fixed corpse pool: a cost guarantee */
 #define DRAG_CAP   1024       /* fixed draggable pool (DRAG_DESIGN.md) */
+#define LINK_CAP   512        /* fixed car-joint pool (DRAG_DESIGN.md §8) */
 #define TAKEOFF_VZ 1.0f       /* vertical speed that flips SIMP_FLYING */
 #define COST_MIN (-0.8f)      /* user cost clamp: edges stay positive */
 #define COST_MAX 100.0f       /* and never competitive with WALL_ENTER */
@@ -139,6 +140,13 @@ struct SimP {
     int   drag_count;
     float *dpx, *dpy, *dvx, *dvy, *drad, *dinvm, *dqx, *dqy;
     float drag_rmax;       /* largest draggable radius (collision-grid reach) */
+
+    /* car joints (DRAG_DESIGN.md §8): rigid distance "rods" between two draggable
+     * discs. a/b are draggable pool indices (non-stable); rest = fixed length.
+     * Solved after the agent PBD on the ghost positions, mass-weighted. */
+    int   link_count;
+    int   *link_a, *link_b;
+    float *link_rest;
 
     /* blood-fear "danger" field (CORPSE_DESIGN.md, 2026-06-25): the anti-choke
      * pivot. Deposited at death alongside the blood decal, decays with
@@ -611,6 +619,7 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->params.danger_ref = 8.0f;
     s->params.danger_hl = 30.0f;
     s->params.drag_damp = 4.0f;       /* draggable friction (DRAG_DESIGN.md) */
+    s->params.link_iters = 4;         /* car-joint rigidity (DRAG_DESIGN.md §8) */
 
     const size_t n = (size_t)gw * gh;
     s->solid  = (uint8_t *)calloc(n, 1);
@@ -684,6 +693,10 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->dqy   = (float *)malloc(DRAG_CAP * sizeof(float));
     s->drag_count = 0;
     s->drag_rmax = 0.0f;
+    s->link_a    = (int *)malloc(LINK_CAP * sizeof(int));
+    s->link_b    = (int *)malloc(LINK_CAP * sizeof(int));
+    s->link_rest = (float *)malloc(LINK_CAP * sizeof(float));
+    s->link_count = 0;
     s->corpse_mass   = (float *)calloc(n, sizeof(float));
     s->corpse_pack   = (float *)calloc(n, sizeof(float));
     s->corpse_height = (float *)calloc(n, sizeof(float));
@@ -751,6 +764,7 @@ void simp_destroy(SimP *s) {
     free(s->cpx); free(s->cpy); free(s->crad); free(s->cttl);
     free(s->dpx); free(s->dpy); free(s->dvx); free(s->dvy);
     free(s->drad); free(s->dinvm); free(s->dqx); free(s->dqy);
+    free(s->link_a); free(s->link_b); free(s->link_rest);
     free(s->corpse_mass); free(s->corpse_pack); free(s->corpse_height); free(s->danger);
     free(s->slot_to_index); free(s->index_to_slot);
     free(s->slot_gen); free(s->slot_free);
@@ -1451,6 +1465,21 @@ void simp_drag_remove(SimP *s, int i) {
     s->dpx[i] = s->dpx[last]; s->dpy[i] = s->dpy[last];
     s->dvx[i] = s->dvx[last]; s->dvy[i] = s->dvy[last];
     s->drad[i] = s->drad[last]; s->dinvm[i] = s->dinvm[last];
+    /* fix up car joints (DRAG_DESIGN.md §8.4): the swap-and-pop moved disc `last`
+     * into slot `i`. Drop any link to the removed disc i (a car that lost a wheel
+     * is no longer a car), then remap any link to the swapped-in disc last -> i. */
+    for (int k = 0; k < s->link_count; ) {
+        if (s->link_a[k] == i || s->link_b[k] == i) {
+            int ll = --s->link_count;          /* swap-and-pop the orphan link */
+            s->link_a[k] = s->link_a[ll];
+            s->link_b[k] = s->link_b[ll];
+            s->link_rest[k] = s->link_rest[ll];
+            continue;                          /* re-test the link now at k */
+        }
+        if (s->link_a[k] == last) s->link_a[k] = i;
+        if (s->link_b[k] == last) s->link_b[k] = i;
+        k++;
+    }
     if (s->drag_count == 0) s->drag_rmax = 0.0f;
     s->grid_stale = true;
 }
@@ -1458,6 +1487,7 @@ void simp_drag_remove(SimP *s, int i) {
 void simp_drag_clear(SimP *s) {
     s->drag_count = 0;
     s->drag_rmax = 0.0f;
+    s->link_count = 0;
     s->grid_stale = true;
 }
 
@@ -1467,6 +1497,36 @@ const float *simp_drag_py(const SimP *s)  { return s->dpy; }
 const float *simp_drag_vx(const SimP *s)  { return s->dvx; }
 const float *simp_drag_vy(const SimP *s)  { return s->dvy; }
 const float *simp_drag_rad(const SimP *s) { return s->drad; }
+
+/* car joints (DRAG_DESIGN.md §8): link two draggables with a rigid rod whose
+ * rest length is their current center distance. */
+int simp_drag_link(SimP *s, int i, int j) {
+    if (s->link_count >= LINK_CAP) return -1;
+    if (i < 0 || i >= s->drag_count || j < 0 || j >= s->drag_count || i == j)
+        return -1;
+    int k = s->link_count++;
+    s->link_a[k] = i; s->link_b[k] = j;
+    float dx = s->dpx[i] - s->dpx[j], dy = s->dpy[i] - s->dpy[j];
+    s->link_rest[k] = sqrtf(dx * dx + dy * dy);
+    return k;
+}
+
+void simp_drag_unlink(SimP *s, int k) {
+    if (k < 0 || k >= s->link_count) return;
+    int last = --s->link_count;
+    s->link_a[k] = s->link_a[last];
+    s->link_b[k] = s->link_b[last];
+    s->link_rest[k] = s->link_rest[last];
+}
+
+int simp_drag_link_count(const SimP *s) { return s->link_count; }
+
+bool simp_drag_link_pair(const SimP *s, int k, int *a, int *b) {
+    if (k < 0 || k >= s->link_count) return false;
+    if (a) *a = s->link_a[k];
+    if (b) *b = s->link_b[k];
+    return true;
+}
 
 /* --------------------------------------------------------------- stepping */
 
@@ -1925,17 +1985,18 @@ int simp_step(SimP *s, float dt) {
         }
 
     /* 3b') draggables (DRAG_DESIGN.md): push the ghosts out of walls (they MOVE,
-     * unlike corpses — serial, they are few), then recover velocity from the PBD
-     * shove (v = (pos - dq)/dt, clamped), brake it by friction, and persist
-     * position + velocity to the pool. Ghosts live at grid_drag0+j; do it before
-     * the drain changes `count`. */
+     * unlike corpses — serial, they are few), solve the car-joint rods (§8), then
+     * recover velocity from the PBD shove (v = (pos - dq)/dt, clamped), brake it
+     * by friction, and persist position + velocity to the pool. Ghosts live at
+     * grid_drag0+j; do it before the drain changes `count`. */
     if (s->drag_count > 0) {
         const float inv_dt = 1.0f / dt, vc = P->v_clamp;
         const float dragf = clampf(1.0f - P->drag_damp * dt, 0.0f, 1.0f);
+        const int g0 = s->grid_drag0;
+        /* wall projection (same SDF push as job_wall) */
         for (int j = 0; j < s->drag_count; j++) {
-            int g = s->grid_drag0 + j;
+            int g = g0 + j;
             float r = s->drad[j];
-            /* wall projection (same SDF push as job_wall) */
             float d = simp_sample_sdf(s, s->px[g], s->py[g]);
             if (d < r) {
                 float gx, gy;
@@ -1945,7 +2006,29 @@ int simp_step(SimP *s, float dt) {
             }
             s->px[g] = clampf(s->px[g], r, s->world_w - r);
             s->py[g] = clampf(s->py[g], r, s->world_h - r);
-            /* recover + friction */
+        }
+        /* car joints (§8.3): rigid distance constraint between the two discs,
+         * mass-weighted, on the ghost positions. Iterated so heavy cars stay
+         * rigid under crowd pressure. Solved AFTER wall projection on the same
+         * ghost coords, so the velocity recovery below picks up both. */
+        for (int it = 0; it < P->link_iters; it++) {
+            for (int k = 0; k < s->link_count; k++) {
+                int a = g0 + s->link_a[k], b = g0 + s->link_b[k];
+                float dx = s->px[b] - s->px[a], dy = s->py[b] - s->py[a];
+                float d = sqrtf(dx * dx + dy * dy);
+                if (d < 1e-6f) continue;            /* coincident: no direction */
+                float wa = s->dinvm[s->link_a[k]], wb = s->dinvm[s->link_b[k]];
+                float ws = wa + wb;
+                if (ws <= 0.0f) continue;
+                float c = (d - s->link_rest[k]) / d; /* (error/d) folds in 1/|n| */
+                float sa = c * wa / ws, sb = c * wb / ws;
+                s->px[a] += dx * sa; s->py[a] += dy * sa;
+                s->px[b] -= dx * sb; s->py[b] -= dy * sb;
+            }
+        }
+        /* recover + friction + writeback */
+        for (int j = 0; j < s->drag_count; j++) {
+            int g = g0 + j;
             float nvx = (s->px[g] - s->dqx[j]) * inv_dt;
             float nvy = (s->py[g] - s->dqy[j]) * inv_dt;
             float sp2 = nvx * nvx + nvy * nvy;

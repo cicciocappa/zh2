@@ -23,6 +23,10 @@ test_editor
 test_breakthrough
 test_props
 test_vat_layer
+test_drag
+test_hybrid
+test_turret_siege
+test_car
 bench_sim
 *.o
 frames/

@@ -177,6 +177,11 @@ typedef struct {
      * loses its glide fast once the crowd stops pushing). factor = clamp(1 -
      * drag_damp*dt, 0, 1). */
     float drag_damp;    /* draggable friction (1/s)                    default 4.0  */
+    /* car joints (DRAG_DESIGN.md §8): a car is two draggable discs held by a
+     * rigid distance constraint (a "rod"). Solved after the agent PBD on the
+     * ghost positions, mass-weighted, this many iterations: heavy cars deform
+     * little, so a few passes keep the rod rigid under crowd pressure. */
+    int   link_iters;   /* rigid-rod constraint iterations             default 4    */
 } SimPParams;
 
 typedef struct SimP SimP;
@@ -431,6 +436,25 @@ const float *simp_drag_py(const SimP *s);
 const float *simp_drag_vx(const SimP *s);  /* velocities (m/s) */
 const float *simp_drag_vy(const SimP *s);
 const float *simp_drag_rad(const SimP *s);
+
+/* Car joints (DRAG_DESIGN.md §8): link two existing draggables with a rigid rod.
+ * rest length = the CURRENT distance between their centers at call time, so place
+ * the two discs at the wanted spacing first. A car is two discs + one link; the
+ * crowd shoving one disc makes the car pivot (rotation emerges, no angular state).
+ * Returns the link index (NOT stable across simp_drag_unlink), or -1 if the link
+ * pool is full or an index is out of range.
+ *
+ * Index stability: links store draggable POOL INDICES (the non-stable kind).
+ * simp_drag_remove fixes the link pool automatically — it drops any link that
+ * referenced the removed disc and remaps links pointing at the swapped-in disc.
+ * Game code keying data to a car should still track its own (disc,disc) pair. */
+int   simp_drag_link(SimP *s, int i, int j);
+void  simp_drag_unlink(SimP *s, int k);    /* swap-and-pop removal */
+int   simp_drag_link_count(const SimP *s);
+/* Read the two draggable pool indices joined by link k (for rendering a car
+ * oriented along its rod). Returns false if k is out of range. The indices are
+ * valid only until the next draggable add/remove (read links fresh each frame). */
+bool  simp_drag_link_pair(const SimP *s, int k, int *a, int *b);
 
 /* ---- stepping ------------------------------------------------------------ */
 

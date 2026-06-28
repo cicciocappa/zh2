@@ -171,6 +171,152 @@ Manopola attrito globale: `SimPParams.drag_damp` (s⁻¹).
 I ghost draggable sono dischi normali nel counting-sort + PBD a tile colorati: la
 mappa a compute shader non cambia. Integrazione/recupero/attrito sono per-oggetto
 (pochi) e per ora seriali; banalmente parallelizzabili se mai i draggable
-diventassero migliaia. Niente joint, niente rotazione, niente momento angolare:
-un oggetto = un disco (un'auto "vera" rigida sarebbe il salto di costo descritto
-nella nota di fattibilità, fuori scope).
+diventassero migliaia. Nessun momento angolare esplicito: un draggable singolo è
+un disco. L'**auto** (§8) è due dischi tenuti da un vincolo di distanza rigido —
+la rotazione emerge senza stato angolare, restando dentro lo stesso PBD.
+
+---
+
+## 8. Auto = due dischi + giunto rigido (STATO: IMPLEMENTATO, 2026-06-28; `test_car` PASS)
+
+L'oggetto lungo (auto, furgone, bara, tronco) non si modella bene con un disco:
+un cerchio non blocca un corridoio come fa una carcassa di traverso. La soluzione
+leggera concordata è **due draggable collegati da un vincolo di distanza rigido**
+(un "rod"). Niente corpo rigido vero, niente momento angolare, niente rotazione
+esplicita: la rotazione **emerge** perché i due dischi possono avere velocità
+diverse (la folla che preme una sola estremità fa perno sull'altra).
+
+### 8.1. Verifica prestazioni (FATTA — via libera)
+
+Prima di progettare ho misurato il costo marginale dei dischi draggable in scena
+affollata (~10k agenti, multi-thread, scena tipo `test_particles`):
+
+```
+baseline (0 draggable)   3.4 ms/step
++60 dischi  (~30 auto)    dentro il rumore (~0.3–0.6 ms)
++200 dischi (~100 auto)   ~0.4 ms
++1000 dischi (~500 auto)  ~0.5–1.0 ms
+```
+
+Il disco è la parte cara (collisione PBD nella griglia); il giunto è O(n_auto)
+per iterazione, **più economico** della collisione disco-disco → i numeri sopra
+sono un tetto superiore al costo per-auto. A conteggio realistico (decine di auto
+per mappa) il costo è **gratis**, perso nella varianza di scheduling. Motivo
+strutturale: i draggable sono già ghost che il kernel PBD processa senza casi
+speciali; le auto raddoppiano i dischi (2 per auto) e aggiungono un constraint
+seriale su un pool piccolo — niente tocca il loop caldo sui 13k–100k agenti.
+**Conclusione: le prestazioni non sono un ostacolo.**
+
+### 8.2. Pool di giunti
+
+Un terzo pool nel core, accanto a quello dei draggable:
+
+```c
+typedef struct { int a, b; float rest; } DragLink;  /* indici draggable + lunghezza a riposo */
+```
+
+`a`/`b` sono **indici nel pool draggable** (gli stessi non-stabili di §5).
+`rest` = distanza voluta tra i due centri, fissata alla creazione (tipicamente
+`r_a + r_b` per dischi a contatto, o più per un'auto allungata). Pool fisso come
+gli altri (`LINK_CAP`).
+
+### 8.3. Risoluzione: vincolo di distanza rigido nel writeback draggable
+
+Il giunto si risolve in fase **3b'** di `simp_step` (la sezione draggable già
+esistente: dopo le iterazioni PBD agente, prima del recupero velocità). Per ogni
+giunto, proiezione PBD di distanza pesata per massa inversa, sulle posizioni
+**ghost** `s->px/py[grid_drag0 + a|b]` (quelle appena spinte dalla folla):
+
+```
+d   = |p_b − p_a|                      (con epsilon-guard se d≈0)
+n   = (p_b − p_a) / d
+C   = d − rest                          (errore, +=troppo lontani, −=troppo vicini)
+wa  = dinvm[a], wb = dinvm[b]           (massa inversa per-oggetto, già nel pool)
+p_a += n · C · wa/(wa+wb)
+p_b −= n · C · wb/(wa+wb)
+```
+
+Iterato `link_iters` volte (default ~4): le auto sono pesanti (massa 20–40), la
+folla le deforma poco, quindi poche iterazioni bastano a tenere il rod **rigido**
+sotto pressione. Si risolve DOPO la collisione PBD e DOPO la wall projection
+draggable, sulle stesse posizioni ghost, così il recupero velocità (`v=(p−dq)/dt`
+già in 3b') raccoglie sia lo shove della folla sia la correzione del rod →
+momento e rotazione emergono dal solito recupero, zero codice nuovo nella fisica
+di velocità/attrito. (Ordine: PBD agente → wall draggable → **giunti** → recupero
++ attrito + writeback nel pool.)
+
+**Limite v1 annotato** (coerente con la wall projection §2): giunti e collisione
+non sono co-iterati nello stesso loop. Un'auto schiacciata tra folla densa e muro
+può vedere il rod allungarsi di qualche cm per uno step prima di richiudersi.
+Invisibile ai pesi previsti; se servisse, si alza `link_iters` o si intreccia il
+giunto nelle iterazioni PBD (salto di complessità, fuori v1).
+
+### 8.4. Stabilità degli indici (l'unico punto delicato)
+
+I draggable usano swap-and-pop (`simp_drag_remove`, §5): rimuovere il disco `i`
+ci sposta dentro l'ultimo. I giunti puntano per indice → vanno **riparati**:
+
+- ogni giunto che referenzia `i` (il disco rimosso) viene **invalidato** (l'auto
+  perde una ruota = non è più un'auto): swap-and-pop anche del giunto;
+- ogni giunto che referenzia `last` (l'indice che si è spostato in `i`) viene
+  **rimappato** `last → i`.
+
+Alternativa scartata per v1: handle stabili sui draggable (come gli agenti M3.1).
+Sovradimensionato — i draggable sono decine e il gioco già tiene una sua mappa
+(§5). Il fixup lineare su `LINK_CAP` piccolo basta.
+
+### 8.5. API
+
+```c
+/* Collega due draggable esistenti con un rod rigido; rest = distanza CORRENTE
+ * tra i loro centri al momento della chiamata. Ritorna l'indice del giunto
+ * (non stabile) o -1 se il pool è pieno o un indice non è valido. */
+int  simp_drag_link(SimP *s, int i, int j);
+void simp_drag_unlink(SimP *s, int k);     /* swap-and-pop del giunto k */
+int  simp_drag_link_count(const SimP *s);
+```
+
+Helper lato gioco (NON nel core, vive nell'host che conosce "l'auto"):
+crea due `simp_drag_add` alla distanza voluta + un `simp_drag_link`, salva la
+coppia di indici draggable nella sua mappa per HP / render / despawn. Il render
+di un'auto pesca i due centri (`simp_drag_px/py`) e disegna lo sprite orientato
+lungo `p_b − p_a` (l'orientamento è gratis dai due dischi). `simp_drag_remove` di
+un disco-auto va sempre accompagnato dall'unlink lato gioco (o ci pensa il fixup
+§8.4 invalidando il giunto orfano).
+
+### 8.6. Verifica (`test_car.c`, deterministico headless)
+
+1. **Rigidità**: auto a riposo, folla che preme un'estremità → distanza tra i due
+   centri resta ≈ `rest` (entro qualche % a `link_iters` default) per tutto il
+   transitorio; nessuna deriva cumulativa.
+2. **Rotazione emergente**: folla che colpisce UN solo disco → l'auto **ruota**
+   (l'angolo di `p_b−p_a` cambia di >X°) facendo perno, senza momento angolare
+   esplicito.
+3. **Scivola come barricata**: un'auto di traverso in un corridoio blocca più di
+   un disco singolo della stessa massa (drain minore); sotto folla sufficiente
+   viene comunque shovata via (drain > 0) → reroute.
+4. **Collisione muro**: auto spinta contro un muro, nessuno dei due centri penetra
+   (sdf ≥ −ε per entrambi); il rod non "spara" il disco oltre il muro.
+5. **Esplosione**: un blast scaglia l'auto (entrambi i dischi via `1/massa`) e il
+   rod la tiene insieme mentre vola; poi attrito → ferma.
+6. **Fixup indici**: aggiungi/collega/rimuovi draggable in ordine vario, verifica
+   che ogni giunto vivo punti ai dischi giusti e nessuno punti a un indice morto
+   (contro shadow map brute force, come `test_handles`).
+7. **Determinismo** (re-run bit-identico) **+ no NaN / out-of-bounds**.
+
+**Verificato** (`test_car`, 2026-06-28): rod **bit-rigido** sotto piena pressione
+della folla (deviazione worst 0.0% in tutti gli scenari — `link_iters` 4 basta e
+avanza per masse 5–20); rotazione emergente 90°→54° con folla su un solo disco
+(perno, zero stato angolare); penetrazione muro worst 1.7 cm (rientro lo step
+dopo, dentro il limite v1); blast → 1.07 m di volo, rod intatto, fermo per
+attrito (0.002 m/s); fixup indici consistente con shadow model su 400 op miste;
+determinismo bit-identico. Zero NaN. `test_drag`/`test_hybrid` invariati (nessuna
+regressione sui draggable singoli).
+
+### 8.7. Mappatura compute
+
+Il giunto è una proiezione per coppia su un pool piccolo: un dispatch seriale (o
+un kernel a una thread per giunto) accanto al recupero draggable. I dischi-auto
+restano dischi normali nel counting-sort + PBD a tile: la mappa GPU del loop
+caldo non cambia. Resta valido il vincolo "niente stato che rompa il dispatch a
+compute" del core.

@@ -10,7 +10,8 @@
 //            EDIT = Alt+LMB pan / Alt+RMB rotate / rotellina zoom (LMB/RMB nudi
 //            = strumenti). Tastiera (sempre): frecce=pan/rotate  +/-=zoom.
 // Controlli PLAY: C=camera  T=texture  SPACE=pausa  E=esplosione (lancio al
-//            centro camera)  F11=fullscreen  TAB=modalità EDIT  ESC=esci
+//            centro camera)  B=cassonetto (Shift=pesante)  N=auto (2 dischi+rod,
+//            Shift=pesante)  F11=fullscreen  TAB=modalità EDIT  ESC=esci
 // EDITOR (EDITOR_DESIGN fase 1, VAT_HORDE_EDIT=1 per partire in EDIT): la sim si
 //   ferma, si edita la Scene e si re-instanzia tornando in PLAY (TAB). Tool a
 //   tastiera: 1=select 2=goal 3=spawn 4=cost 5=pack 6=muro 7=costo-poly 8=prop.
@@ -22,6 +23,7 @@
 // Headless:  VAT_HORDE_SHOT="<frames>" ./vat_horde  -> simula N step, screenshot
 //            vat_horde_shot.bmp, esce. VAT_HORDE_CAM="cx,cz,hh,az,el".
 //            VAT_HORDE_BLAST="frame,x,y[,str,up]" -> esplosione+lancio a quel frame.
+//            VAT_HORDE_BARRICADE="x,y,len[,mass]" / VAT_HORDE_CAR="x,y[,len][,mass]".
 #include <SDL3/SDL.h>
 #include "vat_gl.h"
 #include "vat_layer.h"
@@ -479,19 +481,48 @@ static int upload_prop_mesh(GLuint vbo, const Scene *sc, const PropCatalog *cat)
 #define DRAG_VERTS_EACH 30           // prop_box: top(6) + 4 pareti(24)
 #define DRAG_DRAW_CAP   256          // cassonetti renderizzati al massimo
 static int build_drag_mesh(SimP *s, float *buf){
-    int nd=simp_drag_count(s); if(nd>DRAG_DRAW_CAP) nd=DRAG_DRAW_CAP;
+    int ndtot=simp_drag_count(s);
+    int nd=ndtot; if(nd>DRAG_DRAW_CAP) nd=DRAG_DRAW_CAP;
     const float *px=simp_drag_px(s),*py=simp_drag_py(s);
     const float *vx=simp_drag_vx(s),*vy=simp_drag_vy(s),*rad=simp_drag_rad(s);
-    int c=0;
+    // auto = due dischi tenuti da un rod (DRAG_DESIGN.md §8): disegna UNA scatola
+    // allungata orientata sul rod, e marca i due dischi per non ridisegnarli come
+    // cassonetti singoli sotto. Letti freschi ogni frame (indici non stabili).
+    static uint8_t is_car[DRAG_DRAW_CAP];
+    for(int i=0;i<nd;i++) is_car[i]=0;
+    int c=0, nl=simp_drag_link_count(s);
+    for(int k=0;k<nl;k++){
+        int a,b; if(!simp_drag_link_pair(s,k,&a,&b)) continue;
+        if(a>=nd||b>=nd) continue;
+        is_car[a]=is_car[b]=1;
+        float mx=0.5f*(px[a]+px[b]), my=0.5f*(py[a]+py[b]);
+        float dx=px[b]-px[a], dy=py[b]-py[a];
+        float len=sqrtf(dx*dx+dy*dy);
+        float ang=(len>1e-4f)?atan2f(dy,dx):0.0f, ca=cosf(ang),sa=sinf(ang);
+        float r=0.5f*(rad[a]+rad[b]), zb=ter_z(mx,my);
+        // corpo auto: lungo come il rod + sbalzo, largo ~raggio, basso e largo
+        c=prop_box(buf,c, mx,my, 0,0, zb, len*0.5f+r, r*0.85f, r*1.6f, ca,sa,
+                   0.62f,0.18f,0.16f);  // rosso scuro = vernice auto
+    }
+    // cassonetti singoli (dischi non legati a un'auto): acciaio sporco, su velocità
     for(int i=0;i<nd;i++){
+        if(is_car[i]) continue;
         float r=rad[i];
         float a=(vx[i]*vx[i]+vy[i]*vy[i]>1e-4f)?atan2f(vy[i],vx[i]):0.0f;
         float ca=cosf(a),sa=sinf(a), zb=ter_z(px[i],py[i]);
-        // box-cassonetto: footprint ~raggio, alto ~2·raggio, acciaio sporco
         c=prop_box(buf,c, px[i],py[i], 0,0, zb, r*0.95f, r*0.78f, r*2.0f, ca,sa,
                    0.40f,0.43f,0.48f);
     }
     return c;
+}
+
+// piazza un'AUTO (DRAG_DESIGN.md §8): due dischi a distanza `len` lungo +x,
+// legati da un rod rigido, massa `mass` ciascuno. Orientamento iniziale lungo x.
+static void place_car(SimP *s, float x, float y, float len, float mass){
+    float r=0.6f;
+    int a=simp_drag_add(s, x-len*0.5f, y, r, mass);
+    int b=simp_drag_add(s, x+len*0.5f, y, r, mass);
+    if(a>=0&&b>=0) simp_drag_link(s,a,b);
 }
 
 // piazza una BARRICATA: fila verticale di dischi draggable accostati attorno a
@@ -813,6 +844,14 @@ int main(int argc, char **argv){
         place_barricade(s,bx,by,bl,bm);
         printf("barricata: %d cassonetti @ (%.1f,%.1f) len %.1f massa %.1f\n",
                simp_drag_count(s),(double)bx,(double)by,(double)bl,(double)bm); }
+
+    // auto = due dischi + rod rigido (DRAG_DESIGN.md §8) per la verifica visiva:
+    // VAT_HORDE_CAR="x,y[,len][,mass]" piazza un'auto che l'orda spinge e fa ruotare.
+    if(getenv("VAT_HORDE_CAR")){ float cx=0,cy=0,cl=3.0f,cm=20.0f;
+        sscanf(getenv("VAT_HORDE_CAR"),"%f,%f,%f,%f",&cx,&cy,&cl,&cm);
+        place_car(s,cx,cy,cl,cm);
+        printf("auto: rod len %.1f massa %.1f @ (%.1f,%.1f), %d giunti\n",
+               (double)cl,(double)cm,(double)cx,(double)cy,simp_drag_link_count(s)); }
 
     const char *shot=getenv("VAT_HORDE_SHOT");
     int shot_frames = shot? atoi(shot):0; if(shot&&shot_frames<=0)shot_frames=600;
@@ -1295,6 +1334,14 @@ int main(int argc, char **argv){
                         if(simp_drag_add(s,wx,wy,0.6f,m)>=0)
                             printf("cassonetto @ (%.1f,%.1f) massa %.0f (tot %d)\n",
                                    (double)wx,(double)wy,(double)m,simp_drag_count(s)); }
+                    break; }
+                case SDLK_N:{   // piazza un'AUTO (2 dischi + rod, DRAG_DESIGN.md §8)
+                    float wx,wy;
+                    if(pick_y0(vp,mouse_px,mouse_py,SW,SH,&wx,&wy)){
+                        float m=(e.key.mod&SDL_KMOD_SHIFT)?40.0f:20.0f;
+                        place_car(s,wx,wy,3.0f,m);
+                        printf("auto @ (%.1f,%.1f) massa %.0f (giunti %d)\n",
+                               (double)wx,(double)wy,(double)m,simp_drag_link_count(s)); }
                     break; }
                 default: break;
             }
