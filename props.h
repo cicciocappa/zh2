@@ -24,12 +24,19 @@
 #define PROP_KEY_LEN   24
 #define PROP_PATH_LEN  128
 #define PROP_LABEL_LEN 24
+#define PROP_DEBRIS_LEN 16
 
 typedef struct {
     char  key[PROP_KEY_LEN];
     char  mesh[PROP_PATH_LEN];   /* "" -> procedural placeholder */
     float scale;
     char  label[PROP_LABEL_LEN];
+    /* destructible decor (DESTRUCT_DESIGN.md): the horde shatters it on contact.
+     * Default = inert decor (today's behavior). Set via extra catalog tokens. */
+    int   destructible;          /* 0 = pure decor, 1 = shatters on contact   */
+    float trigger_radius;        /* m: an agent within this of the prop fires it */
+    char  debris[PROP_DEBRIS_LEN]; /* FX style ("wood"/"metal"/...), host->preset */
+    float topple;                /* s of topple-tilt before bursting (0=instant) */
 } PropDef;
 
 typedef struct {

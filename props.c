@@ -38,6 +38,20 @@ int prop_catalog_load(const char *path, PropCatalog *c) {
         if (d->scale <= 0.0f) d->scale = 1.0f;
         strncpy(d->label, label ? label : key, PROP_LABEL_LEN - 1);
         d->label[PROP_LABEL_LEN - 1] = '\0';
+        /* optional destructible config (DESTRUCT_DESIGN.md §3): trig debris topple.
+         * Present => destructible; absent => inert decor (defaults stay zero). */
+        char *trig   = strtok_r(NULL, " \t", &save);
+        char *debris = strtok_r(NULL, " \t", &save);
+        char *topple = strtok_r(NULL, " \t", &save);
+        if (trig && debris && topple) {
+            d->destructible = 1;
+            d->trigger_radius = (float)atof(trig);
+            if (d->trigger_radius <= 0.0f) d->trigger_radius = 1.0f;
+            strncpy(d->debris, debris, PROP_DEBRIS_LEN - 1);
+            d->debris[PROP_DEBRIS_LEN - 1] = '\0';
+            d->topple = (float)atof(topple);
+            if (d->topple < 0.0f) d->topple = 0.0f;
+        }
         c->n++;
     }
     fclose(f);

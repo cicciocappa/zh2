@@ -36,7 +36,8 @@ all: test_particles test_impulse test_dormant test_stun test_handles test_query 
      test_corpse_pile \
      test_types test_density_route test_jam test_blood_fear test_scene test_siege test_turret \
      test_defense test_base test_director test_terrain test_pick test_editor \
-     test_breakthrough test_props test_vat_layer test_turret_siege test_drag test_hybrid test_car
+     test_breakthrough test_props test_vat_layer test_turret_siege test_drag test_hybrid test_car \
+     test_destruct
 
 test_particles: test_particles.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_particles.c sim_particles.c $(LDLIBS)
@@ -51,6 +52,11 @@ test_drag: test_drag.c sim_particles.c sim_particles.h
 # cars = two draggable discs + a rigid rod joint (DRAG_DESIGN.md §8)
 test_car: test_car.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_car.c sim_particles.c $(LDLIBS)
+
+# destructible decor props (DESTRUCT_DESIGN.md): horde shatters them on contact
+test_destruct: test_destruct.c destruct.c sim_particles.c scene.c props.c \
+               destruct.h sim_particles.h scene.h props.h
+	$(CC) $(CFLAGS) -o $@ test_destruct.c destruct.c sim_particles.c scene.c props.c $(LDLIBS)
 
 # Hybrid barricade: struttura distruttibile -> detriti draggable al crollo
 test_hybrid: test_hybrid.c defense.c sim_particles.c defense.h sim_particles.h
@@ -148,11 +154,11 @@ vat_view: vat/vat_view.c vat/glad.c vat/stb_impl.c vat/vat.vs vat/vat.fs
 
 # Orda reale del core sim_particles resa in 3D VAT (vat_layer + vat_horde) su
 # scena vettoriale (scene.c). Ostacoli estrusi via vat/flat.vs/.fs.
-vat_horde: vat/vat_horde.c vat/vat_layer.c sim_particles.c fx_particles.c scene.c defense.c terrain.c props.c vat/glad.c vat/stb_impl.c vat/cgltf_impl.c vat/vat.vs vat/vat.fs vat/flat.vs vat/flat.fs vat/ground.vs vat/ground.fs vat/shadow.vs vat/shadow.fs vat/decal.vs vat/decal.fs vat/corpse_decal.vs vat/corpse_decal.fs vat/corpsebake.fs vat/particle.vs vat/particle.fs vat/mesh.vs vat/mesh.fs sim_particles.h fx_particles.h vat/vat_layer.h vat/vat_gl.h vat/cgltf.h terrain.h scene.h defense.h props.h
+vat_horde: vat/vat_horde.c vat/vat_layer.c sim_particles.c fx_particles.c scene.c defense.c terrain.c props.c destruct.c vat/glad.c vat/stb_impl.c vat/cgltf_impl.c vat/vat.vs vat/vat.fs vat/flat.vs vat/flat.fs vat/ground.vs vat/ground.fs vat/shadow.vs vat/shadow.fs vat/decal.vs vat/decal.fs vat/corpse_decal.vs vat/corpse_decal.fs vat/corpsebake.fs vat/particle.vs vat/particle.fs vat/mesh.vs vat/mesh.fs sim_particles.h fx_particles.h vat/vat_layer.h vat/vat_gl.h vat/cgltf.h terrain.h scene.h defense.h props.h destruct.h
 	$(CC) -O2 -w -Ivat $(SDL_CFLAGS) -c vat/glad.c -o vat/glad.o
 	$(CC) -O2 -w -Ivat -c vat/stb_impl.c -o vat/stb_impl.o
 	$(CC) -O2 -w -Ivat -c vat/cgltf_impl.c -o vat/cgltf_impl.o
-	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Ivat -I. -o $@$(EXE) vat/vat_horde.c vat/vat_layer.c sim_particles.c fx_particles.c scene.c defense.c terrain.c props.c vat/glad.o vat/stb_impl.o vat/cgltf_impl.o $(SDL_LIBS) $(PLAT_LIBS) $(LDLIBS) $(DL_LIB)
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Ivat -I. -o $@$(EXE) vat/vat_horde.c vat/vat_layer.c sim_particles.c fx_particles.c scene.c defense.c terrain.c props.c destruct.c vat/glad.o vat/stb_impl.o vat/cgltf_impl.o $(SDL_LIBS) $(PLAT_LIBS) $(LDLIBS) $(DL_LIB)
 
 fxlab: vat/fxlab.c vat/vat_layer.c sim_particles.c fx_particles.c terrain.c vat/glad.c vat/stb_impl.c vat/cgltf_impl.c vat/vat.vs vat/vat.fs vat/flat.vs vat/flat.fs vat/ground.vs vat/ground.fs vat/shadow.vs vat/shadow.fs vat/decal.vs vat/decal.fs vat/corpse_decal.vs vat/corpse_decal.fs vat/particle.vs vat/particle.fs vat/mesh.vs vat/mesh.fs sim_particles.h fx_particles.h vat/vat_layer.h vat/vat_gl.h vat/cgltf.h vat/nuklear.h terrain.h
 	$(CC) -O2 -w -Ivat $(SDL_CFLAGS) -c vat/glad.c -o vat/glad.o

@@ -1,0 +1,32 @@
+# horde scene — destructible decor demo (DESTRUCT_DESIGN.md)
+# Spawn band at the bottom, goal at the top. A sidewalk cafe (tables/chairs) and
+# a few street signs / traffic lights stand in the crowd's path: as the horde
+# arrives they shatter into flying debris; the tall ones topple first.
+cell 0.5
+world 100 70
+
+spawn 2 1 96 4
+goal 44 66 12 3
+
+# --- cafe cluster (low objects: instant shatter into wood debris) ---
+prop table 38 30 0
+prop chair 36 30 0
+prop chair 40 30 0
+prop table 46 32 0
+prop chair 44 32 0
+prop chair 48 32 0
+prop table 54 30 0
+prop chair 52 30 0
+prop chair 56 30 0
+
+# --- street furniture (tall: topple then break into metal/glass) ---
+prop trafsign 30 40 0
+prop traflight 50 40 0
+prop trafsign 70 40 0
+prop traflight 62 30 0
+
+# --- only 2 weak, short-range turrets near the goal: the horde reaches and
+# smashes the decor before being thinned (authoring turrets here also disables
+# the 10-turret demo auto-ring). turret x y [range] [heavy] [hp]
+turret 40 58 16 0 250
+turret 56 58 16 0 250

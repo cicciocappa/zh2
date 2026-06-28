@@ -34,6 +34,7 @@
 #include "cgltf.h"
 #include "terrain.h"
 #include "props.h"
+#include "destruct.h"
 #include "edit_pick.h"
 #include "editor.h"
 
@@ -120,6 +121,46 @@ static const FxEmitterDef BLOOD_BURST_DEF = {
     .color_variant_count=3, .sprite_first=-1, .sprite_last=-1,
     .wind_scale=0.3f, .ground_stop=true, .blend=FX_BLEND_ALPHA, .rate=20.0f,
 };
+
+// detriti dei prop distruttibili (DESTRUCT_DESIGN.md §5): schegge che volano via
+// nella direzione di spinta dell'orda. wood = tavolini/sedie; metal = cartelli/
+// semafori (frammenti grigi + qualche scheggia di vetro ciano).
+static const FxEmitterDef WOOD_DEBRIS_DEF = {
+    .count=16, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.15f, .spawn_box_z=0.15f,
+    .spawn_offset_y_min=-0.10f, .spawn_offset_y_max=0.30f,
+    .speed_xy_min=1.5f, .speed_xy_max=4.5f, .speed_y_min=1.5f, .speed_y_max=4.0f,
+    .gravity=9.81f, .drag=0.35f, .lifetime_min=0.6f, .lifetime_max=1.3f,
+    .start_scale_min=0.05f, .start_scale_max=0.12f, .end_scale_min=0.03f, .end_scale_max=0.06f,
+    .start_color={0.45f,0.30f,0.14f,1.0f}, .end_color={0.30f,0.20f,0.09f,0.5f},
+    .color_variants={ {0.50f,0.34f,0.16f,1.0f},{0.38f,0.25f,0.12f,1.0f},{0.55f,0.40f,0.22f,1.0f} },
+    .color_variant_count=3, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.2f, .ground_stop=true, .blend=FX_BLEND_ALPHA, .rate=20.0f,
+};
+static const FxEmitterDef METAL_DEBRIS_DEF = {
+    .count=22, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.18f, .spawn_box_z=0.18f,
+    .spawn_offset_y_min=-0.10f, .spawn_offset_y_max=0.60f,
+    .speed_xy_min=2.0f, .speed_xy_max=6.0f, .speed_y_min=2.0f, .speed_y_max=5.5f,
+    .gravity=9.81f, .drag=0.30f, .lifetime_min=0.6f, .lifetime_max=1.5f,
+    .start_scale_min=0.05f, .start_scale_max=0.14f, .end_scale_min=0.02f, .end_scale_max=0.06f,
+    .start_color={0.55f,0.57f,0.60f,1.0f}, .end_color={0.35f,0.37f,0.40f,0.5f},
+    .color_variants={ {0.60f,0.62f,0.66f,1.0f},{0.45f,0.47f,0.50f,1.0f},
+                      {0.55f,0.80f,0.85f,0.9f},{0.70f,0.90f,0.95f,0.85f} },  // 2 = vetro ciano
+    .color_variant_count=4, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.2f, .ground_stop=true, .blend=FX_BLEND_ALPHA, .rate=20.0f,
+};
+
+// scoppio di un prop distruttibile -> burst FX nel verso di spinta (cono ~35°).
+typedef struct { FxParticles *fx; } DestructCtx;
+static void on_prop_burst(int idx, const char *debris, float x, float y, float dir, void *ud){
+    (void)idx;
+    DestructCtx *c=(DestructCtx*)ud;
+    int metal = (debris && (debris[0]=='m'||debris[0]=='g'));   // metal/glass vs wood
+    const FxEmitterDef *def = metal ? &METAL_DEBRIS_DEF : &WOOD_DEBRIS_DEF;
+    float o[3]={x, ter_z(x,y)+(metal?0.8f:0.4f), y};
+    fx_emit(c->fx, o, def, dir, 0.6f);                          // half_angle ~35°
+}
 
 typedef struct { SimP *s; VatLayer *vl; FxParticles *fx; } SpawnCtx;
 static void on_director_spawn(void *user, SimPHandle h, DefBody body, unsigned roll){
@@ -442,12 +483,45 @@ static int prop_box(float *buf, int c, float cx, float cz, float ox, float oz,
     return c;
 }
 
+// box inclinabile: come prop_box ma la faccia superiore (a quota hy) e' spostata
+// orizzontalmente di (tdx,tdz) e abbassata a topH -> rotazione rigida attorno
+// alla base per l'abbattimento (DESTRUCT_DESIGN.md §6). tdx=tdz=0,topH=hy = dritto.
+static int prop_box_lean(float *buf, int c, float cx, float cz, float ox, float oz,
+                    float zb, float hx, float hz, float hy, float ca, float sa,
+                    float r, float g, float b, float tdx, float tdz, float topH) {
+    float lx[4]={ox-hx,ox+hx,ox+hx,ox-hx}, lz[4]={oz-hz,oz-hz,oz+hz,oz+hz};
+    float wx[4],wz[4], bx=0,bz=0;
+    for(int i=0;i<4;i++){ wx[i]=cx+lx[i]*ca-lz[i]*sa; wz[i]=cz+lx[i]*sa+lz[i]*ca; bx+=wx[i]; bz+=wz[i]; }
+    bx*=0.25f; bz*=0.25f; (void)hy;
+    float tx[4],tz[4]; for(int i=0;i<4;i++){ tx[i]=wx[i]+tdx; tz[i]=wz[i]+tdz; }
+    float y0=zb, y1=zb+topH;
+#define PP(X,Y,Z,NX,NY,NZ) do{ float*o=buf+c*9; o[0]=(X);o[1]=(Y);o[2]=(Z); \
+    o[3]=(NX);o[4]=(NY);o[5]=(NZ); o[6]=r;o[7]=g;o[8]=b; c++; }while(0)
+    PP(tx[0],y1,tz[0],0,1,0); PP(tx[1],y1,tz[1],0,1,0); PP(tx[2],y1,tz[2],0,1,0);
+    PP(tx[0],y1,tz[0],0,1,0); PP(tx[2],y1,tz[2],0,1,0); PP(tx[3],y1,tz[3],0,1,0);
+    for(int k=0;k<4;k++){ int k1=(k+1)&3;
+        float ex=wx[k1]-wx[k], ez=wz[k1]-wz[k], nx=ez, nz=-ex;
+        float l=sqrtf(nx*nx+nz*nz); if(l>1e-6f){ nx/=l; nz/=l; }
+        float mx=(wx[k]+wx[k1])*0.5f-bx, mz=(wz[k]+wz[k1])*0.5f-bz;
+        if(nx*mx+nz*mz<0){ nx=-nx; nz=-nz; }
+        PP(tx[k],y1,tz[k],nx,0,nz); PP(tx[k1],y1,tz[k1],nx,0,nz); PP(wx[k1],y0,wz[k1],nx,0,nz);
+        PP(tx[k],y1,tz[k],nx,0,nz); PP(wx[k1],y0,wz[k1],nx,0,nz); PP(wx[k],y0,wz[k],nx,0,nz);
+    }
+#undef PP
+    return c;
+}
+
 #define PROP_VERTS_EACH 60   // corpo (30) + montante (30)
-static float *build_prop_mesh(const Scene *sc, const PropCatalog *cat, int *out_nv) {
+#define PROP_TOPPLE_MAX 1.40f  // ~80 deg di abbattimento a t=1
+// build con stato di distruzione opzionale (NULL = tutti intatti, es. in EDIT).
+static float *build_prop_mesh(const Scene *sc, const PropCatalog *cat,
+                              const Destruct *dz, int *out_nv) {
     int nv = sc->n_prop * PROP_VERTS_EACH;
     float *buf = malloc((size_t)(nv>0?nv:1) * 9 * sizeof(float));
     int c = 0;
     for (int i = 0; i < sc->n_prop; i++) {
+        int st = dz ? destruct_state(dz, i) : DESTRUCT_INERT;
+        if (st == DESTRUCT_GONE) continue;                 // distrutto: sparito
         const SceneProp *pr = &sc->prop[i];
         const PropDef *d = prop_catalog_find(cat, pr->key);
         float sc_m = d ? d->scale : 1.0f;
@@ -456,19 +530,28 @@ static float *build_prop_mesh(const Scene *sc, const PropCatalog *cat, int *out_
         else   { r=0.90f; g=0.10f; b=0.85f; }            // chiave sconosciuta = magenta
         float a = pr->rot * 0.01745329f, ca = cosf(a), sa = sinf(a);
         float zb = ter_z(pr->x, pr->y);
+        // abbattimento: theta cresce 0..MAX, la faccia alta ruota attorno alla base
+        float th = (st==DESTRUCT_TOPPLING) ? destruct_topple_t(dz,i)*PROP_TOPPLE_MAX : 0.0f;
+        float st_=sinf(th), ct_=cosf(th);
+        float dh = (st==DESTRUCT_TOPPLING) ? destruct_dir(dz,i) : 0.0f;
+        float ddx=cosf(dh), ddz=sinf(dh);
         // corpo: 0.7×0.4 m, alto 0.45 m
-        c = prop_box(buf, c, pr->x, pr->y, 0,0, zb, 0.35f*sc_m, 0.20f*sc_m, 0.45f*sc_m, ca,sa, r,g,b);
-        // montante sul lato frontale (+x locale): 0.1×0.1 m, alto 1.0 m (segnale di facing)
-        c = prop_box(buf, c, pr->x, pr->y, 0.30f*sc_m,0, zb, 0.06f*sc_m, 0.06f*sc_m, 1.0f*sc_m, ca,sa,
-                     r*0.8f, g*0.8f, b*0.8f);
+        float bH=0.45f*sc_m;
+        c = prop_box_lean(buf, c, pr->x, pr->y, 0,0, zb, 0.35f*sc_m, 0.20f*sc_m, bH, ca,sa, r,g,b,
+                          bH*st_*ddx, bH*st_*ddz, bH*ct_);
+        // montante sul lato frontale (+x locale): 0.1×0.1 m, alto 1.0 m
+        float mH=1.0f*sc_m;
+        c = prop_box_lean(buf, c, pr->x, pr->y, 0.30f*sc_m,0, zb, 0.06f*sc_m, 0.06f*sc_m, mH, ca,sa,
+                          r*0.8f, g*0.8f, b*0.8f, mH*st_*ddx, mH*st_*ddz, mH*ct_);
     }
     *out_nv = c;
     return buf;
 }
 
-// ricarica la mesh prop nel VBO (i prop della Scene cambiano in EDIT).
-static int upload_prop_mesh(GLuint vbo, const Scene *sc, const PropCatalog *cat){
-    int nv=0; float *m=build_prop_mesh(sc,cat,&nv);
+// ricarica la mesh prop nel VBO (i prop della Scene cambiano in EDIT / si distruggono).
+static int upload_prop_mesh(GLuint vbo, const Scene *sc, const PropCatalog *cat,
+                            const Destruct *dz){
+    int nv=0; float *m=build_prop_mesh(sc,cat,dz,&nv);
     glBindBuffer(GL_ARRAY_BUFFER,vbo);
     glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)(nv>0?nv:1)*9*sizeof(float),m,GL_STATIC_DRAW);
     free(m); return nv;
@@ -837,6 +920,10 @@ int main(int argc, char **argv){
     SimP *s=NULL; DefGame *g=NULL; DefDirector *dir=NULL;
     if(build_world(&sc, vl, fillN, &spctx, &s, &g, &dir)!=0) return 1;
 
+    // prop distruttibili (DESTRUCT_DESIGN.md): l'orda li frantuma a contatto.
+    Destruct dz; destruct_init(&dz, &sc, &gCatalog);
+    DestructCtx dctx={&fx};
+
     // barricata di draggable per la verifica visiva (DRAG_DESIGN.md):
     // VAT_HORDE_BARRICADE="x,y,len[,mass]" piazza una fila accostata che l'orda sfonda.
     if(getenv("VAT_HORDE_BARRICADE")){ float bx=0,by=0,bl=8.0f,bm=14.0f;
@@ -974,7 +1061,7 @@ int main(int argc, char **argv){
 
     // prop di decoro (§10 stadio 5b): mesh placeholder bakata dalla Scene, flat
     // shader. Render-only (play+edit), ricostruita su ogni edit dei prop.
-    int prNV=0; float *prMesh=build_prop_mesh(&sc,&gCatalog,&prNV);
+    int prNV=0; float *prMesh=build_prop_mesh(&sc,&gCatalog,&dz,&prNV);
     GLuint prVao,prVbo; glGenVertexArrays(1,&prVao);glBindVertexArray(prVao);
     glGenBuffers(1,&prVbo);glBindBuffer(GL_ARRAY_BUFFER,prVbo);
     glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)(prNV>0?prNV:1)*9*sizeof(float),prMesh,GL_STATIC_DRAW);
@@ -1256,13 +1343,14 @@ int main(int argc, char **argv){
                         } else if(ed.tool==ED_WALL||ed.tool==ED_COSTPOLY){
                             ed_poly_vertex(&ed,&sc,wx,wy);
                         } else if(ed.tool==ED_PROP){
-                            if(ed_place_prop(&ed,&sc,wx,wy)) prNV=upload_prop_mesh(prVbo,&sc,&gCatalog);
+                            if(ed_place_prop(&ed,&sc,wx,wy)){ destruct_init(&dz,&sc,&gCatalog); prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz); }
                         }
                     } else if(e.button.button==SDL_BUTTON_RIGHT){
                         if(ed.npoly>0) ed.npoly--;                 // annulla ultimo vertice
                         else if(ed_delete_at(&sc,wx,wy)){ ed.dirty=1;
                             obNV=upload_obstacle_mesh(obVbo,&sc,!groundOn);
-                            prNV=upload_prop_mesh(prVbo,&sc,&gCatalog); }
+                            destruct_init(&dz,&sc,&gCatalog);
+                            prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz); }
                     }
                 } else if(motion && ed.dragging && hit){ ed.bx=wx; ed.by=wy; }
                 else if(e.type==SDL_EVENT_MOUSE_BUTTON_UP &&
@@ -1280,8 +1368,9 @@ int main(int argc, char **argv){
                     if(ed.active){
                         if(ed.dirty){ free_world(s,g,dir);        // re-instanzia dalla Scene editata
                             if(build_world(&sc,vl,fillN,&spctx,&s,&g,&dir)!=0){running=0;break;}
+                            destruct_init(&dz,&sc,&gCatalog);     // ri-stato distruttibili
                             obNV=upload_obstacle_mesh(obVbo,&sc,!groundOn);
-                            prNV=upload_prop_mesh(prVbo,&sc,&gCatalog); ed.dirty=0; }
+                            prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz); ed.dirty=0; }
                         ed.active=0;
                     } else ed.active=1;
                     break;
@@ -1373,6 +1462,12 @@ int main(int argc, char **argv){
                 simp_step(s,FIXED_DT);
                 Uint64 t1=SDL_GetPerformanceCounter();
                 def_update(g,FIXED_DT);
+                // prop distruttibili (DESTRUCT_DESIGN.md): contatto -> scoppio FX.
+                // dopo def_update (la griglia puo' essere stantia dai kill: la query
+                // cade su brute-force, corretta). Re-upload se cambia o sta cadendo.
+                if(destruct_update(&dz,s,&sc,&gCatalog,FIXED_DT,on_prop_burst,&dctx)
+                   || destruct_animating(&dz))
+                    prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz);
                 // i feriti si insanguinano (outfit+16); i maimed_legs passano
                 // anche alla mesh crawler (a runtime)
                 { const uint8_t *wnd=def_wound(g); int nn=simp_count(s);

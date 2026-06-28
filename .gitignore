@@ -27,6 +27,7 @@ test_drag
 test_hybrid
 test_turret_siege
 test_car
+test_destruct
 bench_sim
 *.o
 frames/

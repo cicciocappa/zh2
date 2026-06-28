@@ -8,3 +8,12 @@ sign     -                         1.0    Sign
 cart     -                         1.2    Cart
 bin      -                         0.7    Bin
 crate    -                         0.8    Crate
+#
+# Distruttibili (DESTRUCT_DESIGN.md): aggiungi  trig  debris  topple  dopo label.
+# trig = raggio (m) di innesco; debris = stile FX (wood/metal); topple = s di
+# abbattimento prima dello scoppio (0 = frantumazione istantanea).
+# key    mesh                      scale  label   trig  debris  topple
+table    -                         1.0    Table   1.2   wood    0.0
+chair    -                         0.7    Chair   1.0   wood    0.0
+trafsign -                         1.0    TrafSign 1.2  metal   0.35
+traflight -                        1.2    TrafLight 1.3 metal   0.40
