@@ -37,7 +37,7 @@ all: test_particles test_impulse test_dormant test_stun test_handles test_query 
      test_types test_density_route test_jam test_blood_fear test_scene test_siege test_turret \
      test_defense test_base test_director test_terrain test_pick test_editor \
      test_breakthrough test_props test_vat_layer test_turret_siege test_drag test_hybrid test_car \
-     test_destruct
+     test_destruct test_place
 
 test_particles: test_particles.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_particles.c sim_particles.c $(LDLIBS)
@@ -61,6 +61,9 @@ test_destruct: test_destruct.c destruct.c sim_particles.c scene.c props.c \
 # Hybrid barricade: struttura distruttibile -> detriti draggable al crollo
 test_hybrid: test_hybrid.c defense.c sim_particles.c defense.h sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_hybrid.c defense.c sim_particles.c $(LDLIBS)
+
+test_place: test_place.c place.c defense.c sim_particles.c place.h defense.h sim_particles.h
+	$(CC) $(CFLAGS) -o $@ test_place.c place.c defense.c sim_particles.c $(LDLIBS)
 
 test_impulse: test_impulse.c sim_particles.c sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_impulse.c sim_particles.c $(LDLIBS)
@@ -193,11 +196,12 @@ test: all
 	./test_vat_layer
 	./test_drag
 	./test_hybrid
+	./test_place
 
 clean:
 	rm -rf test_particles test_impulse test_dormant test_handles test_query \
 	       test_corpses test_corpse_pile test_types test_density_route test_jam test_blood_fear test_scene \
-	       test_siege test_turret test_defense test_base test_director test_terrain bench_sim test_pick test_editor test_breakthrough test_props test_vat_layer test_drag test_hybrid \
+	       test_siege test_turret test_defense test_base test_director test_terrain bench_sim test_pick test_editor test_breakthrough test_props test_vat_layer test_drag test_hybrid test_car test_destruct test_place \
 	       sandbox sprite_view vat_view vat_horde frames *.exe vat/*.o
 
 .PHONY: all test clean
