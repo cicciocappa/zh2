@@ -37,6 +37,7 @@
 #include "destruct.h"
 #include "edit_pick.h"
 #include "editor.h"
+#include "place.h"
 
 #define MAXA 60000
 #define NT 10                  // numero massimo di torrette (anello demo)
@@ -288,6 +289,17 @@ static void gib_model(mat4 m, float tx,float ty,float tz,
 #define GIB_UNIT 0.01f   // unità Blender -> metri (braccio ~0.53 m); = fxlab
 // veto editor (§10): non si piazza nulla su una cella-statico (buco palazzo).
 static int ter_blocked(float x, float y){ return gTerOn && terrain_hole(&gTer, x, y); }
+
+// --- piazzamento a runtime (PLACEMENT_DESIGN.md): catalogo + veto static ---
+static int pl_blocked_host(void *u, float x, float y){ (void)u; return ter_blocked(x,y); }
+static const PlItem PL_CAT[] = {
+    /* kind        name          cost   w     h    radius  hp     mass */
+    { PL_BARRICADE, "Barricata",   50,  4.0f, 1.0f, 0.0f, 300.0f, 30.0f },  /* mass>0 = detriti al crollo */
+    { PL_TURRET,    "Torretta",   100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f },
+    { PL_BIN,       "Cassonetto",  20,  0.0f, 0.0f, 0.6f,   0.0f, 12.0f },
+    { PL_CAR,       "Auto",        60,  3.0f, 0.0f, 0.6f,   0.0f, 20.0f },
+};
+#define PL_NCAT ((int)(sizeof(PL_CAT)/sizeof(PL_CAT[0])))
 
 // catalogo prop di decoro (§10 stadio 5b): tipo->mesh+scala+label, render-only.
 static PropCatalog gCatalog; static int gCatN = 0;
@@ -693,10 +705,14 @@ static void build_walls_from_scene(DefGame *g, SimP *s, const Scene *sc){
 // rebuild the live structure mesh each frame from def_cell_struct: collapsed
 // cells vanish, surviving cells darken as their structure's HP drops. A box per
 // live cell, 9-float flat layout. Returns vertex count.
-static int build_struct_mesh(DefGame *g, float cell, float *buf){
+// Sweep dell'INTERA griglia (gw×gh) così le barricate piazzate a runtime
+// (PLACEMENT_DESIGN.md) — fuori dal bbox di scena — vengono comunque meshate.
+// Lo sweep è una lookup per cella (trascurabile); maxV protegge il buffer.
+static int build_struct_mesh(DefGame *g, float cell, float *buf, int maxV, int gw, int gh){
     int c=0; float H=2.8f;
-    for(int cy=gStY0-1; cy<=gStY1+1; cy++)
-    for(int cx=gStX0-1; cx<=gStX1+1; cx++){
+    for(int cy=0; cy<gh; cy++)
+    for(int cx=0; cx<gw; cx++){
+        if(c+30 > maxV) return c;                         // cap: non sforare il VBO
         int id=def_cell_struct(g,cx,cy); if(id<0) continue;
         if(def_struct_is_turret(g,id)) continue;          // drawn as a turret pillar
         float frac=def_struct_hp(g,id)/ (def_struct_hp_max(g,id)+1e-3f); // 1..0
@@ -1099,6 +1115,10 @@ int main(int argc, char **argv){
     Editor ed; ed_init(&ed); ed.active = getenv("VAT_HORDE_EDIT")?1:0;
     if(gCatN>0){ snprintf(ed.prop_key,sizeof ed.prop_key,"%s",gCatalog.defs[0].key); }
 
+    // piazzamento a runtime (PLACEMENT_DESIGN.md): P attiva, mouse piazza in PLAY.
+    Placement plc; pl_init(&plc, PL_CAT, PL_NCAT);
+    pl_set_blocked_cb(&plc, pl_blocked_host, NULL);
+
     // torrette (DINAMICO: una distruttibile sparisce al collasso) + tracer di
     // fuoco, stesso flat shader. Buffer riusato ogni frame da build_turret_mesh.
     int turCap=def_turret_count(g); if(turCap<NT) turCap=NT;   // >= tracer's NT cap
@@ -1127,11 +1147,13 @@ int main(int argc, char **argv){
     glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
     glBindVertexArray(0);
 
-    // strutture della base (dinamico: ricostruito ogni frame dallo stato vivo).
-    int stMaxV = gStructOn ? (gStX1-gStX0+3)*(gStY1-gStY0+3)*30 : 0;
-    float *stBuf = stMaxV ? malloc((size_t)stMaxV*9*sizeof(float)) : NULL;
+    // strutture (base + barricate runtime): dinamico, ricostruito ogni frame dallo
+    // stato vivo. Allocato SEMPRE con cap fisso generoso (non più sul bbox di scena)
+    // così le barricate piazzate a runtime (PLACEMENT_DESIGN) hanno spazio.
+    int stMaxV = 8192*30;                                 // ~8k celle struttura
+    float *stBuf = malloc((size_t)stMaxV*9*sizeof(float));
     GLuint stVao=0,stVbo=0;
-    if(gStructOn){ glGenVertexArrays(1,&stVao);glBindVertexArray(stVao);
+    {   glGenVertexArrays(1,&stVao);glBindVertexArray(stVao);
         glGenBuffers(1,&stVbo);glBindBuffer(GL_ARRAY_BUFFER,stVbo);
         glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)stMaxV*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
         glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
@@ -1320,8 +1342,8 @@ int main(int argc, char **argv){
                 float myf=(motion?e.motion.y:e.button.y)*(float)SH/(wph>0?wph:1);
                 if(motion){ mouse_px=mxf; mouse_py=myf; }
                 int alt = (SDL_GetModState()&SDL_KMOD_ALT)!=0;
-                // camera col mouse? PLAY: LMB/RMB nudi; EDIT: solo con Alt.
-                int cam_gesture = (!ed.active) || alt;
+                // camera col mouse? PLAY: LMB/RMB nudi; EDIT o placement: solo con Alt.
+                int cam_gesture = (!ed.active && !plc.active) || alt;
                 if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN && cam_gesture){
                     if(e.button.button==SDL_BUTTON_LEFT){      // pan: ancora il punto sotto il cursore
                         drag_cam=1; float ax,ay;
@@ -1331,6 +1353,15 @@ int main(int argc, char **argv){
                 }
                 if(e.type==SDL_EVENT_MOUSE_BUTTON_UP && drag_cam){ drag_cam=0; continue; }
                 if(motion && drag_cam) continue;               // pan/rotate applicati nel frame body
+                // --- placement runtime (PLAY, mouse nudo): cursore + LMB commit ---
+                if(plc.active && !ed.active){
+                    float wx,wy; if(pick_y0(vp,mxf,myf,SW,SH,&wx,&wy)) pl_set_cursor(&plc,wx,wy);
+                    if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
+                        if(e.button.button==SDL_BUTTON_LEFT){ if(pl_commit(&plc,g,s)) gStructOn=1; }
+                        else if(e.button.button==SDL_BUTTON_RIGHT){ plc.active=0; }
+                    }
+                    continue;
+                }
                 // --- da qui in giù: strumenti editor (solo in EDIT, mouse nudo) ---
                 if(!ed.active) continue;
                 float wx=0,wy=0; int hit=pick_y0(vp,mxf,myf,SW,SH,&wx,&wy);
@@ -1416,6 +1447,14 @@ int main(int argc, char **argv){
                 case SDLK_C:cam_free=!cam_free;break; case SDLK_T:useTex=!useTex;break;
                 case SDLK_SPACE:paused=!paused;break;
                 case SDLK_E:blast_x=cx;blast_y=cz;blast_pending=1;break;
+                case SDLK_P:    // piazzamento runtime: attiva/disattiva (budget di prova se 0)
+                    plc.active=!plc.active;
+                    if(plc.active && def_budget(g)<=0){ def_set_budget(g,99999); printf("placement ON (budget di prova)\n"); }
+                    break;
+                case SDLK_LEFTBRACKET:  if(plc.active) pl_cycle(&plc,-1); break;
+                case SDLK_RIGHTBRACKET: if(plc.active) pl_cycle(&plc,+1); break;
+                case SDLK_COMMA:  if(plc.active) pl_rotate(&plc,-1); break;
+                case SDLK_PERIOD: if(plc.active) pl_rotate(&plc,+1); break;
                 case SDLK_B:{   // piazza un cassonetto draggable sotto il cursore
                     float wx,wy;
                     if(pick_y0(vp,mouse_px,mouse_py,SW,SH,&wx,&wy)){
@@ -1572,9 +1611,9 @@ int main(int argc, char **argv){
         // strutture (rebuild dallo stato vivo: celle crollate spariscono). Il pass
         // mesh-gib sopra lascia attivo mProg → ri-bind ESPLICITO di progFlat (questo
         // blocco non lo settava, ereditava lo stato dai draw flat precedenti).
-        if(gStructOn){ int sv=build_struct_mesh(g,sc.cell,stBuf);
-            glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
-            if(sv){ glBindVertexArray(stVao);glBindBuffer(GL_ARRAY_BUFFER,stVbo);
+        { int sv=build_struct_mesh(g,sc.cell,stBuf,stMaxV,simp_grid_w(s),simp_grid_h(s));
+            if(sv){ glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
+                glBindVertexArray(stVao);glBindBuffer(GL_ARRAY_BUFFER,stVbo);
                 glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)sv*9*sizeof(float),stBuf);
                 glDrawArrays(GL_TRIANGLES,0,sv); } }
 
@@ -1677,6 +1716,22 @@ int main(int argc, char **argv){
           }
           glBindVertexArray(0); glDepthMask(GL_TRUE); glDisable(GL_BLEND); }
       }   // fine if(!ed.active)
+
+        // ghost di piazzamento (PLAY): disco verde se valido / rosso se no, al cursore.
+        // Depth off → sempre visibile sopra l'orda. Riusa progFlat + il VBO overlay.
+        if(plc.active && !ed.active){
+            pl_validate(&plc,g,s);                          // colore fresco ogni frame
+            const PlItem *it=pl_selected(&plc);
+            float r = it ? fmaxf(0.5f, 0.5f*fmaxf(it->w,fmaxf(it->h,it->radius*2.0f))) : 0.6f;
+            float cr = plc.valid?0.20f:0.95f, cg = plc.valid?0.90f:0.18f, cb=0.18f;
+            int ov = ed_push_marker(edovl,0,plc.cx,plc.cy,r, cr,cg,cb);
+            if(ov){ glDisable(GL_DEPTH_TEST);
+                glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
+                glBindVertexArray(ovVao);glBindBuffer(GL_ARRAY_BUFFER,ovVbo);
+                glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)ov*9*sizeof(float),edovl);
+                glDrawArrays(GL_TRIANGLES,0,ov);
+                glEnable(GL_DEPTH_TEST); }
+        }
         glFinish();
         double ren_ms=(double)(SDL_GetPerformanceCounter()-r0)*1000.0/pf;
 
@@ -1697,8 +1752,13 @@ int main(int argc, char **argv){
             else if(gStructOn){ int ns=def_struct_count(g),up=0; for(int q=0;q<ns;q++) if(!def_struct_collapsed(g,q)) up++;
                 snprintf(base,sizeof base," | mura %d/%d", up, ns); }
             char wv[48]=""; if(dir) snprintf(wv,sizeof wv," | ondata %d budget %d",def_director_wave(dir),def_budget(g));
-            snprintf(title,sizeof title,"vat_horde — %d agenti%s | kills %d crawler %d%s | sim %.2f ren %.2f ms | %.0f fps",
-                     total,wv,def_kills(g),def_count_wound(g,DW_CRAWLING),base,S,R,1000.0/(S+L+R));
+            char pl[96]="";
+            if(plc.active){ const PlItem *it=pl_selected(&plc);
+                const char *why = plc.reason==PL_NOFUNDS?"$":plc.reason==PL_BLOCKED?"statico":plc.reason==PL_OVERLAP?"occupato":"ok";
+                snprintf(pl,sizeof pl," | PLACE:%s($%d) rot%d %s budget%d ([]=voce ,.=ruota LMB=piazza RMB=esci)",
+                         it?it->name:"-", it?it->cost:0, plc.rot90, why, def_budget(g)); }
+            snprintf(title,sizeof title,"vat_horde — %d agenti%s%s | kills %d crawler %d%s | sim %.2f ren %.2f ms | %.0f fps",
+                     total,wv,pl,def_kills(g),def_count_wound(g,DW_CRAWLING),base,S,R,1000.0/(S+L+R));
             SDL_SetWindowTitle(win,title); acc_sim=acc_lay=acc_ren=0; acc_n=0; }
 
         // benchmark: accumula nella finestra di misura, poi stampa medie ed esci
