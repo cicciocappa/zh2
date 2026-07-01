@@ -83,6 +83,7 @@ struct DefGame {
     DefStruct structs[STRUCT_CAP];
     int       nstructs;
     int16_t  *cell_struct;  /* gw*gh: structure id per nav cell, -1 = none   */
+    int       stx0, sty0, stx1, sty1;  /* bbox of cells EVER assigned (never shrinks) */
     float    *atk_timer;    /* per slot: siege attack accumulator            */
     int       lost;         /* 1 once the core has collapsed                 */
     int       budget;       /* §8 placement budget                          */
@@ -109,6 +110,7 @@ DefGame *def_create(SimP *s, int cap) {
     size_t ncell = (size_t)g->gw * (size_t)g->gh;
     g->cell_struct = (int16_t *)malloc(ncell * sizeof(int16_t));
     for (size_t k = 0; k < ncell; k++) g->cell_struct[k] = -1;
+    g->stx0 = g->gw; g->sty0 = g->gh; g->stx1 = -1; g->sty1 = -1;   /* empty bbox */
     g->atk_timer = (float *)calloc((size_t)cap, sizeof(float));
     g->turret_dps = TURRET_DPS_DEF;
     g->turret_reach = TURRET_REACH_DEF;
@@ -335,8 +337,21 @@ void def_struct_cell(DefGame *g, int id, int cx, int cy) {
     if (id < 0 || id >= g->nstructs) return;
     if (cx < 0 || cy < 0 || cx >= g->gw || cy >= g->gh) return;
     g->cell_struct[cy * g->gw + cx] = (int16_t)id;
+    if (cx < g->stx0) g->stx0 = cx;
+    if (cy < g->sty0) g->sty0 = cy;
+    if (cx > g->stx1) g->stx1 = cx;
+    if (cy > g->sty1) g->sty1 = cy;
     simp_set_wall(g->s, cx, cy, true);
     simp_set_wall_cost(g->s, cx, cy, BARRICADE_WALL_TIER * simp_wall_base_cost());
+}
+
+int def_struct_bbox(const DefGame *g, int *cx0, int *cy0, int *cx1, int *cy1) {
+    if (g->stx1 < 0) return 0;
+    if (cx0) *cx0 = g->stx0;
+    if (cy0) *cy0 = g->sty0;
+    if (cx1) *cx1 = g->stx1;
+    if (cy1) *cy1 = g->sty1;
+    return 1;
 }
 
 /* Bind turret tid to a fresh 1-cell structure at its (x,y): the cell turns into

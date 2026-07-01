@@ -34,17 +34,20 @@ typedef struct {
     float   timer[SCENE_MAX_PROP];   /* topple countdown (s)                  */
     float   topple_total[SCENE_MAX_PROP];
     float   dir[SCENE_MAX_PROP];     /* captured push heading (rad)           */
+    const PropDef *def[SCENE_MAX_PROP]; /* catalog entry, resolved at init
+                                          (borrowed: the catalog must outlive
+                                          this; re-init after catalog edits)  */
     int     n;                        /* = scene n_prop at init               */
 } Destruct;
 
-/* Resolve which props are destructible (via the catalog) and mark them ALIVE. */
+/* Resolve which props are destructible (via the catalog) and mark them ALIVE.
+ * Caches each prop's PropDef so update never does string lookups. */
 void destruct_init(Destruct *d, const Scene *sc, const PropCatalog *cat);
 
 /* Advance one step: detect contact on ALIVE props, tick TOPPLING ones, fire
  * on_burst at the burst moment. Call AFTER simp_step. Returns nonzero if any
  * prop changed state this step (the host re-uploads the prop mesh). */
-int destruct_update(Destruct *d, const SimP *s, const Scene *sc,
-                    const PropCatalog *cat, float dt,
+int destruct_update(Destruct *d, const SimP *s, const Scene *sc, float dt,
                     DestructBurstFn on_burst, void *ud);
 
 /* Render helpers (host reads per frame). */

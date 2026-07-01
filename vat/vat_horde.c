@@ -524,12 +524,14 @@ static int prop_box_lean(float *buf, int c, float cx, float cz, float ox, float 
 }
 
 #define PROP_VERTS_EACH 60   // corpo (30) + montante (30)
+#define PROP_MESH_CAP   (SCENE_MAX_PROP*PROP_VERTS_EACH)   // cap fisso del VBO prop
 #define PROP_TOPPLE_MAX 1.40f  // ~80 deg di abbattimento a t=1
-// build con stato di distruzione opzionale (NULL = tutti intatti, es. in EDIT).
-static float *build_prop_mesh(const Scene *sc, const PropCatalog *cat,
-                              const Destruct *dz, int *out_nv) {
-    int nv = sc->n_prop * PROP_VERTS_EACH;
-    float *buf = malloc((size_t)(nv>0?nv:1) * 9 * sizeof(float));
+// build nel buffer del chiamante (>= PROP_MESH_CAP vertici: n_prop è cappato a
+// SCENE_MAX_PROP), stato di distruzione opzionale (NULL = tutti intatti, es. in
+// EDIT). Ritorna il conteggio vertici. Niente malloc: durante un topple viene
+// richiamata a ogni step della sim.
+static int build_prop_mesh(const Scene *sc, const PropCatalog *cat,
+                           const Destruct *dz, float *buf) {
     int c = 0;
     for (int i = 0; i < sc->n_prop; i++) {
         int st = dz ? destruct_state(dz, i) : DESTRUCT_INERT;
@@ -556,17 +558,20 @@ static float *build_prop_mesh(const Scene *sc, const PropCatalog *cat,
         c = prop_box_lean(buf, c, pr->x, pr->y, 0.30f*sc_m,0, zb, 0.06f*sc_m, 0.06f*sc_m, mH, ca,sa,
                           r*0.8f, g*0.8f, b*0.8f, mH*st_*ddx, mH*st_*ddz, mH*ct_);
     }
-    *out_nv = c;
-    return buf;
+    return c;
 }
 
-// ricarica la mesh prop nel VBO (i prop della Scene cambiano in EDIT / si distruggono).
+// ricarica la mesh prop nel VBO (i prop della Scene cambiano in EDIT / si
+// distruggono). Lo store GL è preallocato a PROP_MESH_CAP (DYNAMIC_DRAW) e il
+// buffer CPU è uno solo, riusato: durante un topple l'upload gira a 60 Hz.
 static int upload_prop_mesh(GLuint vbo, const Scene *sc, const PropCatalog *cat,
                             const Destruct *dz){
-    int nv=0; float *m=build_prop_mesh(sc,cat,dz,&nv);
+    static float *buf = NULL;
+    if(!buf) buf = malloc((size_t)PROP_MESH_CAP*9*sizeof(float));
+    int nv = build_prop_mesh(sc,cat,dz,buf);
     glBindBuffer(GL_ARRAY_BUFFER,vbo);
-    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)(nv>0?nv:1)*9*sizeof(float),m,GL_STATIC_DRAW);
-    free(m); return nv;
+    if(nv) glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)nv*9*sizeof(float),buf);
+    return nv;
 }
 
 // --- mesh dei draggable (DRAG_DESIGN.md): un cassonetto (box) per oggetto,
@@ -705,13 +710,15 @@ static void build_walls_from_scene(DefGame *g, SimP *s, const Scene *sc){
 // rebuild the live structure mesh each frame from def_cell_struct: collapsed
 // cells vanish, surviving cells darken as their structure's HP drops. A box per
 // live cell, 9-float flat layout. Returns vertex count.
-// Sweep dell'INTERA griglia (gw×gh) così le barricate piazzate a runtime
-// (PLACEMENT_DESIGN.md) — fuori dal bbox di scena — vengono comunque meshate.
-// Lo sweep è una lookup per cella (trascurabile); maxV protegge il buffer.
-static int build_struct_mesh(DefGame *g, float cell, float *buf, int maxV, int gw, int gh){
+// Sweep sul bbox mantenuto da defense (def_struct_bbox): include le barricate
+// piazzate a runtime (PLACEMENT_DESIGN.md) e resta stretto sulle mappe grandi
+// (lo sweep dell'intera griglia costava ms sulle mappe L). maxV protegge il VBO.
+static int build_struct_mesh(DefGame *g, float cell, float *buf, int maxV){
+    int bx0,by0,bx1,by1;
+    if(def_struct_count(g)==0 || !def_struct_bbox(g,&bx0,&by0,&bx1,&by1)) return 0;
     int c=0; float H=2.8f;
-    for(int cy=0; cy<gh; cy++)
-    for(int cx=0; cx<gw; cx++){
+    for(int cy=by0; cy<=by1; cy++)
+    for(int cx=bx0; cx<=bx1; cx++){
         if(c+30 > maxV) return c;                         // cap: non sforare il VBO
         int id=def_cell_struct(g,cx,cy); if(id<0) continue;
         if(def_struct_is_turret(g,id)) continue;          // drawn as a turret pillar
@@ -1076,15 +1083,16 @@ int main(int argc, char **argv){
     printf("ostacoli: %d triangoli\n",obNV/3);
 
     // prop di decoro (§10 stadio 5b): mesh placeholder bakata dalla Scene, flat
-    // shader. Render-only (play+edit), ricostruita su ogni edit dei prop.
-    int prNV=0; float *prMesh=build_prop_mesh(&sc,&gCatalog,&dz,&prNV);
+    // shader. Render-only (play+edit), ricostruita su ogni edit dei prop e a
+    // ogni step durante i topple → store fisso DYNAMIC_DRAW + glBufferSubData.
     GLuint prVao,prVbo; glGenVertexArrays(1,&prVao);glBindVertexArray(prVao);
     glGenBuffers(1,&prVbo);glBindBuffer(GL_ARRAY_BUFFER,prVbo);
-    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)(prNV>0?prNV:1)*9*sizeof(float),prMesh,GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)PROP_MESH_CAP*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
     glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
     glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
     glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
-    glBindVertexArray(0); free(prMesh);
+    glBindVertexArray(0);
+    int prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz);
     printf("prop: %d istanze (%d triangoli)\n",sc.n_prop,prNV/3);
 
     // overlay editor (rect/poly/cursore): stesso layout del flat shader, dinamico.
@@ -1504,7 +1512,7 @@ int main(int argc, char **argv){
                 // prop distruttibili (DESTRUCT_DESIGN.md): contatto -> scoppio FX.
                 // dopo def_update (la griglia puo' essere stantia dai kill: la query
                 // cade su brute-force, corretta). Re-upload se cambia o sta cadendo.
-                if(destruct_update(&dz,s,&sc,&gCatalog,FIXED_DT,on_prop_burst,&dctx)
+                if(destruct_update(&dz,s,&sc,FIXED_DT,on_prop_burst,&dctx)
                    || destruct_animating(&dz))
                     prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz);
                 // i feriti si insanguinano (outfit+16); i maimed_legs passano
@@ -1611,7 +1619,7 @@ int main(int argc, char **argv){
         // strutture (rebuild dallo stato vivo: celle crollate spariscono). Il pass
         // mesh-gib sopra lascia attivo mProg → ri-bind ESPLICITO di progFlat (questo
         // blocco non lo settava, ereditava lo stato dai draw flat precedenti).
-        { int sv=build_struct_mesh(g,sc.cell,stBuf,stMaxV,simp_grid_w(s),simp_grid_h(s));
+        { int sv=build_struct_mesh(g,sc.cell,stBuf,stMaxV);
             if(sv){ glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
                 glBindVertexArray(stVao);glBindBuffer(GL_ARRAY_BUFFER,stVbo);
                 glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)sv*9*sizeof(float),stBuf);

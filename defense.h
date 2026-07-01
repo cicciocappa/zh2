@@ -98,6 +98,11 @@ int   def_struct_count(const DefGame *g);
 /* Structure id owning nav cell (cx,cy), or -1 (none / freed on collapse). Lets
  * the renderer rebuild the live structure mesh (collapsed cells disappear). */
 int   def_cell_struct(const DefGame *g, int cx, int cy);
+/* Bbox (inclusive cell coords) of every cell EVER assigned to a structure —
+ * grows with runtime placement, never shrinks on collapse (conservative: the
+ * renderer sweeps it and def_cell_struct filters freed cells). Returns 0 and
+ * leaves the outputs untouched if no cell was assigned yet. */
+int   def_struct_bbox(const DefGame *g, int *cx0, int *cy0, int *cx1, int *cy1);
 float def_struct_hp(const DefGame *g, int id);      /* current, 0 if collapsed */
 float def_struct_hp_max(const DefGame *g, int id);
 int   def_struct_collapsed(const DefGame *g, int id);

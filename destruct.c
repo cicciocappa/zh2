@@ -11,6 +11,7 @@ void destruct_init(Destruct *d, const Scene *sc, const PropCatalog *cat) {
     d->n = sc->n_prop;
     for (int i = 0; i < sc->n_prop; i++) {
         const PropDef *pd = prop_catalog_find(cat, sc->prop[i].key);
+        d->def[i]   = pd;
         d->state[i] = (pd && pd->destructible) ? DESTRUCT_ALIVE : DESTRUCT_INERT;
     }
 }
@@ -25,15 +26,13 @@ static float push_dir(const SimP *s, const int *buf, int n, float fallback_rot) 
     return fallback_rot * 0.01745329f;   /* deg -> rad */
 }
 
-int destruct_update(Destruct *d, const SimP *s, const Scene *sc,
-                    const PropCatalog *cat, float dt,
+int destruct_update(Destruct *d, const SimP *s, const Scene *sc, float dt,
                     DestructBurstFn on_burst, void *ud) {
     int changed = 0;
     int buf[DESTRUCT_QBUF];
     for (int i = 0; i < d->n; i++) {
         if (d->state[i] == DESTRUCT_ALIVE) {
-            const PropDef *pd = prop_catalog_find(cat, sc->prop[i].key);
-            if (!pd || !pd->destructible) { d->state[i] = DESTRUCT_INERT; continue; }
+            const PropDef *pd = d->def[i];   /* cached at init: ALIVE => valid */
             float px = sc->prop[i].x, py = sc->prop[i].y;
             int n = simp_query_circle(s, px, py, pd->trigger_radius, buf, DESTRUCT_QBUF, 0);
             if (n > 0) {
@@ -56,7 +55,7 @@ int destruct_update(Destruct *d, const SimP *s, const Scene *sc,
         } else if (d->state[i] == DESTRUCT_TOPPLING) {
             d->timer[i] -= dt;
             if (d->timer[i] <= 0.0f) {
-                const PropDef *pd = prop_catalog_find(cat, sc->prop[i].key);
+                const PropDef *pd = d->def[i];
                 d->state[i] = DESTRUCT_GONE;
                 changed = 1;
                 if (on_burst)

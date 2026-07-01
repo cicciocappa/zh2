@@ -87,7 +87,7 @@ static int run(BurstLog *log, int *topple_start_step) {
     int sign_topple_start = -1;
     for (g_step = 0; g_step < 4000; g_step++) {
         simp_step(s, DT);
-        destruct_update(&d, s, &sc, &cat, DT, on_burst, log);
+        destruct_update(&d, s, &sc, DT, on_burst, log);
         if (sign_topple_start < 0 && destruct_state(&d,1) == DESTRUCT_TOPPLING)
             sign_topple_start = g_step;
         /* stop once both path-destructibles are gone */
