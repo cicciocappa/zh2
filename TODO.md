@@ -47,8 +47,10 @@ poi scala, poi gioco.
       verità con re-instantiate su Play (`build_world`/`free_world`), logica di
       mutazione (`vat/editor.h`, `test_editor`: drag/poly/delete/snap + roundtrip
       save). Finestra ridimensionabile + F11 fullscreen, build mingw64
-      predisposta. RESTA fase 1: select/move/resize entità, HUD font bitmap
-      (ora nel titolo), editing set/world/cell, griglia visiva. Poi fase 2/3.
+      predisposta. **PIANO DI COMPLETAMENTO: `EDITOR_PLAN.md`** (fasi E1-E5:
+      E1 select/move/resize + HUD font bitmap + griglia; E2 tool gameplay
+      wall/turret/exit/lz/mission — dopo GAME_PLAN fase A; E3 UI nuklear
+      condivisa con GAME_PLAN G; E4 undo+validazione; E5 arte prop .glb).
       `Scene` =
       unica verità (re-instantiate su Play, niente editing live); il formato
       `.scn` cresce per ospitare le entità gameplay (struttura distruttibile =
