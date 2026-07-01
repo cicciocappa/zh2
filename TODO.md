@@ -431,6 +431,34 @@ statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
       fluttuano (v1 = solo suolo+agenti); volo balistico su z=0 piatto si scolla
       sul ripido → tenere LIEVE. Fase 1 = una sessione (90% del look); fase 2 =
       sorgente urbana + height-aware degli altri elementi.
+## M9 — GIOCO COMPLETO (piano dettagliato in `GAME_PLAN.md`)
+
+Loop target: elicottero/LZ → missione (resisti T / uccidi N) → fase PREP
+(piazzamento torrette/trappole/barriere a budget) → ASSAULT (director, biomassa
+dai kill → upgrade/riparazioni/attacchi speciali/munizioni). Metodo per fase:
+design → test headless → aggancio vat_horde → verifica visiva → commit.
+
+- [ ] **Fase A — Macchina a stati di missione** (`mission.c`): PREP→ASSAULT→
+      WIN/LOSE, `mission` nel `.scn`, director con `pool`/`start_delay`
+      (assorbe il task "spawn scriptati" di M5b), LZ/elicottero = core.
+- [ ] **Fase B — Barriere a LINEA** (`place.c` + `PL_WALL_LINE`): drag di
+      segmenti alla AoE, costo per cella, un segmento = una struttura;
+      catalogo filo spinato / mura / cancellata.
+- [ ] **Fase C — Torrette: tipi, upgrade, munizioni**: catalogo data-driven,
+      lanciafiamme (cono + corpse_clear), acido (AoE + corpse_clear),
+      `def_turret_upgrade`, ammo + scorta limitata + `def_turret_reload`.
+- [ ] **Fase D — Trappole** (`traps.c`): mine (AoE+impulso+danger), elettriche
+      ricaricabili, fossati. UNICA API core nuova del piano:
+      `simp_set_speed_scale` (rallentamento per-cella, da contrattare).
+- [ ] **Fase E — Biomassa** (ex M5b v1): bounty per kill, spese (upgrade/
+      reload/`def_struct_repair`/trappole/strike), blob solo FX.
+- [ ] **Fase F — Attacchi speciali** (`strikes.c`): mortaio, bombardamento,
+      esche (`simp_add_cost` negativo a TTL con rimozione esatta).
+- [ ] **Fase G — UI in-game**: font bitmap subito (fase A), poi nuklear
+      (toolbar piazzamento, pannello torretta, barre HP).
+- [ ] **Fase H — Contenuto e tuning**: mappe strada/piazza/campi (editor),
+      bilanciamento tabelle. Meta/campagna = doc futuro.
+
 ## M8 — Scala estrema / GPU (solo se serve oltre ~100k o per liberare la CPU)
 
 - [ ] Port dei passi a compute shader GL 4.3 (counting sort con atomics, PBD a
