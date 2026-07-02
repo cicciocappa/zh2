@@ -17,9 +17,9 @@ int main(void) {
     FILE *f = fopen(TMP, "w");
     if (!f) { printf("FAIL (tmp)\n"); return 1; }
     fputs("# comment line\n"
-          "bench  meshes/props/bench.glb  1.0  Bench\n"
+          "bench  assets/models/props/bench.glb  1.0  Bench\n"
           "sign   -                       2.5  Sign\n"
-          "cart   meshes/props/cart.glb   1.2\n"     /* label omitted -> key */
+          "cart   assets/models/props/cart.glb   1.2\n"     /* label omitted -> key */
           "bad_line_only_one_token\n",               /* malformed -> skipped */
           f);
     fclose(f);
@@ -29,7 +29,7 @@ int main(void) {
     ok = ok && n == 3 && c.n == 3;
 
     const PropDef *b = prop_catalog_find(&c, "bench");
-    ok = ok && b && strcmp(b->mesh, "meshes/props/bench.glb") == 0 &&
+    ok = ok && b && strcmp(b->mesh, "assets/models/props/bench.glb") == 0 &&
          fabsf(b->scale - 1.0f) < 1e-6f && strcmp(b->label, "Bench") == 0;
 
     const PropDef *s = prop_catalog_find(&c, "sign");

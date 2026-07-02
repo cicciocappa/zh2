@@ -249,6 +249,28 @@ Il progetto ha DUE modelli di simulazione complementari:
 
 ## File
 
+### Struttura cartelle asset (2026-07-02)
+
+Gli asset RUNTIME (caricati dagli eseguibili) vivono tutti sotto `assets/`,
+separati dai file di LAVORO Blender/FBX in `blend/`:
+
+- `assets/models/` — mesh glb generiche: `gibs.glb` (gore), `road_test.glb`,
+  `light_turret.glb` / `heavy_turret.glb` (torrette: due nodi `base` fisso +
+  `gun` che ruota sull'angolo di mira e rincula al colpo).
+- `assets/zombies/` — bake VAT degli agenti (`*_mesh.bin/_pos.raw/_norm.raw/
+  _meta.txt/_diffuse.png`) + `outfits/` + le texture di riferimento.
+- `assets/terrain/` — terreni glb + `.zhm` bakati (gitignored).
+- `assets/scenes/` — file di scena (`.scn` vettoriali + `.txt` legacy).
+- `assets/props/` — `catalog.txt` (catalogo prop di decoro).
+- `assets/shaders/` — tutti i GLSL (`.vs`/`.fs`); il Makefile li raccoglie in
+  `$(SHADERS) = assets/shaders/*.vs *.fs` come dipendenza.
+- `blend/` — file SORGENTE non caricati a runtime: `.blend`, `.blend1`, gli FBX
+  dei modelli riggati; `blend/mixamo/` = gli FBX delle clip d'animazione Mixamo
+  (era `vat/source/`, input di `vat/bake_zombie.sh`).
+
+I path sono hardcoded nei sorgenti (niente asset-root configurabile): gli
+eseguibili si lanciano dalla root del progetto.
+
 - `sim_particles.h` / `.c` — core particellare (vedi sopra). API `simp_*`.
   SoA pubblici (`simp_px/py/vx/vy/radius_arr`) pronti come instance buffer.
 - `fx_particles.h` / `.c` — particle system grafico GENERALE (FX_LAB step 2),
@@ -259,8 +281,8 @@ Il progetto ha DUE modelli di simulazione complementari:
   nel tool (come i pool gib/decal). Callback quota terreno → stop a `ter_z`.
   Preset `BLOOD_DEF` = schizzo sangue; base per fuoco/fumo/esplosioni. Vedi
   `FX_LAB.md`. Gli FX sono solo visivi → niente test deterministico (scelta 24
-  giu 2026). Shader `vat/particle.*`. Il **mesh-gib** (gore con mesh 3D vere:
-  braccio reciso + frammenti, `blend/gibs.glb`, shader `vat/mesh.*`) vive nel
+  giu 2026). Shader `assets/shaders/particle.*`. Il **mesh-gib** (gore con mesh 3D vere:
+  braccio reciso + frammenti, `assets/models/gibs.glb`, shader `assets/shaders/mesh.*`) vive nel
   pool condiviso di `vat_layer` (`vat_layer_maim_arm`/`fill_mesh_gibs`), reso da
   `fxlab` (`load_gib_meshes`). Migrazione in `vat_horde` = accendere il rendering.
 - `test_particles.c` — verifica headless: scena chokepoint, metriche, frame PPM
@@ -307,7 +329,7 @@ Il progetto ha DUE modelli di simulazione complementari:
   vuole convessi). `scene_instantiate` è deterministico (stessa scena ⇒
   stessi agenti). Modulo separato, il core non lo conosce; gli spawner
   (rect) restano del chiamante. `test_scene.c` = roundtrip + raster +
-  determinismo. Esempi in `scenes/` (`obstacles.scn`); MAPPE-BANCO (mura
+  determinismo. Esempi in `assets/scenes/` (`obstacles.scn`); MAPPE-BANCO (mura
   distruttibili, 2026-06-25): `arena4` (4 mura uguali), `arena_weak` (3 forti
   +1 debole), `arena_breach` (doppia cinta + breccia difesa da torrette vs
   sezione debole = banco sangue→paura). `VAT_HORDE_RATE` accelera lo spawn per
@@ -333,7 +355,7 @@ Il progetto ha DUE modelli di simulazione complementari:
   jam rosso), manopole live, pausa/step, overlay flow field). Gli spawner sono stato del sandbox, non del core; il pennello PACK
   piazza dormienti one-shot (ridipingere riempie i buchi, idempotente); il
   pennello KILL uccide sotto il pennello e il ~30% lascia un cadavere
-  (barricate emergenti). Scene: `./sandbox scenes/file.txt` carica una
+  (barricate emergenti). Scene: `./sandbox assets/scenes/file.txt` carica una
   configurazione di partenza (deve essere 160×120), F2 salva lo stato
   dipinto sul file caricato (o `scene_saved.txt`), R = reset alla scena.
   Controlli nell'header del file. Viewport scorrevole con tier di zoom

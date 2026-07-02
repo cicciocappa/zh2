@@ -167,15 +167,16 @@ sprite_view: sprite_view.c
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) -o $@$(EXE) sprite_view.c $(SDL_LIBS) $(PLAT_LIBS) $(LDLIBS)
 
 # VAT 3D previewer (migrazione_3d.md). glad.c e stb compilati con -w (codice di terzi).
-vat_view: vat/vat_view.c vat/glad.c vat/stb_impl.c vat/vat.vs vat/vat.fs
+vat_view: vat/vat_view.c vat/glad.c vat/stb_impl.c assets/shaders/vat.vs assets/shaders/vat.fs
 	$(CC) -O2 -w -Ivat $(SDL_CFLAGS) -c vat/glad.c -o vat/glad.o
 	$(CC) -O2 -w -Ivat -c vat/stb_impl.c -o vat/stb_impl.o
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Ivat -o $@$(EXE) vat/vat_view.c vat/glad.o vat/stb_impl.o $(SDL_LIBS) $(PLAT_LIBS) $(LDLIBS) $(DL_LIB)
 
 # Orda reale del core sim_particles resa in 3D VAT (vat_layer + vat_horde) su
-# scena vettoriale (scene.c). Ostacoli estrusi via vat/flat.vs/.fs.
+# scena vettoriale (scene.c). Ostacoli estrusi via assets/shaders/flat.vs/.fs.
+SHADERS = $(wildcard assets/shaders/*.vs) $(wildcard assets/shaders/*.fs)
 VAT_HORDE_SRC = vat/vat_horde.c vat/vat_layer.c sim_particles.c fx_particles.c scene.c defense.c place.c terrain.c props.c destruct.c anim.c
-VAT_HORDE_DEP = $(VAT_HORDE_SRC) vat/glad.c vat/stb_impl.c vat/cgltf_impl.c vat/vat.vs vat/vat.fs vat/flat.vs vat/flat.fs vat/ground.vs vat/ground.fs vat/shadow.vs vat/shadow.fs vat/decal.vs vat/decal.fs vat/corpse_decal.vs vat/corpse_decal.fs vat/corpsebake.fs vat/particle.vs vat/particle.fs vat/mesh.vs vat/mesh.fs sim_particles.h fx_particles.h vat/vat_layer.h vat/vat_gl.h vat/cgltf.h terrain.h scene.h defense.h place.h props.h destruct.h anim.h
+VAT_HORDE_DEP = $(VAT_HORDE_SRC) vat/glad.c vat/stb_impl.c vat/cgltf_impl.c $(SHADERS) sim_particles.h fx_particles.h vat/vat_layer.h vat/vat_gl.h vat/cgltf.h terrain.h scene.h defense.h place.h props.h destruct.h anim.h
 
 vat_horde: $(VAT_HORDE_DEP)
 	$(CC) -O2 -w -Ivat $(SDL_CFLAGS) -c vat/glad.c -o vat/glad.o
@@ -186,13 +187,13 @@ vat_horde: $(VAT_HORDE_DEP)
 # L'ESEGUIBILE DEL GIOCO (GAME_APP_DESIGN.md): vat_horde + shell applicativa
 # (-DGAME_SHELL): title/menu/briefing/prep/assalto/debrief, campagna, audio.
 #     ./game [campaign.txt]
-game: $(VAT_HORDE_DEP) app.c app.h audio.c audio.h vat/font8.h vat/ui.fs campaign.txt
+game: $(VAT_HORDE_DEP) app.c app.h audio.c audio.h vat/font8.h campaign.txt
 	$(CC) -O2 -w -Ivat $(SDL_CFLAGS) -c vat/glad.c -o vat/glad.o
 	$(CC) -O2 -w -Ivat -c vat/stb_impl.c -o vat/stb_impl.o
 	$(CC) -O2 -w -Ivat -c vat/cgltf_impl.c -o vat/cgltf_impl.o
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) -DGAME_SHELL $(AUDIO_DEF) -Ivat -I. -o $@$(EXE) $(VAT_HORDE_SRC) app.c audio.c vat/glad.o vat/stb_impl.o vat/cgltf_impl.o $(SDL_LIBS) $(PLAT_LIBS) $(LDLIBS) $(DL_LIB)
 
-fxlab: vat/fxlab.c vat/vat_layer.c sim_particles.c fx_particles.c terrain.c vat/glad.c vat/stb_impl.c vat/cgltf_impl.c vat/vat.vs vat/vat.fs vat/flat.vs vat/flat.fs vat/ground.vs vat/ground.fs vat/shadow.vs vat/shadow.fs vat/decal.vs vat/decal.fs vat/corpse_decal.vs vat/corpse_decal.fs vat/particle.vs vat/particle.fs vat/mesh.vs vat/mesh.fs sim_particles.h fx_particles.h vat/vat_layer.h vat/vat_gl.h vat/cgltf.h vat/nuklear.h terrain.h
+fxlab: vat/fxlab.c vat/vat_layer.c sim_particles.c fx_particles.c terrain.c vat/glad.c vat/stb_impl.c vat/cgltf_impl.c $(SHADERS) sim_particles.h fx_particles.h vat/vat_layer.h vat/vat_gl.h vat/cgltf.h vat/nuklear.h terrain.h
 	$(CC) -O2 -w -Ivat $(SDL_CFLAGS) -c vat/glad.c -o vat/glad.o
 	$(CC) -O2 -w -Ivat -c vat/stb_impl.c -o vat/stb_impl.o
 	$(CC) -O2 -w -Ivat -c vat/cgltf_impl.c -o vat/cgltf_impl.o

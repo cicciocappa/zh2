@@ -7,8 +7,8 @@
  * FILE FORMAT (props/catalog.txt; '#' comments; whitespace-separated):
  *
  *     # key   mesh                     scale  label
- *     bench   meshes/props/bench.glb   1.0    Bench
- *     sign    meshes/props/sign.glb    1.0    Sign
+ *     bench   assets/models/props/bench.glb   1.0    Bench
+ *     sign    assets/models/props/sign.glb    1.0    Sign
  *     cart    -                        1.2    Cart      # '-' mesh = placeholder
  *
  * `mesh` is a .glb path relative to the working dir, or "-" for none (the host

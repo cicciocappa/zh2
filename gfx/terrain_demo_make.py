@@ -1,11 +1,11 @@
-# Builds the demo terrain mesh for scenes/terrain.scn (EDITOR_DESIGN §9). Runs
+# Builds the demo terrain mesh for assets/scenes/terrain.scn (EDITOR_DESIGN §9). Runs
 # INSIDE Blender, then bake the .zhm alongside:
 #
 #   blender --background --python gfx/terrain_demo_make.py
 #   blender --background --python gfx/terrain_bake.py -- \
-#           --in meshes/terrain_demo.glb --out meshes/terrain_demo.zhm
+#           --in assets/terrain/terrain_demo.glb --out assets/terrain/terrain_demo.zhm
 #
-# 100x70 m world (matches scenes/terrain.scn): a gentle slope along +y plus a
+# 100x70 m world (matches assets/scenes/terrain.scn): a gentle slope along +y plus a
 # 0.5 m sidewalk step at x>=50, to show sprites/structures seating on elevation.
 import bpy
 
@@ -29,6 +29,6 @@ m.from_pydata(verts, [], faces)
 m.update()
 o = bpy.data.objects.new("terrain", m)
 bpy.context.collection.objects.link(o)
-bpy.ops.export_scene.gltf(filepath="meshes/terrain_demo.glb",
+bpy.ops.export_scene.gltf(filepath="assets/terrain/terrain_demo.glb",
                           export_format="GLB", use_selection=False)
-print("[terrain_demo_make] meshes/terrain_demo.glb")
+print("[terrain_demo_make] assets/terrain/terrain_demo.glb")

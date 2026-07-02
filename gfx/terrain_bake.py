@@ -1,7 +1,7 @@
 # Terrain heightmap bake (EDITOR_DESIGN.md §9). Runs INSIDE Blender:
 #
 #   blender --background --python gfx/terrain_bake.py -- \
-#           --in meshes/level1.glb --out meshes/level1.zhm [--ppm 4]
+#           --in assets/terrain/level1.glb --out assets/terrain/level1.zhm [--ppm 4]
 #
 # Imports a ground mesh (.glb/.gltf/.obj), raycasts straight DOWN over its
 # horizontal (X,Y) bounding box on a regular grid, and writes a .zhm binary:

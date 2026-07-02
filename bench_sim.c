@@ -72,7 +72,7 @@ static int prefill_lattice(SimP *s, const Scene *sc, int target) {
 }
 
 int main(int argc, char **argv) {
-    const char *path = argc > 1 ? argv[1] : "scenes/stress.scn";
+    const char *path = argc > 1 ? argv[1] : "assets/scenes/stress.scn";
     int target  = argc > 2 ? atoi(argv[2]) : 20000;
     int warmup  = argc > 3 ? atoi(argv[3]) : 120;
     int measure = argc > 4 ? atoi(argv[4]) : 300;

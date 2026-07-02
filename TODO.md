@@ -13,7 +13,7 @@ poi scala, poi gioco.
       (roundtrip + raster muro-da-poligono + cost + packs + determinismo).
       Scanline even-odd (gestisce anche concavi); render fan = solo convessi.
 - [x] **Ostacoli renderizzati in `vat_horde`**: carica una `.scn` (default
-      `scenes/obstacles.scn`), estrude i poligoni (top fan + pareti) + suolo in
+      `assets/scenes/obstacles.scn`), estrude i poligoni (top fan + pareti) + suolo in
       una mesh statica, pass flat-shaded (`vat/flat.vs/.fs`, key NW). Spawn dalle
       rect di scena. Verificato headless: l'orda imbuta nei varchi del muro
       spezzato e si spacca attorno al diamante; fango (cost) aggirato.
@@ -21,7 +21,7 @@ poi scala, poi gioco.
       MAXA alzato 8000→16000. A ~3900 agenti: sim ~9 ms / render ~9 ms.
 - [x] **Stress test** (M7b): modalità benchmark in `vat_horde`
       (`VAT_HORDE_FILL=N VAT_HORDE_BENCH="warmup,measure"`, prefill a lattice
-      senza burst, scene `scenes/stress.scn` 200×200 m). Timer separati
+      senza burst, scene `assets/scenes/stress.scn` 200×200 m). Timer separati
       core_sim / vat_layer / render. Misurato su **AMD Vega 10 iGPU** (debole;
       la workstation ha la RTX A2000 → render lì molto più basso):
         N      core_sim  vat_layer  render   tot     cap
@@ -78,7 +78,7 @@ poi scala, poi gioco.
         saltato col terreno glb. Campo `terrain` nel `.scn` (parse/save +
         env `VAT_HORDE_TERRAIN`), `test_scene` esteso. Verificato headless:
         gradino 3 m con sprite/torrette seduti, texture a scacchi mappata,
-        `.zhm` mancante = fallback z=0. Demo `scenes/terrain.scn` +
+        `.zhm` mancante = fallback z=0. Demo `assets/scenes/terrain.scn` +
         `gfx/terrain_demo_make.py`.
   - [x] **Ombre + tracer a quota**: tracer di fuoco sollevati al `terrain_z`;
         **ombre a terra aggiunte** al path VAT (non c'erano) — disco unitario
@@ -97,7 +97,7 @@ poi scala, poi gioco.
         (ZHM2) → muri tier palazzo; glb#2 mesh visiva statici; barricate tier
         distruttibili; veto piazzamento sopra gli statici. **Stadio 5b FATTO**
         (22 giu 2026): prop di DECORO puro (render-only, no SDF/no nav) —
-        entità `prop <key> x y rot` (`scene.c`), catalogo testo `props/catalog.txt`
+        entità `prop <key> x y rot` (`scene.c`), catalogo testo `assets/props/catalog.txt`
         (`props.h/.c`, `test_props`), render placeholder per-istanza seatato su
         `terrain_z` (`vat_horde`), tool editor `ED_PROP` (tasto 8, `[ ]` tipo,
         `,`/`.` rota). RESTA (con l'arte): un `.glb` per tipo nel catalogo.
@@ -278,7 +278,7 @@ statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
       `def_struct_cell`/`def_lost`, assedio per-slot in `def_update`, crollo→
       `simp_set_wall(false)`+commit→reroute; il core non reroute, si perde).
       `test_base.c` PASS (reroute esterno→core cade→lost; difesa che regge;
-      determinismo; no-NaN). Aggancio visivo in `vat_horde` (`scenes/base.scn`,
+      determinismo; no-NaN). Aggancio visivo in `vat_horde` (`assets/scenes/base.scn`,
       `VAT_HORDE_BASE=1`, `VAT_HORDE_TURRETS=N`): anelli renderizzati dallo stato
       vivo (crollo = spariscono), HUD core/ring HP + BASE PERSA. 2 accessor core
       nuovi (`simp_grid_w`/`_h`/`simp_cell_size`) per decodificare `wall_cell`.
@@ -396,7 +396,7 @@ statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
       - Evento defense→render via callback `DefEventFn` (come `on_spawn`),
         `vat_horde` la inoltra a `vat_layer`. Crawler (solo walk/run/idle)
         degrada con grazia (niente clip evento). `test_vat_layer` (hit one-shot +
-        pool decessi) PASS; verificato a video su `scenes/base.scn` (decedenti
+        pool decessi) PASS; verificato a video su `assets/scenes/base.scn` (decedenti
         stesi, assedio animato). RESTA (futuro): fondere death-clip↔cadavere
         fisico + gib volanti/decal (GFX §5).
 - [x] **Idle poco animata → effetto copia-incolla nei gruppi bloccati**

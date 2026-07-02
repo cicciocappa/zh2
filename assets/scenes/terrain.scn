@@ -6,11 +6,11 @@
 # The .zhm is a derived (gitignored) bake — regenerate it with:
 #   blender --background --python gfx/terrain_demo_make.py
 #   blender --background --python gfx/terrain_bake.py -- \
-#           --in meshes/terrain_demo.glb --out meshes/terrain_demo.zhm
+#           --in assets/terrain/terrain_demo.glb --out assets/terrain/terrain_demo.zhm
 # (vat_horde runs fine without it: sprites just stay on z=0.)
 cell 0.5
 world 100 70
-terrain meshes/terrain_demo.glb
+terrain assets/terrain/terrain_demo.glb
 set k_density 2.5
 set k_jam 6
 

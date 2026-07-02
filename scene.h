@@ -14,9 +14,9 @@
  *
  *     cell  0.5                       # nav/collision cell size (default 0.5)
  *     world 100 70                    # world extent W x H (meters) -> grid
- *     terrain meshes/level1.glb       # glb#1: render-only ground mesh (+ .zhm
+ *     terrain assets/terrain/level1.glb       # glb#1: render-only ground mesh (+ .zhm
  *                                     #   baked alongside); EDITOR_DESIGN §9
- *     statics meshes/level1_st.glb    # glb#2: render-only static-props mesh
+ *     statics assets/terrain/level1_st.glb    # glb#2: render-only static-props mesh
  *                                     #   (palazzi/rocce); visual only, no sim effect
  *     set   k_density 2.5             # any SimPParams field, repeatable
  *     goal  48 66 6 3                 # rect x y w h  (goal region)

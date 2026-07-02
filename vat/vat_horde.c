@@ -60,12 +60,12 @@ static float edovl[EDOVL_MAXV*9];
 // Gli ULTIMI due (crawler, tank) sono body "di gioco": non assegnati a caso, solo
 // via pin/set_variant. Il tank riusa la diffuse di zombie_man (stesso UVMap).
 static const char *PREFIX[] = {
-    "vat/assets/zombie_man", "vat/assets/zombie_man_obese",
-    "vat/assets/zombie_fem", "vat/assets/zombie_fem_obese",
-    "vat/assets/zombie_child", "vat/assets/zombie_fem_skirt",
-    "vat/assets/zombie_maimed_arm",    /* monco di un braccio: tipo di gioco, non cosmetico */
-    "vat/assets/zombie_maimed_legs",   /* crawler: tipo di gioco, non cosmetico */
-    "vat/assets/zombie_tank",          /* tank: tipo di gioco, non cosmetico */
+    "assets/zombies/zombie_man", "assets/zombies/zombie_man_obese",
+    "assets/zombies/zombie_fem", "assets/zombies/zombie_fem_obese",
+    "assets/zombies/zombie_child", "assets/zombies/zombie_fem_skirt",
+    "assets/zombies/zombie_maimed_arm",    /* monco di un braccio: tipo di gioco, non cosmetico */
+    "assets/zombies/zombie_maimed_legs",   /* crawler: tipo di gioco, non cosmetico */
+    "assets/zombies/zombie_tank",          /* tank: tipo di gioco, non cosmetico */
 };
 #define NVAR ((int)(sizeof(PREFIX)/sizeof(PREFIX[0])))
 #define TANK_VAR    (NVAR-1)               /* indice del body tank */
@@ -130,6 +130,46 @@ static const FxEmitterDef BLOOD_BURST_DEF = {
     .color_variants={ {0.55f,0.03f,0.03f,1.0f},{0.42f,0.0f,0.0f,1.0f},{0.60f,0.08f,0.04f,1.0f} },
     .color_variant_count=3, .sprite_first=-1, .sprite_last=-1,
     .wind_scale=0.3f, .ground_stop=true, .blend=FX_BLEND_ALPHA, .rate=20.0f,
+};
+
+// vampa alla bocca (muzzle flash): pochi billboard brillanti additivi, vita
+// brevissima, cono stretto nel verso di tiro, senza gravità. Leggera = giallo-
+// bianco piccolo; pesante = più grande e arancione (colpo secco del cannone).
+static const FxEmitterDef MUZZLE_FLASH_DEF = {
+    .count=4, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.04f, .spawn_box_z=0.04f,
+    .spawn_offset_y_min=-0.03f, .spawn_offset_y_max=0.03f,
+    .speed_xy_min=1.0f, .speed_xy_max=3.0f, .speed_y_min=-0.3f, .speed_y_max=0.5f,
+    .gravity=0.0f, .drag=6.0f, .lifetime_min=0.03f, .lifetime_max=0.07f,
+    .start_scale_min=0.28f, .start_scale_max=0.45f, .end_scale_min=0.06f, .end_scale_max=0.12f,
+    .start_color={1.0f,0.95f,0.60f,1.0f}, .end_color={1.0f,0.55f,0.15f,0.0f},
+    .color_variant_count=0, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.0f, .ground_stop=false, .blend=FX_BLEND_ADD, .rate=20.0f,
+};
+static const FxEmitterDef MUZZLE_FLASH_HVY_DEF = {
+    .count=7, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.06f, .spawn_box_z=0.06f,
+    .spawn_offset_y_min=-0.05f, .spawn_offset_y_max=0.05f,
+    .speed_xy_min=1.5f, .speed_xy_max=4.5f, .speed_y_min=-0.4f, .speed_y_max=0.8f,
+    .gravity=0.0f, .drag=5.0f, .lifetime_min=0.04f, .lifetime_max=0.10f,
+    .start_scale_min=0.45f, .start_scale_max=0.75f, .end_scale_min=0.10f, .end_scale_max=0.20f,
+    .start_color={1.0f,0.80f,0.40f,1.0f}, .end_color={1.0f,0.35f,0.08f,0.0f},
+    .color_variant_count=0, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.0f, .ground_stop=false, .blend=FX_BLEND_ADD, .rate=20.0f,
+};
+// scintilla d'impatto: schegge brillanti che rimbalzano verso il tiratore, un
+// filo di gravità, additive. Emessa quando lo streak raggiunge il bersaglio.
+static const FxEmitterDef SPARK_DEF = {
+    .count=6, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.04f, .spawn_box_z=0.04f,
+    .spawn_offset_y_min=-0.05f, .spawn_offset_y_max=0.10f,
+    .speed_xy_min=2.0f, .speed_xy_max=6.5f, .speed_y_min=1.0f, .speed_y_max=4.0f,
+    .gravity=12.0f, .drag=0.4f, .lifetime_min=0.08f, .lifetime_max=0.22f,
+    .start_scale_min=0.06f, .start_scale_max=0.13f, .end_scale_min=0.01f, .end_scale_max=0.03f,
+    .start_color={1.0f,0.90f,0.55f,1.0f}, .end_color={1.0f,0.40f,0.05f,0.0f},
+    .color_variants={ {1.0f,0.95f,0.65f,1.0f},{1.0f,0.70f,0.25f,1.0f},{1.0f,0.55f,0.15f,1.0f} },
+    .color_variant_count=3, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.0f, .ground_stop=false, .blend=FX_BLEND_ADD, .rate=20.0f,
 };
 
 // detriti dei prop distruttibili (DESTRUCT_DESIGN.md §5): schegge che volano via
@@ -231,7 +271,7 @@ static int prefill_lattice(SimP *s, DefGame *g, VatLayer *vl, const Scene *sc, i
 
 typedef struct { GLuint vao, texP, texN, texD; int ni, hasTex; const VatMeta *M; } Asset;
 
-// --- gore mesh-gibs (FX_LAB): mesh di blend/gibs.glb (arm/frammenti/gambe) in un
+// --- gore mesh-gibs (FX_LAB): mesh di assets/models/gibs.glb (arm/frammenti/gambe) in un
 // VAO ciascuna, CENTRATE sul centroide (il tumble ruota attorno al centro).
 // mesh_id = ordine di nodo. UV sul diffuse del corpo. (copia di fxlab.load_gib_meshes)
 typedef struct { GLuint vao; int nidx; } GibMesh;
@@ -296,6 +336,82 @@ static void gib_model(mat4 m, float tx,float ty,float tz,
     m[12]=tx; m[13]=ty; m[14]=tz; m[15]=1.0f;
 }
 #define GIB_UNIT 0.01f   // unità Blender -> metri (braccio ~0.53 m); = fxlab
+
+// --- turret models (assets/models/{light,heavy}_turret.glb): two named nodes,
+// "base" (static mount) and "gun" (yaws to the live aim angle, kicks back on
+// fire via the ANIM_TURRET_RECOIL envelope). Baked at load into de-indexed
+// triangle soups (pos+normal, node transform and uniform scale applied) and
+// stamped per turret into the flat 9-float buffer by build_turret_mesh — a few
+// hundred verts per turret, CPU transform is free at these counts. Missing or
+// malformed .glb -> the old procedural pillar keeps working as fallback.
+#define TURRET_SCALE_DEF 1.0f
+#define TUR_DRAW_CAP 256          // mirrors defense.c TURRET_CAP (runtime placement)
+typedef struct { float *v; int nv; } TurPart;       // nv verts * 6 floats (pos+nrm)
+typedef struct { TurPart base, gun; float muzzle_h, muzzle_x; int ok; } TurretModel;
+static TurretModel gTurM[2];                        // [0]=light, [1]=heavy
+static float gTurScale = TURRET_SCALE_DEF;
+
+static int tur_read_part(cgltf_node *nd, TurPart *out, float sc){
+    if(!nd->mesh || nd->mesh->primitives_count<1) return 0;
+    cgltf_primitive *pr=&nd->mesh->primitives[0];
+    if(pr->type!=cgltf_primitive_type_triangles || !pr->indices) return 0;
+    cgltf_accessor *pos=NULL,*nrm=NULL;
+    for(size_t a=0;a<pr->attributes_count;a++){ cgltf_attribute *at=&pr->attributes[a];
+        if(at->type==cgltf_attribute_type_position) pos=at->data;
+        else if(at->type==cgltf_attribute_type_normal) nrm=at->data; }
+    if(!pos) return 0;
+    float M[16]; cgltf_node_transform_world(nd,M);
+    size_t ni=pr->indices->count;
+    float *v=malloc(ni*6*sizeof(float));
+    for(size_t k=0;k<ni;k++){
+        cgltf_size ix=cgltf_accessor_read_index(pr->indices,k);
+        float P[3]={0,0,0}, N[3]={0,1,0};
+        cgltf_accessor_read_float(pos,ix,P,3);
+        if(nrm) cgltf_accessor_read_float(nrm,ix,N,3);
+        float *o=v+k*6;
+        o[0]=(M[0]*P[0]+M[4]*P[1]+M[8]*P[2]+M[12])*sc;
+        o[1]=(M[1]*P[0]+M[5]*P[1]+M[9]*P[2]+M[13])*sc;
+        o[2]=(M[2]*P[0]+M[6]*P[1]+M[10]*P[2]+M[14])*sc;
+        o[3]=M[0]*N[0]+M[4]*N[1]+M[8]*N[2];
+        o[4]=M[1]*N[0]+M[5]*N[1]+M[9]*N[2];
+        o[5]=M[2]*N[0]+M[6]*N[1]+M[10]*N[2];
+    }
+    out->v=v; out->nv=(int)ni; return 1;
+}
+static int load_turret_model(const char *path, TurretModel *tm){
+    memset(tm,0,sizeof *tm);
+    cgltf_options opt={0}; cgltf_data *data=NULL;
+    if(cgltf_parse_file(&opt,path,&data)!=cgltf_result_success){
+        fprintf(stderr,"turret: parse fail %s (fallback pilastrino)\n",path); return 0; }
+    if(cgltf_load_buffers(&opt,data,path)!=cgltf_result_success){
+        fprintf(stderr,"turret: buffers fail %s\n",path); cgltf_free(data); return 0; }
+    for(size_t n=0;n<data->nodes_count;n++){ cgltf_node *nd=&data->nodes[n];
+        if(!nd->name) continue;
+        if(!strcmp(nd->name,"base"))     tur_read_part(nd,&tm->base,gTurScale);
+        else if(!strcmp(nd->name,"gun")) tur_read_part(nd,&tm->gun,gTurScale); }
+    cgltf_free(data);
+    if(!tm->base.nv || !tm->gun.nv){
+        fprintf(stderr,"turret: %s manca il nodo base/gun (fallback pilastrino)\n",path);
+        free(tm->base.v); free(tm->gun.v); memset(tm,0,sizeof *tm); return 0; }
+    // muzzle = tracer origin: mid gun height, barrel tip along local +x
+    float ymin=1e30f,ymax=-1e30f,xmax=-1e30f;
+    for(int k=0;k<tm->gun.nv;k++){ const float *o=tm->gun.v+k*6;
+        if(o[1]<ymin)ymin=o[1]; if(o[1]>ymax)ymax=o[1]; if(o[0]>xmax)xmax=o[0]; }
+    tm->muzzle_h=0.5f*(ymin+ymax); tm->muzzle_x=xmax;
+    tm->ok=1; return 1;
+}
+// stamp one part into the flat buffer at (tx, zb, tz), yawed by ca/sa about Y
+// (world aim (cos a, sin a) = render (x, ., z)); flat color.
+static int tur_emit(float *buf, int c, const TurPart *p, float tx, float tz,
+                    float zb, float ca, float sa, float cr, float cg, float cb){
+    for(int k=0;k<p->nv;k++){ const float *i=p->v+k*6; float *o=buf+(size_t)(c+k)*9;
+        o[0]=tx + i[0]*ca - i[2]*sa;
+        o[1]=zb + i[1];
+        o[2]=tz + i[0]*sa + i[2]*ca;
+        o[3]=i[3]*ca - i[5]*sa; o[4]=i[4]; o[5]=i[3]*sa + i[5]*ca;
+        o[6]=cr; o[7]=cg; o[8]=cb; }
+    return c+p->nv;
+}
 // veto editor (§10): non si piazza nulla su una cella-statico (buco palazzo).
 static int ter_blocked(float x, float y){ return gTerOn && terrain_hole(&gTer, x, y); }
 
@@ -643,19 +759,35 @@ static void place_barricade(SimP *s, float x, float y, float len, float mass){
     for(int k=0;k<=n;k++) simp_drag_add(s, x, y0+k*step, r, mass);
 }
 
-// --- mesh statica delle torrette: un pilastrino per torretta (arancio = leggera,
-// rosso = pesante). Stesso layout 9-float del flat shader (pos, normal, color).
-// Rebuilt each frame into a caller buffer (sized def_turret_count*30 verts): a
-// turret sieged to collapse (def_turret_disabled) vanishes. Returns vertex count.
+// --- mesh delle torrette: modello .glb base+gun se caricato (il gun segue
+// l'angolo di mira e rincula al colpo), altrimenti pilastrino procedurale
+// (arancio = leggera, rosso = pesante). Layout 9-float del flat shader
+// (pos, normal, color). Rebuilt each frame into a caller buffer: a turret
+// sieged to collapse (def_turret_disabled) vanishes. maxV = buffer cap in
+// verts. Returns vertex count.
 static AnimSys gAnim;          // envelope one-shot dei meccanismi (anim.h): rinculo torrette
-static int build_turret_mesh(DefGame *g, float *buf){
+static int build_turret_mesh(DefGame *g, float *buf, int maxV){
     int nt=def_turret_count(g); int c=0;
     for(int id=0;id<nt;id++){ DefTurret *t=def_turret(g,id);
         if(def_turret_disabled(g,id)) continue;            // destroyed: gone
-        // rinculo: nudge del pilastrino contro la direzione di tiro, v² per
-        // il calcio secco (l'envelope di anim.c è lineare, la curva è qui).
+        // rinculo: envelope lineare 1->0 di anim.c, v² per il calcio secco.
         float rec=anim_value(&gAnim,ANIM_TURRET_RECOIL,id); rec*=rec;
-        float cx=t->x-0.22f*rec*cosf(t->ang), cz=t->y-0.22f*rec*sinf(t->ang), hw=0.32f;
+        float ca=cosf(t->ang), sa=sinf(t->ang);
+        TurretModel *tm=&gTurM[t->heavy?1:0];
+        if(tm->ok){
+            if(c + tm->base.nv + tm->gun.nv > maxV) break;
+            float zb=ter_z(t->x,t->y);
+            // base fissa; gun sull'angolo di mira, arretrato dal rinculo
+            c=tur_emit(buf,c,&tm->base, t->x,t->y, zb, 1.0f,0.0f,
+                       0.42f,0.44f,0.48f);
+            float k=0.20f*gTurScale*rec;
+            float gr=0.95f, gg=t->heavy?0.18f:0.55f, gb=0.10f;
+            c=tur_emit(buf,c,&tm->gun, t->x-k*ca, t->y-k*sa, zb, ca,sa,
+                       gr,gg,gb);
+            continue;
+        }
+        if(c+30 > maxV) break;
+        float cx=t->x-0.22f*rec*ca, cz=t->y-0.22f*rec*sa, hw=0.32f;
         float zb=ter_z(cx,cz), h=zb+1.6f;            // seat on terrain
         float cr=0.95f, cg=t->heavy?0.20f:0.55f, cb=0.10f;
         float x0=cx-hw,x1=cx+hw,z0=cz-hw,z1=cz+hw;
@@ -671,6 +803,57 @@ static int build_turret_mesh(DefGame *g, float *buf){
         QT(x1,zb,z0, x0,zb,z0, x0,h,z0, x1,h,z0, 0,0,-1);   // -Z
 #undef VT
 #undef QT
+    }
+    return c;
+}
+
+// --- streak dei proiettili: il colpo è hitscan (danno istantaneo in defense.c),
+// questo è SOLO la scia cosmetica. Un piccolo pool renderer-side, avanzato nel
+// loop a passo fisso come il rinculo. La testa corre dalla bocca al punto
+// d'impatto a ~500 m/s; disegnata come segmento GL_LINES additivo con coda che
+// sfuma (alpha 0 in coda → alpha 1 in testa = comet). All'arrivo emette la
+// scintilla d'impatto. Coord render (x, up=y, z).
+#define TRACER_POOL 256
+typedef struct { float ox,oy,oz, dx,dy,dz, len, t; int heavy; } Tracer;
+static Tracer gTrc[TRACER_POOL]; static int gTrcN=0;
+static float gBulletV=500.0f;                 // m/s (VAT_HORDE_BULLET_V)
+
+static void tracer_spawn(float ox,float oy,float oz, float ex,float ey,float ez, int heavy){
+    float dx=ex-ox, dy=ey-oy, dz=ez-oz; float L=sqrtf(dx*dx+dy*dy+dz*dz);
+    if(L<1e-3f) return;
+    if(gTrcN>=TRACER_POOL){                    // pieno: rimpiazza il più vecchio
+        int m=0; for(int i=1;i<gTrcN;i++) if(gTrc[i].t>gTrc[m].t) m=i; gTrcN=m; if(gTrcN<0)gTrcN=0; }
+    Tracer *tr=&gTrc[gTrcN++];
+    tr->ox=ox;tr->oy=oy;tr->oz=oz; tr->dx=dx/L;tr->dy=dy/L;tr->dz=dz/L;
+    tr->len=L; tr->t=0.0f; tr->heavy=heavy;
+}
+// avanza il pool; all'arrivo emette la scintilla e ritira lo slot (swap-pop).
+static void tracer_step(FxParticles *fx, float dt){
+    float V=gBulletV;
+    for(int i=0;i<gTrcN;){
+        Tracer *tr=&gTrc[i]; tr->t+=dt;
+        if(V*tr->t >= tr->len){
+            float ex=tr->ox+tr->dx*tr->len, ey=tr->oy+tr->dy*tr->len, ez=tr->oz+tr->dz*tr->len;
+            float o[3]={ex,ey,ez};
+            float back=atan2f(-tr->dz,-tr->dx);        // scintilla verso il tiratore
+            fx_emit(fx,o,&SPARK_DEF,back,0.7f);
+            gTrc[i]=gTrc[--gTrcN];                      // swap-pop
+        } else i++;
+    }
+}
+// riempie il VBO dei tracer (2 vert/streak: coda alpha0 → testa alpha1). Layout
+// 7 float: pos(3)+rgba(4). Ritorna il numero di VERTICI. buf sized TRACER_POOL*2*7.
+static int build_tracer_mesh(float *buf){
+    float V=gBulletV; int c=0;
+    for(int i=0;i<gTrcN;i++){ Tracer *tr=&gTrc[i];
+        float head=V*tr->t; if(head>tr->len) head=tr->len;
+        float slen=tr->heavy?6.0f:4.0f; float tail=head-slen; if(tail<0.0f) tail=0.0f;
+        float hx=tr->ox+tr->dx*head, hy=tr->oy+tr->dy*head, hz=tr->oz+tr->dz*head;
+        float tx=tr->ox+tr->dx*tail, ty=tr->oy+tr->dy*tail, tz=tr->oz+tr->dz*tail;
+        // colore caldo: leggera giallo-bianco, pesante arancione
+        float cr=1.0f, cg=tr->heavy?0.60f:0.92f, cb=tr->heavy?0.20f:0.55f;
+        float *o=buf+c*7; o[0]=tx;o[1]=ty;o[2]=tz; o[3]=cr;o[4]=cg;o[5]=cb;o[6]=0.0f; c++;   // coda: alpha 0
+        o=buf+c*7;       o[0]=hx;o[1]=hy;o[2]=hz; o[3]=cr;o[4]=cg;o[5]=cb;o[6]=1.0f; c++;     // testa: alpha 1
     }
     return c;
 }
@@ -1097,7 +1280,7 @@ int main(int argc, char **argv){
            camp_path,gApp.nlevels,gApp.unlocked+1,
            au_backend_live()?"miniaudio":"muto (vat/miniaudio.h assente)");
 #else
-    const char *scene_path = argc > 1 ? argv[1] : "scenes/obstacles.scn";
+    const char *scene_path = argc > 1 ? argv[1] : "assets/scenes/obstacles.scn";
 #endif
     Scene sc;
     if (scene_load(scene_path, &sc) != 0) { fprintf(stderr, "scene load fail: %s\n", scene_path); return 1; }
@@ -1106,7 +1289,7 @@ int main(int argc, char **argv){
            sc.n_poly, sc.n_spawn, sc.n_goal, sc.n_prop);
 
     // catalogo prop di decoro (§10 stadio 5b): tipo->mesh+scala+label. Render-only.
-    const char *cpath = getenv("VAT_HORDE_PROPS") ? getenv("VAT_HORDE_PROPS") : "props/catalog.txt";
+    const char *cpath = getenv("VAT_HORDE_PROPS") ? getenv("VAT_HORDE_PROPS") : "assets/props/catalog.txt";
     gCatN = prop_catalog_load(cpath, &gCatalog);
     if (gCatN > 0) printf("prop catalog: %s (%d tipi)\n", cpath, gCatN);
     else { gCatN = 0; printf("prop catalog: %s assente -> tool prop disabilitato\n", cpath); }
@@ -1204,7 +1387,7 @@ int main(int argc, char **argv){
     if(!ctx||!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress)){fprintf(stderr,"GL init fail\n");return 1;}
     printf("GL %s\n",glGetString(GL_VERSION));
 
-    GLuint prog=vg_shader("vat/vat.vs","vat/vat.fs");
+    GLuint prog=vg_shader("assets/shaders/vat.vs","assets/shaders/vat.fs");
     // instance buffer condiviso: ri-riempito per variante prima di ogni draw.
     GLuint bi; glGenBuffers(1,&bi);glBindBuffer(GL_ARRAY_BUFFER,bi);
     glBufferData(GL_ARRAY_BUFFER,sizeof(inst),NULL,GL_DYNAMIC_DRAW);
@@ -1213,7 +1396,7 @@ int main(int argc, char **argv){
     Ground gnd; int groundOn=0;
     GLuint progGnd=0; GLint uVPgnd=0,uHasGnd=0,uColGnd=0;
     if(terrain_glb[0] && load_ground_glb(terrain_glb,&gnd)==0){ groundOn=1;
-        progGnd=vg_shader("vat/ground.vs","vat/ground.fs");
+        progGnd=vg_shader("assets/shaders/ground.vs","assets/shaders/ground.fs");
         uVPgnd=glGetUniformLocation(progGnd,"uVP");
         uHasGnd=glGetUniformLocation(progGnd,"uHasTex");
         uColGnd=glGetUniformLocation(progGnd,"uColor");
@@ -1222,7 +1405,7 @@ int main(int argc, char **argv){
     // il terreno (no progGnd) compiliamo comunque lo shader per disegnarlo.
     Ground gStat; int staticsOn=0;
     if(statics_glb[0] && load_ground_glb(statics_glb,&gStat)==0){ staticsOn=1;
-        if(!progGnd){ progGnd=vg_shader("vat/ground.vs","vat/ground.fs");
+        if(!progGnd){ progGnd=vg_shader("assets/shaders/ground.vs","assets/shaders/ground.fs");
             uVPgnd=glGetUniformLocation(progGnd,"uVP");
             uHasGnd=glGetUniformLocation(progGnd,"uHasTex");
             uColGnd=glGetUniformLocation(progGnd,"uColor");
@@ -1236,7 +1419,7 @@ int main(int argc, char **argv){
     float disc[SHADN*2]; disc[0]=0; disc[1]=0;        // fan: centro + 16 + chiusura
     for(int i=0;i<SHADN-1;i++){ float a=(float)i*(6.2831853f/16.0f);
         disc[(i+1)*2]=cosf(a); disc[(i+1)*2+1]=sinf(a); }
-    GLuint progSh=vg_shader("vat/shadow.vs","vat/shadow.fs");
+    GLuint progSh=vg_shader("assets/shaders/shadow.vs","assets/shaders/shadow.fs");
     GLint uVPsh=glGetUniformLocation(progSh,"uVP");
     GLuint shVao,shDisc,shInst; glGenVertexArrays(1,&shVao);glBindVertexArray(shVao);
     glGenBuffers(1,&shDisc);glBindBuffer(GL_ARRAY_BUFFER,shDisc);
@@ -1253,7 +1436,7 @@ int main(int argc, char **argv){
 #define DECALMAX 8192
     static float decalraw[DECALMAX*6];           // x,y,size,r,g,b (da vat_layer)
     static float decalinst[DECALMAX*7];          // cx,gy,cz,radius,r,g,b (istanza GL)
-    GLuint progDc=vg_shader("vat/decal.vs","vat/decal.fs");
+    GLuint progDc=vg_shader("assets/shaders/decal.vs","assets/shaders/decal.fs");
     GLint uVPdc=glGetUniformLocation(progDc,"uVP");
     GLuint dcVao,dcInst; glGenVertexArrays(1,&dcVao);glBindVertexArray(dcVao);
     glBindBuffer(GL_ARRAY_BUFFER,shDisc);        // condivide la geom del disco
@@ -1273,7 +1456,7 @@ int main(int argc, char **argv){
     static float cdecraw[CORPSEDECMAX*6];  // x,y,hd,size,colonna,outfit (da vat_layer)
     static float cdecinst[CORPSEDECMAX*7]; // cx,gy,cz,hd, half,colonna,outfit (istanza GL)
     static const float cquad[12]={-1,-1, 1,-1, 1,1, -1,-1, 1,1, -1,1};
-    GLuint cdProg=vg_shader("vat/corpse_decal.vs","vat/corpse_decal.fs");
+    GLuint cdProg=vg_shader("assets/shaders/corpse_decal.vs","assets/shaders/corpse_decal.fs");
     GLint uVPcd=glGetUniformLocation(cdProg,"uVP"), uNColsCd=glGetUniformLocation(cdProg,"uNCols"),
           uNOutCd=glGetUniformLocation(cdProg,"uNOutfit"), uNormLitCd=glGetUniformLocation(cdProg,"uNormalLit");
     GLuint cdVao,cdQuad,cdInst; glGenVertexArrays(1,&cdVao);glBindVertexArray(cdVao);
@@ -1290,7 +1473,7 @@ int main(int argc, char **argv){
 
     // --- ostacoli: programma flat + mesh statica estrusa dalla scena (il quad
     // suolo flat si salta quando c'è il terreno glb).
-    GLuint progFlat=vg_shader("vat/flat.vs","vat/flat.fs");
+    GLuint progFlat=vg_shader("assets/shaders/flat.vs","assets/shaders/flat.fs");
     GLint uVPflat=glGetUniformLocation(progFlat,"uVP");
     int obNV=0; float *obMesh=build_obstacle_mesh(&sc,!groundOn,&obNV);
     GLuint obVao,obVbo; glGenVertexArrays(1,&obVao);glBindVertexArray(obVao);
@@ -1349,11 +1532,23 @@ int main(int argc, char **argv){
 
     // torrette (DINAMICO: una distruttibile sparisce al collasso) + tracer di
     // fuoco, stesso flat shader. Buffer riusato ogni frame da build_turret_mesh.
+    // modelli torretta (base + gun) — glb con nodi "base"/"gun". Caricati PRIMA di
+    // dimensionare il buffer (turVpe legge base.nv+gun.nv). Solo parsing CPU, no GL.
+    { const char *ts=getenv("VAT_HORDE_TURRET_SCALE"); if(ts) gTurScale=atof(ts); }
+    { const char *bv=getenv("VAT_HORDE_BULLET_V"); if(bv) gBulletV=atof(bv); }
+    load_turret_model("assets/models/light_turret.glb", &gTurM[0]);
+    load_turret_model("assets/models/heavy_turret.glb", &gTurM[1]);
+    printf("torrette 3D: light=%s heavy=%s (scala %.2f)\n",
+           gTurM[0].ok?"ok":"pilastrino", gTurM[1].ok?"ok":"pilastrino", (double)gTurScale);
     int turCap=def_turret_count(g); if(turCap<NT) turCap=NT;   // >= tracer's NT cap
-    float *turBuf=malloc((size_t)turCap*30*9*sizeof(float));
+    // verts/torretta: pilastrino=30, oppure la parte più grossa di un modello glb
+    int turVpe=30;
+    for(int m=0;m<2;m++) if(gTurM[m].ok){ int v=gTurM[m].base.nv+gTurM[m].gun.nv; if(v>turVpe)turVpe=v; }
+    int turMaxV=turCap*turVpe;
+    float *turBuf=malloc((size_t)turMaxV*9*sizeof(float));
     GLuint turVao,turVbo; glGenVertexArrays(1,&turVao);glBindVertexArray(turVao);
     glGenBuffers(1,&turVbo);glBindBuffer(GL_ARRAY_BUFFER,turVbo);
-    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)turCap*30*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)turMaxV*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
     glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
     glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
     glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
@@ -1367,12 +1562,15 @@ int main(int argc, char **argv){
     glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
     glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
     glBindVertexArray(0);
+    // streak dei proiettili: shader dedicato (pos+rgba, additivo), pool renderer-side.
+    GLuint trProg=vg_shader("assets/shaders/tracer.vs","assets/shaders/tracer.fs");
+    GLint uVPtr=glGetUniformLocation(trProg,"uVP");
+    float *trBuf=malloc((size_t)TRACER_POOL*2*7*sizeof(float));
     GLuint trVao,trVbo; glGenVertexArrays(1,&trVao);glBindVertexArray(trVao);
     glGenBuffers(1,&trVbo);glBindBuffer(GL_ARRAY_BUFFER,trVbo);
-    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)NT*2*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
-    glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
-    glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)TRACER_POOL*2*7*sizeof(float),NULL,GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,0,7*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1,4,GL_FLOAT,0,7*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
     glBindVertexArray(0);
 
     // strutture (base + barricate runtime): dinamico, ricostruito ogni frame dallo
@@ -1428,7 +1626,7 @@ int main(int argc, char **argv){
     // riga=outfit), NORMAL = una sola riga (outfit-indipendente) per il relight
     // per-pixel. Colonna = v*NPOSE+p; posa 0='dying', 1='death' (devono combaciare
     // con vat_layer_die, le due falle a terra differiscono di ~90°).
-    GLuint bakeProg=vg_shader("vat/vat.vs","vat/corpsebake.fs");
+    GLuint bakeProg=vg_shader("assets/shaders/vat.vs","assets/shaders/corpsebake.fs");
     GLint uVPb=glGetUniformLocation(bakeProg,"uVP"),uTSb=glGetUniformLocation(bakeProg,"texSize"),
           uRPFb=glGetUniformLocation(bakeProg,"rowsPerFrame"),uHasb=glGetUniformLocation(bakeProg,"uHasTex"),
           uModeb=glGetUniformLocation(bakeProg,"uMode");
@@ -1510,19 +1708,19 @@ int main(int argc, char **argv){
     float rot_px=0,rot_py=0;          // pixel di riferimento del rotate
     { const char*cs=getenv("VAT_HORDE_CAM"); if(cs) sscanf(cs,"%f,%f,%f,%f,%f",&cx,&cz,&hh,&az,&el); }
 
-    // --- gore mesh-gibs (FX_LAB): VAO delle mesh di blend/gibs.glb + shader mesh
+    // --- gore mesh-gibs (FX_LAB): VAO delle mesh di assets/models/gibs.glb + shader mesh
     // statica texturizzata (diffuse di zombie_man, A[0]). Pool fisico in vat_layer.
-    GibMesh GM[8]={0}; int nGibMesh=load_gib_meshes("blend/gibs.glb",GM,8);
-    GLuint mProg=vg_shader("vat/mesh.vs","vat/mesh.fs");
+    GibMesh GM[8]={0}; int nGibMesh=load_gib_meshes("assets/models/gibs.glb",GM,8);
+    GLuint mProg=vg_shader("assets/shaders/mesh.vs","assets/shaders/mesh.fs");
     GLint uVPm=glGetUniformLocation(mProg,"uVP"), uModelm=glGetUniformLocation(mProg,"uModel");
     static float meshgib[256*9];
-    printf("mesh-gib: %d mesh da blend/gibs.glb\n",nGibMesh);
+    printf("mesh-gib: %d mesh da assets/models/gibs.glb\n",nGibMesh);
 
     // --- particle system (sangue): billboard istanziati, due passate (alpha/add).
     static float pmat[FX_MAX_PARTICLES*16], pcol[FX_MAX_PARTICLES*4], pspr[FX_MAX_PARTICLES];
     static const float pquad[18]={-0.5f,-0.5f,0, 0.5f,-0.5f,0, 0.5f,0.5f,0,
                                   -0.5f,-0.5f,0, 0.5f,0.5f,0, -0.5f,0.5f,0};
-    GLuint pProg=vg_shader("vat/particle.vs","vat/particle.fs");
+    GLuint pProg=vg_shader("assets/shaders/particle.vs","assets/shaders/particle.fs");
     GLint uVPp=glGetUniformLocation(pProg,"uVP"), uHasAtl=glGetUniformLocation(pProg,"uHasAtlas"),
           uAtlGrid=glGetUniformLocation(pProg,"uAtlasGrid");
     GLuint pVao,pQuadVbo,pMatVbo,pColVbo,pSprVbo;
@@ -1562,7 +1760,7 @@ int main(int argc, char **argv){
     gHost.obVbo=obVbo; gHost.prVbo=prVbo; gHost.obNV=&obNV; gHost.prNV=&prNV;
     gHost.ground_on=groundOn; gHost.cam_x=&cx; gHost.cam_z=&cz; gHost.running=&running;
     gUiBuf=malloc((size_t)UI_MAX_V*9*sizeof(float));
-    GLuint uiProg=vg_shader("vat/flat.vs","vat/ui.fs");
+    GLuint uiProg=vg_shader("assets/shaders/flat.vs","assets/shaders/ui.fs");
     GLint uVPui=glGetUniformLocation(uiProg,"uVP");
     GLuint uiVao,uiVbo; glGenVertexArrays(1,&uiVao);glBindVertexArray(uiVao);
     glGenBuffers(1,&uiVbo);glBindBuffer(GL_ARRAY_BUFFER,uiVbo);
@@ -1804,13 +2002,24 @@ int main(int argc, char **argv){
                 simp_step(s,FIXED_DT);
                 Uint64 t1=SDL_GetPerformanceCounter();
                 def_update(g,FIXED_DT);
-                // rinculo torrette: (ri)parte l'envelope di chi ha sparato in
-                // questo step; build_turret_mesh lo legge come nudge.
+                // rinculo torrette + vampa alla bocca + streak del proiettile:
+                // per chi ha sparato in questo step. build_turret_mesh legge il
+                // rinculo; il tracer parte dalla bocca del cannone verso l'impatto.
                 { int nt=def_turret_count(g);
-                  for(int ti=0;ti<nt;ti++)
-                      if(def_turret(g,ti)->fired && !def_turret_disabled(g,ti))
-                          anim_fire(&gAnim,ANIM_TURRET_RECOIL,ti,0.12f); }
+                  for(int ti=0;ti<nt;ti++){ DefTurret *t=def_turret(g,ti);
+                      if(!t->fired || def_turret_disabled(g,ti)) continue;
+                      anim_fire(&gAnim,ANIM_TURRET_RECOIL,ti,0.12f);
+                      float ca=cosf(t->ang), sa=sinf(t->ang);
+                      TurretModel *tm=&gTurM[t->heavy?1:0];
+                      float mh=tm->ok?tm->muzzle_h:0.9f, mx=tm->ok?tm->muzzle_x:0.0f;
+                      float ox=t->x+ca*mx, oz=t->y+sa*mx, oy=mh+ter_z(t->x,t->y);
+                      float ex=t->x+ca*t->last_t, ez=t->y+sa*t->last_t, ey=mh+ter_z(ex,ez);
+                      tracer_spawn(ox,oy,oz, ex,ey,ez, t->heavy);
+                      float mo[3]={ox,oy,oz};
+                      fx_emit(&fx,mo, t->heavy?&MUZZLE_FLASH_HVY_DEF:&MUZZLE_FLASH_DEF, t->ang, 0.35f);
+                  } }
                 anim_update(&gAnim,FIXED_DT);
+                tracer_step(&fx,FIXED_DT);          // avanza gli streak, scintilla all'arrivo
 #ifdef GAME_SHELL
                 if(gApp.state==APP_ASSAULT){                 // esito missione
                     const AppLevel *SL=app_cur_level(&gApp);
@@ -1888,23 +2097,20 @@ int main(int argc, char **argv){
           if(dNV){ glBindVertexArray(dragVao);glBindBuffer(GL_ARRAY_BUFFER,dragVbo);
               glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)dNV*9*sizeof(float),dragBuf);
               glDrawArrays(GL_TRIANGLES,0,dNV); } }
-        // torrette (pilastrini, rebuild ogni frame: le distrutte spariscono)
-        { int turNV=build_turret_mesh(g,turBuf);
+        // torrette (modello base+gun o pilastrino, rebuild ogni frame: le distrutte spariscono)
+        { int turNV=build_turret_mesh(g,turBuf,turMaxV);
           if(turNV){ glBindVertexArray(turVao);glBindBuffer(GL_ARRAY_BUFFER,turVbo);
               glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)turNV*9*sizeof(float),turBuf);
               glDrawArrays(GL_TRIANGLES,0,turNV); } }
-        // tracer di fuoco (linee, una per torretta che ha sparato di recente)
-        { float trbuf[NT*2*9]; int tc=0;
-          for(int id=0;id<def_turret_count(g);id++){ DefTurret *t=def_turret(g,id);
-              if(t->tracer_ttl<=0.0f) continue;
-              float ex=t->x+cosf(t->ang)*t->last_t, ez=t->y+sinf(t->ang)*t->last_t;
-              float *o=trbuf+tc*9; o[0]=t->x;o[1]=0.9f+ter_z(t->x,t->y);o[2]=t->y;
-              o[3]=0;o[4]=1;o[5]=0; o[6]=3;o[7]=3;o[8]=0.4f; tc++;
-              o=trbuf+tc*9; o[0]=ex;o[1]=0.9f+ter_z(ex,ez);o[2]=ez;
-              o[3]=0;o[4]=1;o[5]=0; o[6]=3;o[7]=3;o[8]=0.4f; tc++; }
-          if(tc){ glBindVertexArray(trVao);glBindBuffer(GL_ARRAY_BUFFER,trVbo);
-              glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)tc*9*sizeof(float),trbuf);
-              glLineWidth(2.5f); glDrawArrays(GL_LINES,0,tc); } }
+        // streak dei proiettili: comet additivo dalla bocca all'impatto (pool
+        // avanzato nel loop a passo fisso). Additive, depth-test ma senza write.
+        { int tv=build_tracer_mesh(trBuf);
+          if(tv){ glUseProgram(trProg);glUniformMatrix4fv(uVPtr,1,GL_FALSE,vp);
+              glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA,GL_ONE); glDepthMask(GL_FALSE);
+              glBindVertexArray(trVao);glBindBuffer(GL_ARRAY_BUFFER,trVbo);
+              glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)tv*7*sizeof(float),trBuf);
+              glLineWidth(2.5f); glDrawArrays(GL_LINES,0,tv);
+              glDepthMask(GL_TRUE); glDisable(GL_BLEND); } }
 
         // gib (GFX §5): pezzi balistici, un box per pezzo, mesh ogni frame
         { int ng=vat_layer_fill_gibs(vl,gibparam,GIBMAX); int gc=0;

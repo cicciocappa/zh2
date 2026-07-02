@@ -12,7 +12,7 @@ ogni volta che si aggiunge un personaggio.
 2. **Mixamo** auto-rig → download FBX riggato (mesh + armatura `mixamorig`).
    Salvato come `blend/<nome>_rigged.fbx`.
 3. **`vat/bake_zombie.sh <rigged.fbx> vat/assets/<nome>`** applica le 13 clip di
-   `vat/source/` al rig e baka le VAT.
+   `blend/mixamo/` al rig e baka le VAT.
 
 Gli FBX li si ispeziona **dall'interno** (binari) con:
 

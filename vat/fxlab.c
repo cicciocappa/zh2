@@ -39,12 +39,12 @@
 // I body VAT bakati (vat/assets/), STESSO elenco di vat_horde. Gli ultimi tre
 // (arm, crawler, tank) sono body "di gioco": non assegnati a caso, solo via pin.
 static const char *PREFIX[] = {
-    "vat/assets/zombie_man", "vat/assets/zombie_man_obese",
-    "vat/assets/zombie_fem", "vat/assets/zombie_fem_obese",
-    "vat/assets/zombie_child", "vat/assets/zombie_fem_skirt",
-    "vat/assets/zombie_maimed_arm",
-    "vat/assets/zombie_maimed_legs",
-    "vat/assets/zombie_tank",
+    "assets/zombies/zombie_man", "assets/zombies/zombie_man_obese",
+    "assets/zombies/zombie_fem", "assets/zombies/zombie_fem_obese",
+    "assets/zombies/zombie_child", "assets/zombies/zombie_fem_skirt",
+    "assets/zombies/zombie_maimed_arm",
+    "assets/zombies/zombie_maimed_legs",
+    "assets/zombies/zombie_tank",
 };
 #define NVAR ((int)(sizeof(PREFIX)/sizeof(PREFIX[0])))
 #define TANK_VAR    (NVAR-1)
@@ -197,7 +197,7 @@ static int load_ground_glb(const char *path, Ground *G, float offx, float offy){
     return 0;
 }
 
-// --- gore mesh-gibs: carica le mesh di blend/gibs.glb (arm + 2 frammenti) in un
+// --- gore mesh-gibs: carica le mesh di assets/models/gibs.glb (arm + 2 frammenti) in un
 // VAO ciascuna (pos/norm/uv, attrib 0/1/2), CENTRATE sul centroide del bbox così
 // il tumble ruota attorno al centro. Indicizzate per ORDINE DI NODO = mesh_id
 // (0=arm, 1=gib1, 2=gib2, 3=leg, 4=head, 5/6=torso). UV sul diffuse del corpo.
@@ -429,7 +429,7 @@ static void nkgl_render(NkGL *n, int W, int H){
 // ===========================================================================
 
 int main(int argc, char **argv){
-    const char *glb = argc>1 ? argv[1] : "blend/road_test.glb";
+    const char *glb = argc>1 ? argv[1] : "assets/models/road_test.glb";
 
     // heightmap a fianco del glb (stesso path, .zhm). CPU-only: caricata prima
     // di GL. Definisce footprint mondo + offset coord>=0.
@@ -475,7 +475,7 @@ int main(int argc, char **argv){
     if(!ctx||!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress)){fprintf(stderr,"GL init fail\n");return 1;}
     printf("GL %s\n",glGetString(GL_VERSION));
 
-    GLuint prog=vg_shader("vat/vat.vs","vat/vat.fs");
+    GLuint prog=vg_shader("assets/shaders/vat.vs","assets/shaders/vat.fs");
     GLint uVP=glGetUniformLocation(prog,"uVP"),uTS=glGetUniformLocation(prog,"texSize"),
           uRPF=glGetUniformLocation(prog,"rowsPerFrame"),uHas=glGetUniformLocation(prog,"uHasTex");
     GLuint bi; glGenBuffers(1,&bi);glBindBuffer(GL_ARRAY_BUFFER,bi);
@@ -484,7 +484,7 @@ int main(int argc, char **argv){
     // terreno (suolo glb texturizzato), traslato in coord >=0.
     Ground gnd; int groundOn=0; GLuint progGnd=0; GLint uVPgnd=0,uHasGnd=0,uColGnd=0;
     if(load_ground_glb(glb,&gnd,-OFX,-OFY)==0){ groundOn=1;
-        progGnd=vg_shader("vat/ground.vs","vat/ground.fs");
+        progGnd=vg_shader("assets/shaders/ground.vs","assets/shaders/ground.fs");
         uVPgnd=glGetUniformLocation(progGnd,"uVP");
         uHasGnd=glGetUniformLocation(progGnd,"uHasTex");
         uColGnd=glGetUniformLocation(progGnd,"uColor");
@@ -494,7 +494,7 @@ int main(int argc, char **argv){
 #define SHADN 18
     float disc[SHADN*2]; disc[0]=0; disc[1]=0;
     for(int i=0;i<SHADN-1;i++){ float a=(float)i*(6.2831853f/16.0f); disc[(i+1)*2]=cosf(a); disc[(i+1)*2+1]=sinf(a); }
-    GLuint progSh=vg_shader("vat/shadow.vs","vat/shadow.fs"); GLint uVPsh=glGetUniformLocation(progSh,"uVP");
+    GLuint progSh=vg_shader("assets/shaders/shadow.vs","assets/shaders/shadow.fs"); GLint uVPsh=glGetUniformLocation(progSh,"uVP");
     GLuint shVao,shDisc,shInst; glGenVertexArrays(1,&shVao);glBindVertexArray(shVao);
     glGenBuffers(1,&shDisc);glBindBuffer(GL_ARRAY_BUFFER,shDisc);
     glBufferData(GL_ARRAY_BUFFER,sizeof disc,disc,GL_STATIC_DRAW);
@@ -507,7 +507,7 @@ int main(int argc, char **argv){
     // decal di sangue persistenti (riusa la geom del disco).
 #define DECALMAX 4096
     static float decalraw[DECALMAX*6], decalinst[DECALMAX*7];
-    GLuint progDc=vg_shader("vat/decal.vs","vat/decal.fs"); GLint uVPdc=glGetUniformLocation(progDc,"uVP");
+    GLuint progDc=vg_shader("assets/shaders/decal.vs","assets/shaders/decal.fs"); GLint uVPdc=glGetUniformLocation(progDc,"uVP");
     GLuint dcVao,dcInst; glGenVertexArrays(1,&dcVao);glBindVertexArray(dcVao);
     glBindBuffer(GL_ARRAY_BUFFER,shDisc);
     glVertexAttribPointer(0,2,GL_FLOAT,0,2*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
@@ -523,7 +523,7 @@ int main(int argc, char **argv){
 #define CORPSE_HALF  1.15f
     static float cdecraw[CORPSEDECMAX*6], cdecinst[CORPSEDECMAX*7];
     static const float cquad[12]={-1,-1, 1,-1, 1,1, -1,-1, 1,1, -1,1};
-    GLuint cdProg=vg_shader("vat/corpse_decal.vs","vat/corpse_decal.fs");
+    GLuint cdProg=vg_shader("assets/shaders/corpse_decal.vs","assets/shaders/corpse_decal.fs");
     GLint uVPcd=glGetUniformLocation(cdProg,"uVP"), uNColsCd=glGetUniformLocation(cdProg,"uNCols"),
           uNOutCd=glGetUniformLocation(cdProg,"uNOutfit"), uNormLitCd=glGetUniformLocation(cdProg,"uNormalLit");
     GLuint cdVao,cdQuad,cdInst; glGenVertexArrays(1,&cdVao);glBindVertexArray(cdVao);
@@ -544,7 +544,7 @@ int main(int argc, char **argv){
 #define GIBMAX 512
     static float gibparam[GIBMAX*10];
     float *gibmesh=malloc((size_t)GIBMAX*GIB_VERTS_EACH*9*sizeof(float));
-    GLuint progFlat=vg_shader("vat/flat.vs","vat/flat.fs"); GLint uVPflat=glGetUniformLocation(progFlat,"uVP");
+    GLuint progFlat=vg_shader("assets/shaders/flat.vs","assets/shaders/flat.fs"); GLint uVPflat=glGetUniformLocation(progFlat,"uVP");
     GLuint gibVao,gibVbo; glGenVertexArrays(1,&gibVao);glBindVertexArray(gibVao);
     glGenBuffers(1,&gibVbo);glBindBuffer(GL_ARRAY_BUFFER,gibVbo);
     glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)GIBMAX*GIB_VERTS_EACH*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
@@ -558,7 +558,7 @@ int main(int argc, char **argv){
     static float pmat[FX_MAX_PARTICLES*16], pcol[FX_MAX_PARTICLES*4], pspr[FX_MAX_PARTICLES];
     static const float pquad[18]={-0.5f,-0.5f,0, 0.5f,-0.5f,0, 0.5f,0.5f,0,
                                   -0.5f,-0.5f,0, 0.5f,0.5f,0, -0.5f,0.5f,0};
-    GLuint pProg=vg_shader("vat/particle.vs","vat/particle.fs");
+    GLuint pProg=vg_shader("assets/shaders/particle.vs","assets/shaders/particle.fs");
     GLint uVPp=glGetUniformLocation(pProg,"uVP"), uHasAtl=glGetUniformLocation(pProg,"uHasAtlas"),
           uAtlGrid=glGetUniformLocation(pProg,"uAtlasGrid");
     GLuint pVao,pQuadVbo,pMatVbo,pColVbo,pSprVbo;
@@ -609,9 +609,9 @@ int main(int argc, char **argv){
 
     // gore mesh-gibs: VAO delle 3 mesh + shader mesh statica texturizzata. La
     // texture è il diffuse di zombie_man (A[0]), su cui sono mappate le UV del glb.
-    GibMesh GM[8]={0}; int nGibMesh=load_gib_meshes("blend/gibs.glb",GM,8);
+    GibMesh GM[8]={0}; int nGibMesh=load_gib_meshes("assets/models/gibs.glb",GM,8);
     const float GIB_UNIT=0.01f;   // unità Blender -> metri (braccio ~0.53 m); tunabile
-    GLuint mProg=vg_shader("vat/mesh.vs","vat/mesh.fs");
+    GLuint mProg=vg_shader("assets/shaders/mesh.vs","assets/shaders/mesh.fs");
     GLint uVPm=glGetUniformLocation(mProg,"uVP"), uModelm=glGetUniformLocation(mProg,"uModel");
     static float meshgib[256*9];
 
@@ -620,7 +620,7 @@ int main(int argc, char **argv){
     // NORMAL = una sola riga (outfit-indipendente). Relight per-pixel anti-piattume
     // in corpse_decal.fs. Colonna = v*NPOSE+p; posa 0='dying', 1='death' (devono
     // combaciare con vat_layer_die, le due falle a terra differiscono di ~90°).
-    GLuint bakeProg=vg_shader("vat/vat.vs","vat/corpsebake.fs");
+    GLuint bakeProg=vg_shader("assets/shaders/vat.vs","assets/shaders/corpsebake.fs");
     GLint uVPb=glGetUniformLocation(bakeProg,"uVP"),uTSb=glGetUniformLocation(bakeProg,"texSize"),
           uRPFb=glGetUniformLocation(bakeProg,"rowsPerFrame"),uHasb=glGetUniformLocation(bakeProg,"uHasTex"),
           uModeb=glGetUniformLocation(bakeProg,"uMode");

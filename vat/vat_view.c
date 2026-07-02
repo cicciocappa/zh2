@@ -152,7 +152,7 @@ static void inst_push(float x,float y,float z,float head,float scale,float gA,fl
     o[0]=x;o[1]=y;o[2]=z;o[3]=head;o[4]=scale;o[5]=gA;o[6]=gB;o[7]=mix;o[8]=outfit;o[9]=tr;o[10]=tg;o[11]=tb;inst_count++;}
 
 int main(int argc,char**argv){
-    const char*prefix=argc>1?argv[1]:"vat/assets/zombie";
+    const char*prefix=argc>1?argv[1]:"assets/zombies/zombie";
     char meshp[512],posp[512],normp[512],metap[512],diffp[512];
     snprintf(meshp,512,"%s_mesh.bin",prefix);snprintf(posp,512,"%s_pos.raw",prefix);
     snprintf(normp,512,"%s_norm.raw",prefix);snprintf(metap,512,"%s_meta.txt",prefix);snprintf(diffp,512,"%s_diffuse.png",prefix);
@@ -194,7 +194,7 @@ int main(int argc,char**argv){
     if(fread(verts,4,nv*3,mf)){}if(fread(uvs,4,nv*2,mf)){}if(fread(idx,2,ni,mf)){}fclose(mf);
     printf("mesh: %d verts %d tris\n",nv,ni/3);
 
-    GLuint prog=mk_shader("vat/vat.vs","vat/vat.fs");
+    GLuint prog=mk_shader("assets/shaders/vat.vs","assets/shaders/vat.fs");
     GLuint texP=tex_raw(posp,meta.texW,meta.texH),texN=tex_raw(normp,meta.texW,meta.texH);
     GLuint texD=tex_png(diffp); int hasTex=texD!=0, useTex=hasTex;
 

@@ -7,14 +7,14 @@
 #
 # <model.fbx>  = modello lowpoly riggato in Mixamo (mesh+UV+skin, una T-pose
 #                qualunque va bene: dell'animazione del file non importa nulla).
-# <out_prefix> = es. vat/assets/zombie_man  -> _mesh.bin/_pos.raw/.../_meta.txt
-# [anim_dir]   = cartella con gli FBX d'animazione (default: vat/source/, i
+# <out_prefix> = es. assets/zombies/zombie_man  -> _mesh.bin/_pos.raw/.../_meta.txt
+# [anim_dir]   = cartella con gli FBX d'animazione (default: blend/mixamo/, i
 #                sorgenti versionati). Gli FBX d'anim possono essere "senza
-#                skin": serve solo l'Action. (es. vat/source/fem_rigged.fbx)
+#                skin": serve solo l'Action. (es. blend/mixamo/fem_rigged.fbx)
 set -e
 BL=${BLENDER:-$HOME/Scaricati/blender-5.1.0-linux-x64/blender}
 MODEL="$1"; PREFIX="$2"
-ADIR="${3:-vat/source}"
+ADIR="${3:-blend/mixamo}"
 # Flag extra passate a bake_vat.py (es. correzione orientamento):
 #   EXTRA="--rotx -90" vat/bake_zombie.sh model.fbx out_prefix
 EXTRA="${EXTRA:-}"
