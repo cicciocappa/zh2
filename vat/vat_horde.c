@@ -38,6 +38,15 @@
 #include "edit_pick.h"
 #include "editor.h"
 #include "place.h"
+#include "anim.h"
+#ifdef GAME_SHELL
+// GAME_SHELL (GAME_APP_DESIGN.md): stessa sorgente compilata come eseguibile
+// `game` — title/menu/briefing/prep/assalto/debrief sopra il mondo esistente.
+//   ./game [campaign.txt]      (il dev tool `vat_horde` resta senza shell)
+#include "app.h"
+#include "audio.h"
+#include "font8.h"
+#endif
 
 #define MAXA 60000
 #define NT 10                  // numero massimo di torrette (anello demo)
@@ -638,11 +647,15 @@ static void place_barricade(SimP *s, float x, float y, float len, float mass){
 // rosso = pesante). Stesso layout 9-float del flat shader (pos, normal, color).
 // Rebuilt each frame into a caller buffer (sized def_turret_count*30 verts): a
 // turret sieged to collapse (def_turret_disabled) vanishes. Returns vertex count.
+static AnimSys gAnim;          // envelope one-shot dei meccanismi (anim.h): rinculo torrette
 static int build_turret_mesh(DefGame *g, float *buf){
     int nt=def_turret_count(g); int c=0;
     for(int id=0;id<nt;id++){ DefTurret *t=def_turret(g,id);
         if(def_turret_disabled(g,id)) continue;            // destroyed: gone
-        float cx=t->x, cz=t->y, hw=0.32f;
+        // rinculo: nudge del pilastrino contro la direzione di tiro, v² per
+        // il calcio secco (l'envelope di anim.c è lineare, la curva è qui).
+        float rec=anim_value(&gAnim,ANIM_TURRET_RECOIL,id); rec*=rec;
+        float cx=t->x-0.22f*rec*cosf(t->ang), cz=t->y-0.22f*rec*sinf(t->ang), hw=0.32f;
         float zb=ter_z(cx,cz), h=zb+1.6f;            // seat on terrain
         float cr=0.95f, cg=t->heavy?0.20f:0.55f, cb=0.10f;
         float x0=cx-hw,x1=cx+hw,z0=cz-hw,z1=cz+hw;
@@ -877,8 +890,215 @@ static int upload_obstacle_mesh(GLuint vbo, const Scene *sc, int with_ground){
     free(m); return nv;
 }
 
+#ifdef GAME_SHELL
+// ============================ GAME SHELL =================================
+// (GAME_APP_DESIGN.md §4) Il flusso vive in app.c (logica pura, testata da
+// test_app); qui c'è solo l'ESECUZIONE delle azioni (caricare il livello,
+// avviare le fasi, salvare) e il disegno degli overlay con font8.
+static App   gApp;
+static float gSurviveT=0.0f;            // orologio dell'assalto
+static int   gShellCore=-1;             // id struttura core LZ del livello
+
+// Core della LZ (placeholder dell'entità `lz` di GAME_PLAN fase A): anello di
+// celle-muro attorno al centroide dei goal, is_core -> def_lost = sconfitta.
+// I goal dentro l'anello restano drenanti: l'orda che sfonda arriva a spegnerli
+// solo passando dal core.
+static void shell_build_core(DefGame *g, SimP *s, const Scene *sc, float hp){
+    gShellCore=-1;
+    if(hp<=0.0f || sc->n_goal<=0) return;
+    float sx=0,sy=0;
+    for(int k=0;k<sc->n_goal;k++){ sx+=sc->goal[k].x+sc->goal[k].w*0.5f;
+                                   sy+=sc->goal[k].y+sc->goal[k].h*0.5f; }
+    int cx0=(int)(sx/(float)sc->n_goal/sc->cell), cy0=(int)(sy/(float)sc->n_goal/sc->cell);
+    int id=def_add_structure(g,hp,1), h=2;                 // anello 5x5
+    if(id<0) return;
+    for(int cy=cy0-h;cy<=cy0+h;cy++)for(int cx=cx0-h;cx<=cx0+h;cx++)
+        if(cx==cx0-h||cx==cx0+h||cy==cy0-h||cy==cy0+h) def_struct_cell(g,id,cx,cy);
+    simp_terrain_commit(s);
+    gShellCore=id; gStructOn=1;
+}
+
+// Puntatori allo stato di main() di cui il cambio-livello ha bisogno: la shell
+// è un layer, non una ristrutturazione del monolite (si separa in fase G).
+typedef struct {
+    Scene *sc; SimP **s; DefGame **g; DefDirector **dir;
+    VatLayer *vl; SpawnCtx *spctx; Destruct *dz;
+    GLuint obVbo, prVbo; int *obNV, *prNV; int ground_on;
+    float *cam_x, *cam_z; int *running;
+} ShellHost;
+static ShellHost gHost;
+
+// APP_ACT_LOAD_LEVEL: caricamento SINCRONO (v1) nello stato BRIEFING —
+// il punto d'aggancio del preload asincrono vero (GAME_APP_DESIGN §6).
+static void shell_load_level(void){
+    const AppLevel *L=app_cur_level(&gApp);
+    if(!L){ *gHost.running=0; return; }
+    scene_free(gHost.sc);
+    if(scene_load(L->scene,gHost.sc)!=0){
+        fprintf(stderr,"livello %d: scene load fail: %s\n",gApp.cur,L->scene);
+        *gHost.running=0; return; }
+    free_world(*gHost.s,*gHost.g,*gHost.dir);
+    if(build_world(gHost.sc,gHost.vl,0,gHost.spctx,gHost.s,gHost.g,gHost.dir)!=0){
+        *gHost.running=0; return; }
+    shell_build_core(*gHost.g,*gHost.s,gHost.sc,L->core_hp);
+    destruct_init(gHost.dz,gHost.sc,&gCatalog);
+    *gHost.obNV=upload_obstacle_mesh(gHost.obVbo,gHost.sc,!gHost.ground_on);
+    *gHost.prNV=upload_prop_mesh(gHost.prVbo,gHost.sc,&gCatalog,gHost.dz);
+    *gHost.cam_x=gHost.sc->world_w*0.5f; *gHost.cam_z=gHost.sc->world_h*0.5f;
+    anim_init(&gAnim); gSurviveT=0.0f;
+    printf("livello %d (%s): %s pronto\n",gApp.cur+1,L->name,L->scene);
+    app_level_ready(&gApp);
+}
+
+static void shell_do_act(AppAction act){
+    switch(act){
+        case APP_ACT_QUIT: *gHost.running=0; break;
+        case APP_ACT_SAVE:
+            if(app_save_progress(&gApp,"progress.txt")!=0)
+                fprintf(stderr,"progress.txt: save fail\n");
+            /* fallthrough: il salvataggio arriva dai settings o da un esito,
+               in entrambi i casi i volumi vanno riapplicati */
+            /* FALLTHROUGH */
+        case APP_ACT_APPLY_SETTINGS:
+            au_set_volume((float)gApp.vol_sfx/10.0f,(float)gApp.vol_music/10.0f);
+            break;
+        case APP_ACT_LOAD_LEVEL:    shell_load_level(); break;
+        case APP_ACT_START_ASSAULT: gSurviveT=0.0f; au_play(SND_ASSAULT); break;
+        case APP_ACT_START_PREP:    /* gating della sim legge lo stato */ break;
+        default: break;
+    }
+}
+
+// ---- overlay 2D: quad + testo font8 nel flat.vs + ui.fs (alpha in aNormal.x)
+#define UI_MAX_V 120000
+static float *gUiBuf=NULL; static int gUiV=0;
+static void ui_quad(float x,float y,float w,float h,float r,float g,float b,float a){
+    if(gUiV+6>UI_MAX_V) return;
+    float v[6][2]={{x,y},{x+w,y},{x+w,y+h},{x,y},{x+w,y+h},{x,y+h}};
+    for(int i=0;i<6;i++){ float *o=gUiBuf+(size_t)(gUiV+i)*9;
+        o[0]=v[i][0];o[1]=v[i][1];o[2]=0.0f; o[3]=a;o[4]=0;o[5]=0; o[6]=r;o[7]=g;o[8]=b; }
+    gUiV+=6;
+}
+static void ui_text(float x,float y,float s,const char*str,float r,float g,float b,float a){
+    float cx=x;
+    for(const char*p=str;*p;p++){
+        if(*p=='\n'){ y+=s*(FONT8_H+3); cx=x; continue; }
+        const unsigned char *gl=font8_glyph((unsigned char)*p);
+        for(int ry=0;ry<FONT8_H;ry++)for(int rx=0;rx<FONT8_W;rx++)
+            if((gl[ry]>>(4-rx))&1) ui_quad(cx+rx*s,y+ry*s,s,s,r,g,b,a);
+        cx+=s*FONT8_ADV;
+    }
+}
+static float ui_text_w(float s,const char*str){        // larghezza riga più lunga
+    int n=0,best=0;
+    for(const char*p=str;*p;p++){ if(*p=='\n'){ if(n>best)best=n; n=0; } else n++; }
+    if(n>best)best=n;
+    return (float)best*s*FONT8_ADV;
+}
+static void ui_text_c(float cxpx,float y,float s,const char*str,float r,float g,float b,float a){
+    ui_text(cxpx-ui_text_w(s,str)*0.5f,y,s,str,r,g,b,a);
+}
+
+static void shell_build_ui(int SW,int SH,DefGame *g){
+    float W=(float)SW,H=(float)SH;
+    AppState st=gApp.state;
+    const AppLevel *L=app_cur_level(&gApp);
+    if(st==APP_PREP||st==APP_ASSAULT){                  // barra di fase in alto
+        char line[192];
+        if(st==APP_PREP)
+            snprintf(line,sizeof line,"PREPARAZIONE - %s | BUDGET %d | "
+                     "P = PIAZZA DIFESE | INVIO = VIA ALL'ASSALTO",
+                     L?L->name:"?",def_budget(g));
+        else { float left=L?L->survive_s-gSurviveT:0.0f; if(left<0)left=0;
+            snprintf(line,sizeof line,"ASSALTO - RESISTI ANCORA %d S | KILLS %d%s",
+                     (int)(left+0.5f),def_kills(g),
+                     (gShellCore>=0&&def_struct_hp(g,gShellCore)<def_struct_hp_max(g,gShellCore))
+                     ?" | IL NUCLEO E' SOTTO ATTACCO":""); }
+        ui_quad(0,0,W,28,0,0,0,0.55f);
+        ui_text(10,8,2,line,1,1,1,1);
+        return;
+    }
+    ui_quad(0,0,W,H,0.02f,0.02f,0.04f,0.72f);           // oscura il mondo fermo
+    if(st==APP_TITLE){
+        ui_text_c(W*0.5f,H*0.26f,12,"HORDE",0.85f,0.15f,0.10f,1);
+        ui_text_c(W*0.5f,H*0.26f+12*(FONT8_H+3),3,"SIGNORE, ABBIAMO UN PROBLEMA DI ZOMBIE",
+                  0.75f,0.75f,0.75f,1);
+        ui_text_c(W*0.5f,H*0.74f,3,"PREMI UN TASTO",1,1,1,0.9f);
+    } else if(st==APP_MENU){
+        ui_text_c(W*0.5f,H*0.12f,8,"HORDE",0.85f,0.15f,0.10f,1);
+        if(gApp.campaign_done)
+            ui_text_c(W*0.5f,H*0.27f,3,"CAMPAGNA COMPLETATA!",0.3f,0.9f,0.3f,1);
+        float s=4,lh=s*(FONT8_H+5),y=H*0.38f;
+        for(int i=0;i<APP_MENU_COUNT;i++){
+            const char *lab=app_menu_label(i);
+            int en=app_menu_enabled(&gApp,i),sel=(i==gApp.menu_idx);
+            float w=ui_text_w(s,lab);
+            if(sel) ui_quad(W*0.5f-w*0.5f-18,y-8,w+36,s*FONT8_H+16,0.45f,0.08f,0.06f,0.85f);
+            float c=en?1.0f:0.4f;
+            ui_text_c(W*0.5f,y,s,lab,c,c,c,1);
+            y+=lh;
+        }
+        ui_text_c(W*0.5f,y+lh*0.5f,2,"FRECCE = SCEGLI   INVIO = CONFERMA",0.6f,0.6f,0.6f,1);
+    } else if(st==APP_SETTINGS){
+        ui_text_c(W*0.5f,H*0.16f,6,"SETTINGS",0.9f,0.9f,0.9f,1);
+        float s=3.5f,lh=s*(FONT8_H+6),y=H*0.38f;
+        for(int i=0;i<APP_SET_COUNT;i++){
+            char row[64];
+            if(i==APP_SET_SFX)        snprintf(row,sizeof row,"VOLUME SFX     < %2d >",gApp.vol_sfx);
+            else if(i==APP_SET_MUSIC) snprintf(row,sizeof row,"VOLUME MUSICA  < %2d >",gApp.vol_music);
+            else                      snprintf(row,sizeof row,"INDIETRO");
+            int sel=(i==gApp.set_idx);
+            float w=ui_text_w(s,row);
+            if(sel) ui_quad(W*0.5f-w*0.5f-14,y-7,w+28,s*FONT8_H+14,0.45f,0.08f,0.06f,0.85f);
+            ui_text_c(W*0.5f,y,s,row,1,1,1,1);
+            y+=lh;
+        }
+        if(!au_backend_live())
+            ui_text_c(W*0.5f,y+lh*0.5f,2,"AUDIO MUTO: MANCA VAT/MINIAUDIO.H (VEDI GAME_APP_DESIGN.MD)",
+                      0.7f,0.6f,0.3f,1);
+    } else if(st==APP_BRIEFING){
+        char hdr[96];
+        snprintf(hdr,sizeof hdr,"MISSIONE %d: %s",gApp.cur+1,(L&&L->name[0])?L->name:"(SENZA NOME)");
+        ui_text(W*0.14f,H*0.16f,4,hdr,0.95f,0.78f,0.30f,1);
+        ui_text(W*0.14f,H*0.28f,2.5f,L?L->brief:"",0.92f,0.92f,0.92f,1);
+        char obj[80];
+        snprintf(obj,sizeof obj,"OBIETTIVO: RESISTI %d SECONDI%s",
+                 (int)(L?L->survive_s:0),(L&&L->core_hp>0)?" - DIFENDI IL NUCLEO":"");
+        ui_text(W*0.14f,H*0.60f,3,obj,0.75f,0.88f,1.0f,1);
+        ui_text_c(W*0.5f,H*0.80f,3,
+                  gApp.level_ready?"INVIO PER INIZIARE":"CARICAMENTO...",1,1,1,0.9f);
+    } else if(st==APP_DEBRIEF){
+        const char *T=gApp.won?"MISSIONE COMPIUTA":"POSTAZIONE PERSA";
+        ui_text_c(W*0.5f,H*0.32f,6,T,gApp.won?0.30f:0.90f,gApp.won?0.90f:0.20f,0.20f,1);
+        char k[64]; snprintf(k,sizeof k,"KILLS %d",def_kills(g));
+        ui_text_c(W*0.5f,H*0.50f,3,k,0.9f,0.9f,0.9f,1);
+        const char *P=gApp.won?((gApp.cur+1>=gApp.nlevels)?"INVIO PER IL MENU"
+                                                          :"INVIO: PROSSIMO LIVELLO")
+                              :"INVIO: RIPROVA";
+        ui_text_c(W*0.5f,H*0.66f,3,P,1,1,1,0.9f);
+    }
+}
+#endif /* GAME_SHELL */
+
 int main(int argc, char **argv){
+#ifdef GAME_SHELL
+    // eseguibile del gioco: argv[1] = campagna; la scena iniziale è il livello
+    // del progresso salvato, mostrata ferma dietro al title screen.
+    app_init(&gApp);
+    const char *camp_path = argc > 1 ? argv[1] : "campaign.txt";
+    if(app_campaign_load(&gApp,camp_path)!=0){
+        fprintf(stderr,"campagna non caricata: %s\n",camp_path); return 1; }
+    app_load_progress(&gApp,"progress.txt");
+    gApp.cur = gApp.unlocked;
+    const char *scene_path = app_cur_level(&gApp)->scene;
+    if(au_init()!=0) fprintf(stderr,"audio init fail (si continua muti)\n");
+    au_set_volume((float)gApp.vol_sfx/10.0f,(float)gApp.vol_music/10.0f);
+    printf("campagna %s: %d livelli | progresso: livello %d | audio: %s\n",
+           camp_path,gApp.nlevels,gApp.unlocked+1,
+           au_backend_live()?"miniaudio":"muto (vat/miniaudio.h assente)");
+#else
     const char *scene_path = argc > 1 ? argv[1] : "scenes/obstacles.scn";
+#endif
     Scene sc;
     if (scene_load(scene_path, &sc) != 0) { fprintf(stderr, "scene load fail: %s\n", scene_path); return 1; }
     printf("scene %s: %dx%d cell=%g (%gx%g m) poly=%d spawn=%d goal=%d prop=%d\n",
@@ -1332,6 +1552,26 @@ int main(int argc, char **argv){
     double acc_sim=0,acc_lay=0,acc_ren=0; int acc_n=0;
     double bsim=0,blay=0,bren=0; int bn=0;     // finestra di misura benchmark
     int running=1,frame=0,shot_done=0;
+    anim_init(&gAnim);
+#ifdef GAME_SHELL
+    // wiring dello ShellHost: i puntatori allo stato di main che il cambio
+    // livello (shell_load_level) deve toccare. La UI 2D: VAO/VBO dinamico su
+    // flat.vs + ui.fs (alpha in aNormal.x), orto in pixel, depth off.
+    gHost.sc=&sc; gHost.s=&s; gHost.g=&g; gHost.dir=&dir;
+    gHost.vl=vl; gHost.spctx=&spctx; gHost.dz=&dz;
+    gHost.obVbo=obVbo; gHost.prVbo=prVbo; gHost.obNV=&obNV; gHost.prNV=&prNV;
+    gHost.ground_on=groundOn; gHost.cam_x=&cx; gHost.cam_z=&cz; gHost.running=&running;
+    gUiBuf=malloc((size_t)UI_MAX_V*9*sizeof(float));
+    GLuint uiProg=vg_shader("vat/flat.vs","vat/ui.fs");
+    GLint uVPui=glGetUniformLocation(uiProg,"uVP");
+    GLuint uiVao,uiVbo; glGenVertexArrays(1,&uiVao);glBindVertexArray(uiVao);
+    glGenBuffers(1,&uiVbo);glBindBuffer(GL_ARRAY_BUFFER,uiVbo);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)UI_MAX_V*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
+    glBindVertexArray(0);
+#endif
     while(running){
         SDL_Event e; while(SDL_PollEvent(&e)){
             if(e.type==SDL_EVENT_QUIT){ running=0; continue; }
@@ -1343,6 +1583,11 @@ int main(int argc, char **argv){
             if(e.type==SDL_EVENT_MOUSE_MOTION ||
                e.type==SDL_EVENT_MOUSE_BUTTON_DOWN ||
                e.type==SDL_EVENT_MOUSE_BUTTON_UP){
+#ifdef GAME_SHELL
+                // negli stati UI (menu/briefing/…) il mouse non tocca il mondo
+                if(!ed.active && gApp.state!=APP_PREP && gApp.state!=APP_ASSAULT)
+                    continue;
+#endif
                 // punto logico -> pixel (corretto anche su HiDPI: SW/SH sono pixel)
                 int wpw=1,wph=1; SDL_GetWindowSize(win,&wpw,&wph);
                 int motion=(e.type==SDL_EVENT_MOUSE_MOTION);
@@ -1399,6 +1644,43 @@ int main(int argc, char **argv){
                 continue;
             }
             if(e.type!=SDL_EVENT_KEY_DOWN) continue;
+#ifdef GAME_SHELL
+            // --- shell: negli stati UI la tastiera è del menu; in PREP/ASSALTO
+            // solo INVIO (via all'assalto) ed ESC (abbandono) sono della shell,
+            // il resto va ai controlli di gioco. In EDIT la shell non tocca nulla.
+            if(!ed.active){
+                AppState ast=gApp.state;
+                int in_ui=(ast!=APP_PREP && ast!=APP_ASSAULT);
+                int mapped=1; AppInput ain=APP_IN_CONFIRM;
+                switch(e.key.key){
+                    case SDLK_UP:    case SDLK_W: ain=APP_IN_UP;    break;
+                    case SDLK_DOWN:  case SDLK_S: ain=APP_IN_DOWN;  break;
+                    case SDLK_LEFT:  case SDLK_A: ain=APP_IN_LEFT;  break;
+                    case SDLK_RIGHT: case SDLK_D: ain=APP_IN_RIGHT; break;
+                    case SDLK_RETURN: case SDLK_KP_ENTER: case SDLK_SPACE:
+                                                  ain=APP_IN_CONFIRM; break;
+                    case SDLK_ESCAPE:             ain=APP_IN_BACK;  break;
+                    default: mapped=0; break;
+                }
+                if(in_ui){
+                    if(e.key.key==SDLK_F11){ fullscreen=!fullscreen;
+                        SDL_SetWindowFullscreen(win,fullscreen); continue; }
+                    if(ast==APP_TITLE){ ain=APP_IN_CONFIRM; mapped=1; }   // any key
+                    if(!mapped) continue;
+                    if(ain==APP_IN_UP||ain==APP_IN_DOWN) au_play(SND_MENU_MOVE);
+                    AppAction act=app_input(&gApp,ain);
+                    if(ain==APP_IN_CONFIRM && act!=APP_ACT_NONE && act!=APP_ACT_QUIT)
+                        au_play(SND_MENU_SELECT);
+                    shell_do_act(act);
+                    continue;
+                }
+                if(e.key.key==SDLK_RETURN||e.key.key==SDLK_KP_ENTER||e.key.key==SDLK_ESCAPE){
+                    shell_do_act(app_input(&gApp,
+                        e.key.key==SDLK_ESCAPE?APP_IN_BACK:APP_IN_CONFIRM));
+                    continue;
+                }
+            }
+#endif
             // --- tasti globali (EDIT e PLAY) ---
             switch(e.key.key){
                 case SDLK_ESCAPE: running=0; break;
@@ -1496,19 +1778,50 @@ int main(int argc, char **argv){
         if(shot || bench_meas) frame_t=FIXED_DT;
         if(frame_t>0.25) frame_t=0.25;                 // anti spiral-of-death
         if(blast_frame>=0 && frame>=blast_frame){ blast_pending=1; blast_frame=-1; }
-        if(!ed.active && !paused){
+        int sim_run = !ed.active && !paused;
+#ifdef GAME_SHELL
+        sim_run = sim_run && (gApp.state==APP_PREP || gApp.state==APP_ASSAULT);
+#endif
+        if(sim_run){
             if(blast_pending){ simp_apply_impulse_ex(s,blast_x,blast_y,8.0f,blast_str,blast_up);
                 blast_pending=0; printf("blast @ (%.1f,%.1f) str %.1f up %.2f\n",
-                    (double)blast_x,(double)blast_y,(double)blast_str,(double)blast_up); }
+                    (double)blast_x,(double)blast_y,(double)blast_str,(double)blast_up);
+#ifdef GAME_SHELL
+                au_play(SND_BOOM);
+#endif
+            }
             acc_t+=frame_t;
             while(acc_t>=FIXED_DT){
                 // §8: il director emette l'ondata (burst-free). In benchmark
-                // (fillN) il campo è già pieno: niente director.
-                if(dir && simp_count(s)<MAXA) def_director_update(dir,FIXED_DT);
+                // (fillN) il campo è già pieno: niente director. Con la shell
+                // le ondate partono solo in ASSALTO (in PREP si fortifica).
+                int dir_on=1;
+#ifdef GAME_SHELL
+                dir_on=(gApp.state==APP_ASSAULT);
+#endif
+                if(dir && dir_on && simp_count(s)<MAXA) def_director_update(dir,FIXED_DT);
                 Uint64 t0=SDL_GetPerformanceCounter();
                 simp_step(s,FIXED_DT);
                 Uint64 t1=SDL_GetPerformanceCounter();
                 def_update(g,FIXED_DT);
+                // rinculo torrette: (ri)parte l'envelope di chi ha sparato in
+                // questo step; build_turret_mesh lo legge come nudge.
+                { int nt=def_turret_count(g);
+                  for(int ti=0;ti<nt;ti++)
+                      if(def_turret(g,ti)->fired && !def_turret_disabled(g,ti))
+                          anim_fire(&gAnim,ANIM_TURRET_RECOIL,ti,0.12f); }
+                anim_update(&gAnim,FIXED_DT);
+#ifdef GAME_SHELL
+                if(gApp.state==APP_ASSAULT){                 // esito missione
+                    const AppLevel *SL=app_cur_level(&gApp);
+                    gSurviveT+=FIXED_DT;
+                    int lost=def_lost(g);
+                    if(lost || (SL && gSurviveT>=SL->survive_s)){
+                        au_play(lost?SND_LOSE:SND_WIN);
+                        shell_do_act(app_report_result(&gApp,!lost));
+                    }
+                }
+#endif
                 // prop distruttibili (DESTRUCT_DESIGN.md): contatto -> scoppio FX.
                 // dopo def_update (la griglia puo' essere stantia dai kill: la query
                 // cade su brute-force, corretta). Re-upload se cambia o sta cadendo.
@@ -1740,6 +2053,21 @@ int main(int argc, char **argv){
                 glDrawArrays(GL_TRIANGLES,0,ov);
                 glEnable(GL_DEPTH_TEST); }
         }
+#ifdef GAME_SHELL
+        // overlay shell (title/menu/briefing/debrief + barra di fase): 2D in
+        // pixel, sopra tutto, blend alpha (l'alpha viaggia in aNormal.x).
+        gUiV=0; shell_build_ui(SW,SH,g);
+        if(gUiV>0){
+            glDisable(GL_DEPTH_TEST); glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+            mat4 uivp; m_ortho(uivp,0.0f,(float)SW,(float)SH,0.0f,-1.0f,1.0f);
+            glUseProgram(uiProg); glUniformMatrix4fv(uVPui,1,GL_FALSE,uivp);
+            glBindVertexArray(uiVao); glBindBuffer(GL_ARRAY_BUFFER,uiVbo);
+            glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)gUiV*9*sizeof(float),gUiBuf);
+            glDrawArrays(GL_TRIANGLES,0,gUiV);
+            glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
+        }
+#endif
         glFinish();
         double ren_ms=(double)(SDL_GetPerformanceCounter()-r0)*1000.0/pf;
 
@@ -1800,6 +2128,9 @@ int main(int argc, char **argv){
         SDL_GL_SwapWindow(win);
     }
     free(stBuf); free(turBuf); free(dragBuf); if(dir) def_director_destroy(dir);
+#ifdef GAME_SHELL
+    au_shutdown(); free(gUiBuf);
+#endif
     if(gTerOn) terrain_free(&gTer);
     def_destroy(g); vat_layer_destroy(vl); simp_destroy(s); scene_free(&sc);
     SDL_GL_DestroyContext(ctx);SDL_DestroyWindow(win);SDL_Quit(); return 0;

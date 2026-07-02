@@ -440,9 +440,22 @@ Loop target: elicottero/LZ → missione (resisti T / uccidi N) → fase PREP
 dai kill → upgrade/riparazioni/attacchi speciali/munizioni). Metodo per fase:
 design → test headless → aggancio vat_horde → verifica visiva → commit.
 
+- [x] **Shell applicativa / eseguibile `game`** (2 lug 2026, design in
+      `GAME_APP_DESIGN.md`): `make game` = vat_horde + `-DGAME_SHELL` —
+      title → menu (new/continue/settings/exit) → briefing (testo da
+      `campaign.txt`) → PREP (director fermi, fortifica, INVIO) → ASSAULT
+      (timer survive + core LZ placeholder, `def_lost`) → debrief →
+      next/retry; progressi in `progress.txt`. Moduli: `app.c` (flusso puro,
+      `test_app`), `anim.c` (envelope one-shot, rinculo torrette,
+      `test_anim`), `audio.c` (miniaudio SE l'utente scarica
+      `vat/miniaudio.h`, altrimenti muto; SFX procedurali), `vat/font8.h` +
+      `vat/ui.fs` (testo/overlay 2D). Rimandati (§6 del design): preload
+      asincrono nel briefing, terreno per-livello, voice/video, musica, pausa.
 - [ ] **Fase A — Macchina a stati di missione** (`mission.c`): PREP→ASSAULT→
       WIN/LOSE, `mission` nel `.scn`, director con `pool`/`start_delay`
       (assorbe il task "spawn scriptati" di M5b), LZ/elicottero = core.
+      La shell qui sopra le fa già da guscio: fase A sostituisce il suo
+      win/lose minimo (timer+core) restando dietro `app_report_result`.
 - [ ] **Fase B — Barriere a LINEA** (`place.c` + `PL_WALL_LINE`): drag di
       segmenti alla AoE, costo per cella, un segmento = una struttura;
       catalogo filo spinato / mura / cancellata.

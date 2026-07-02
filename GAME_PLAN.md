@@ -80,6 +80,30 @@ C–F sono contenuto strategico incrementale (ognuna giocabile da sola);
 G (UI) parte minimale in A e cresce a ogni fase; H è tuning finale.
 Stima: 1–2 sessioni per fase col metodo §1.
 
+## 3. Bilanciamento: `balance.cfg` (trasversale, richiesto 2 lug 2026)
+
+Decine di parametri di tuning (HP zombie per tipo, range/cadenza/danno
+torrette, HP e `seg_len` delle barriere, costi, rate director…) andranno
+in **UN file di config letto a runtime**, non in un header compilato.
+Raccomandazione (motivata, da confermare col primo uso):
+
+- **Default compilati nel codice** (struct `Balance` con inizializzatori):
+  il file può mancare o essere parziale — zero fragilità, i test headless
+  girano sui default e restano deterministici.
+- **`balance.cfg` opzionale che li sovrascrive**: testo `chiave valore`
+  con commenti `#`, chiavi namespaced (`turret.light.range 18`,
+  `barrier.wall.seg_len 2.0`, `zombie.man.hp 100`). Parser zero-dep
+  ~50 righe, stesso stile di `props/catalog.txt` e del `set k v` di scena.
+- **Hot-reload** con un tasto in `vat_horde` (rilettura + riapplica alle
+  tabelle): il tuning si fa GIOCANDO, senza ricompilare né riavviare —
+  è il motivo per cui il file batte l'header statico, non la velocità di
+  compilazione (che qui è irrilevante).
+- Le tabelle data-driven previste dalle fasi (TurretDef in C, PlItem in B,
+  TrapDef in D, tipi barriera) si RIEMPIONO da qui; il `set k v` di scena
+  resta per i parametri della SIM per-scena (altra cosa: fisica, non
+  bilanciamento). Il file nasce in fase A/B con le prime chiavi vere e
+  cresce con ogni fase; niente chiavi speculative.
+
 ---
 
 ## Fase A — Macchina a stati di missione (`mission.c`)
@@ -131,9 +155,17 @@ con tipi a resistenza/costo diversi.
 - **Costo al metro**: `cost` della voce = budget per CELLA (o per metro);
   `pl_validate` calcola il totale del segmento corrente e lo espone per
   il ghost/HUD (rosso se non affordabile). Segmenti lunghi = cari.
-- **Un segmento = una struttura** `def_add_structure` (HP pool proprio):
-  brecce = gap fra segmenti; una sezione debole è un segmento economico.
-  È la semantica già usata dall'entità `wall` di scena.
+- **Auto-segmentazione** (richiesta 2 lug 2026): la linea disegnata viene
+  SPEZZATA automaticamente in segmenti adiacenti di lunghezza fissa
+  `seg_len` (da `balance.cfg` per tipo barriera, es. 2 m → un muro di
+  10 m = 5 segmenti; l'ultimo assorbe il resto), **ogni segmento = una
+  struttura** `def_add_structure` con il SUO pool HP (`hp_per_seg` da
+  config) → il muro crolla UN PEZZO alla volta, mai tutto insieme.
+  Brecce = gap fra segmenti; sezione debole = segmento economico.
+  La STESSA suddivisione va applicata in `build_walls_from_scene`
+  (vat_horde) ai rect `wall` di scena, che oggi fanno 1 rect = 1 pool
+  unico: si spezza lungo l'asse lungo del rect, il formato `.scn` non
+  cambia (il rect resta UNA entità logica, la segmentazione è al build).
 - Catalogo barriere (voci `PlItem`, tutte già esprimibili):
   - `filo spinato` — economico, HP bassissimi, `cost_mult` di sfondamento
     minimo (l'orda lo apre in fretta ma NE È RALLENTATA fisicamente

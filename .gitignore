@@ -58,3 +58,11 @@ corpse_atlas.bmp
 test_stun
 test_blood_fear
 test_place
+
+# game shell (GAME_APP_DESIGN.md)
+test_app
+test_anim
+game
+progress.txt
+# audio single-header (lo scarica l'utente)
+vat/miniaudio.h

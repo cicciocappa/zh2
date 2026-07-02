@@ -1,0 +1,29 @@
+# campaign.txt — campagna placeholder (GAME_APP_DESIGN.md §2).
+# Un blocco per livello; `level` apre il blocco. Le mappe sono le arene-banco
+# esistenti finché i livelli veri (GAME_PLAN fase H) non arrivano.
+# Chiavi: level <scn> | name <testo> | survive <s> | core <hp> | brief <riga>
+# Future (gia' accettate dal parser, ignorate): voice <wav> | video <file>
+
+level scenes/arena4.scn
+name  Perimetro
+survive 90
+core 800
+brief La zona di atterraggio e' calda: l'orda converge da quattro
+brief direzioni. Fortifica il perimetro durante la preparazione,
+brief poi resisti 90 secondi. Se il nucleo cade, e' finita.
+
+level scenes/arena_weak.scn
+name  Sezione debole
+survive 120
+core 800
+brief Le mura di questo avamposto non sono uniformi: una sezione
+brief e' marcia e l'orda lo sente. Coprila, o sacrificala e
+brief prepara una seconda linea. 120 secondi.
+
+level scenes/arena_breach.scn
+name  Breccia
+survive 150
+core 1200
+brief Doppia cinta, una breccia gia' aperta e difesa dalle torrette.
+brief L'orda imparera' dal proprio sangue: non fidarti di un solo
+brief imbuto. Resisti 150 secondi.

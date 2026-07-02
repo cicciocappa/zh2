@@ -105,6 +105,12 @@ selezione, roundtrip dopo move/resize). HUD/griglia = verifica visiva
 - Tool nuovi (tasti 9, 0, …; o secondo anello di tool con Shift):
   - `ED_WALLRECT` — muro distruttibile: drag rect come i cost, campi
     `hp`/`cost_mult` editabili da selezione (l'entità `wall` esiste già).
+    NOTA auto-segmentazione (GAME_PLAN §3 + fase B, richiesta 2 lug
+    2026): l'editor disegna e seleziona UNA entità rect; è `build_world`
+    che la spezza in segmenti da `seg_len` (config), ognuno col suo pool
+    HP → crollo a pezzi. L'editor non deve gestire N sotto-entità; utile
+    però un overlay con i tick della suddivisione per far VEDERE i
+    segmenti mentre si disegna. `hp` dell'entità = HP PER SEGMENTO.
   - `ED_TURRET` — click piazza, `[`/`]` range, `H` heavy; overlay: disco
     range + arco. (Torrette FISSE di livello; il piazzamento del giocatore
     è place.c, altra cosa.)
