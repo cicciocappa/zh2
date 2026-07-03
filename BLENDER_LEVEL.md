@@ -7,7 +7,8 @@ runtime e non cambia; Blender è solo un *produttore* di `.scn`, come oggi lo
 è la modalità EDIT di `vat_horde`. Il gioco non sa nulla di Blender.
 
 Questo documento definisce la convenzione (nomi, custom properties, assi,
-collection) e il perimetro dello script di export. Sostituisce le fasi
+collection) e il perimetro dello script di export. Guida pratica passo-passo
+per chi autora: `TUTORIAL_LIVELLO.md` (in caso di conflitto vince questo doc). Sostituisce le fasi
 E1/E3/E4/E5 di `EDITOR_PLAN.md` come strada principale di authoring; la
 modalità EDIT in-game resta come strumento di tuning rapido e debug.
 
