@@ -56,6 +56,15 @@ struct SimP {
                               target (barricade). Only consulted when solid[i].
                               Collision (SDF) is independent of this — both tiers
                               are solid; this picks only WHERE the horde presses. */
+    float   *opacity;      /* gw*gh bullet opacity in [0,1] (ENTITY_DESIGN axis C).
+                              simp_set_wall keeps it mirroring solid (1/0), so maps
+                              that never call simp_set_opacity behave bit-identically
+                              to the pre-opacity core; an explicit override AFTER
+                              set_wall decouples occlusion from collision (fence,
+                              smoke). Rays block on opacity, not on solid. */
+    bool     has_opacity;  /* true once any cell diverges from the solid mirror:
+                              gates the weighted-transmittance path so opacity-free
+                              maps keep today's binary DDA cost */
     uint8_t *goal;         /* gw*gh, 1 = goal/drain cell */
     float   *phi;          /* cost-to-goal */
     float   *flow_x;       /* normalized direction field (0,0 in walls) */
@@ -625,6 +634,8 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
     s->solid  = (uint8_t *)calloc(n, 1);
     s->wall_cost = (float *)malloc(n * sizeof(float));
     for (size_t i = 0; i < n; i++) s->wall_cost[i] = WALL_ENTER;
+    s->opacity = (float *)calloc(n, sizeof(float));   /* open = 0, mirrors solid */
+    s->has_opacity = false;
     s->goal   = (uint8_t *)calloc(n, 1);
     s->phi    = (float *)malloc(n * sizeof(float));
     s->flow_x = (float *)calloc(n, sizeof(float));
@@ -751,7 +762,7 @@ SimP *simp_create(int gw, int gh, float cell_size, int max_agents) {
 
 void simp_destroy(SimP *s) {
     if (!s) return;
-    free(s->solid); free(s->wall_cost); free(s->goal); free(s->phi);
+    free(s->solid); free(s->wall_cost); free(s->opacity); free(s->goal); free(s->phi);
     free(s->flow_x); free(s->flow_y); free(s->sdf); free(s->wall_near);
     free(s->cost_user); free(s->rho_raw); free(s->rho_s); free(s->cost_mult);
     free(s->jam_raw); free(s->jam_s);
@@ -795,8 +806,27 @@ SimPParams *simp_params(SimP *s) { return &s->params; }
 
 void simp_set_wall(SimP *s, int cx, int cy, bool solid) {
     if (cx < 0 || cy < 0 || cx >= s->gw || cy >= s->gh) return;
-    s->solid[cy * s->gw + cx] = solid ? 1 : 0;
+    int i = cy * s->gw + cx;
+    s->solid[i] = solid ? 1 : 0;
+    /* keep opacity mirroring solid (walls block bullets, open cells don't);
+     * a semi-transparent override (fence) is set AFTER, and a collapse
+     * (set_wall false) resets it to clear for free (ENTITY_DESIGN §4) */
+    s->opacity[i] = solid ? 1.0f : 0.0f;
     s->nav_dirty = true;
+}
+
+void simp_set_opacity(SimP *s, int cx, int cy, float opacity) {
+    if (cx < 0 || cy < 0 || cx >= s->gw || cy >= s->gh) return;
+    int i = cy * s->gw + cx;
+    s->opacity[i] = clampf(opacity, 0.0f, 1.0f);
+    /* sticky flag: once a cell diverges from the solid mirror the weighted
+     * transmittance path stays on (never cleared — conservative, perf only) */
+    if (s->opacity[i] != (s->solid[i] ? 1.0f : 0.0f)) s->has_opacity = true;
+}
+
+float simp_opacity(const SimP *s, int cx, int cy) {
+    if (cx < 0 || cy < 0 || cx >= s->gw || cy >= s->gh) return 1.0f;
+    return s->opacity[cy * s->gw + cx];
 }
 void simp_set_goal(SimP *s, int cx, int cy, bool goal) {
     if (cx < 0 || cy < 0 || cx >= s->gw || cy >= s->gh) return;
@@ -1131,14 +1161,23 @@ int simp_query_nearest(const SimP *s, float x, float y, float r_max) {
     return best;
 }
 
-/* Distance along a normalized ray to the first solid nav cell, or maxd if the
- * ray reaches maxd / leaves the grid without hitting a wall. Amanatides-Woo
- * DDA over the nav grid (cell, solid[]). Line-of-sight occlusion for hitscan. */
+/* A cell BLOCKS a hitscan ray when it is fully opaque. Without opacity
+ * overrides that is exactly the solid grid (bit-compatible fast read); with
+ * them (has_opacity) occlusion decouples from collision: a fence (solid,
+ * opacity ~0.3) does not block, pure smoke at opacity 1 would. */
+#define OPAQUE_MIN 0.999f
+static inline int ray_blocked(const SimP *s, int c) {
+    return s->has_opacity ? (s->opacity[c] >= OPAQUE_MIN) : (int)s->solid[c];
+}
+
+/* Distance along a normalized ray to the first fully-opaque nav cell, or maxd
+ * if the ray reaches maxd / leaves the grid without hitting one. Amanatides-
+ * Woo DDA over the nav grid. Line-of-sight occlusion for hitscan. */
 static float wall_ray_t(const SimP *s, float ox, float oy,
                         float dx, float dy, float maxd) {
     int cx = (int)(ox * s->inv_cell), cy = (int)(oy * s->inv_cell);
     if (cx < 0 || cx >= s->gw || cy < 0 || cy >= s->gh) return maxd;
-    if (s->solid[cy * s->gw + cx]) return 0.0f;             /* muzzle in a wall */
+    if (ray_blocked(s, cy * s->gw + cx)) return 0.0f;       /* muzzle in a wall */
     int stepx = dx >= 0.0f ? 1 : -1, stepy = dy >= 0.0f ? 1 : -1;
     float tDX = dx != 0.0f ? s->cell / fabsf(dx) : 1e30f;
     float tDY = dy != 0.0f ? s->cell / fabsf(dy) : 1e30f;
@@ -1152,7 +1191,7 @@ static float wall_ray_t(const SimP *s, float ox, float oy,
         else           { cy += stepy; t = tMY; tMY += tDY; }
         if (t > maxd) return maxd;
         if (cx < 0 || cx >= s->gw || cy < 0 || cy >= s->gh) return maxd;
-        if (s->solid[cy * s->gw + cx]) return t;
+        if (ray_blocked(s, cy * s->gw + cx)) return t;
     }
 }
 
@@ -1260,6 +1299,48 @@ float simp_wall_ray(const SimP *s, float ox, float oy,
     float len = sqrtf(dx * dx + dy * dy);
     if (len < 1e-8f) return maxdist;
     return wall_ray_t(s, ox, oy, dx / len, dy / len, maxdist);
+}
+
+#define TRANSMIT_EPS 1e-3f   /* early-out: below this the line counts as blocked */
+
+float simp_ray_transmit(const SimP *s, float ox, float oy,
+                        float dx, float dy, float maxdist) {
+    float len = sqrtf(dx * dx + dy * dy);
+    if (len < 1e-8f || maxdist <= 0.0f) return 1.0f;
+    dx /= len; dy /= len;
+    if (!s->has_opacity)   /* no semi-transparent cells: binary, today's cost */
+        return wall_ray_t(s, ox, oy, dx, dy, maxdist) < maxdist ? 0.0f : 1.0f;
+
+    /* same DDA as wall_ray_t, but accumulating (1-op)^(seg/cell) per crossed
+     * cell instead of stopping at the first solid one */
+    int cx = (int)(ox * s->inv_cell), cy = (int)(oy * s->inv_cell);
+    if (cx < 0 || cx >= s->gw || cy < 0 || cy >= s->gh) return 1.0f;
+    int stepx = dx >= 0.0f ? 1 : -1, stepy = dy >= 0.0f ? 1 : -1;
+    float tDX = dx != 0.0f ? s->cell / fabsf(dx) : 1e30f;
+    float tDY = dy != 0.0f ? s->cell / fabsf(dy) : 1e30f;
+    float bx = (dx >= 0.0f ? (cx + 1) : cx) * s->cell;
+    float by = (dy >= 0.0f ? (cy + 1) : cy) * s->cell;
+    float tMX = dx != 0.0f ? (bx - ox) / dx : 1e30f;
+    float tMY = dy != 0.0f ? (by - oy) / dy : 1e30f;
+    float trans = 1.0f, tprev = 0.0f;
+    for (;;) {
+        float tnext = tMX < tMY ? tMX : tMY;
+        float tend = tnext < maxdist ? tnext : maxdist;
+        float seg = tend - tprev;                  /* ray length inside this cell */
+        if (seg > 0.0f) {
+            float op = s->opacity[cy * s->gw + cx];
+            if (op >= OPAQUE_MIN) return 0.0f;     /* fully opaque, like wall_ray */
+            if (op > 0.0f) {
+                trans *= powf(1.0f - op, seg * s->inv_cell);
+                if (trans < TRANSMIT_EPS) return 0.0f;
+            }
+        }
+        if (tnext >= maxdist) return trans;
+        if (tMX < tMY) { cx += stepx; tMX += tDX; }
+        else           { cy += stepy; tMY += tDY; }
+        tprev = tnext;
+        if (cx < 0 || cx >= s->gw || cy < 0 || cy >= s->gh) return trans;
+    }
 }
 
 static inline void impulse_one(SimP *s, int i, float x, float y,

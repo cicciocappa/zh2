@@ -1,12 +1,23 @@
 # Classificazione unificata degli oggetti — design tecnico
 
-> **STATO: BOZZA (2026-07-03).** Nata dalla riflessione in `considerazioni.txt`
+> **STATO: v1 IMPLEMENTATA (2026-07-03).** L'asse C è nel core
+> (`simp_set_opacity` + `simp_ray_transmit`, §4), le torrette acquisiscono a
+> soglia `T_ACQ` e scalano il danno per la trasmittanza (`defense.c`; il colpo
+> pesante accumula `hheat += transmit`, per cui dietro una cancellata servono
+> ceil(1/transmit) colpi), il catalogo prop parsa le colonne §6
+> (`props.c`, campi `solid/height/hp/cost_mult/opacity/mass`). Verifica:
+> `test_cover` (piano §7 completo) + `test_props` (§6). NON ancora fatto:
+> l'APPLICAZIONE host delle colonne catalogo in `build_world` — il footprint
+> del prop non ha dimensioni nello schema §6 (serve una colonna `WxD` o il
+> footprint dal glb: da decidere, si aggiunge alla lista §8).
+>
+> Nata dalla riflessione in `considerazioni.txt`
 > dopo il line-of-sight delle torrette: le mura bloccano zombie E proiettili,
 > ma una CANCELLATA blocca gli zombie e lascia passare (parte de)i proiettili;
 > un BUS blocca tutto ma non si distrugge né si trascina; i prop leggeri
 > scoppiano al passaggio. Obiettivo: aggiungere un oggetto nuovo = modello 3D
-> + una riga di catalogo con le sue caratteristiche. Niente codice ancora:
-> questo doc fissa gli ASSI, l'unica API core mancante e lo schema catalogo.
+> + una riga di catalogo con le sue caratteristiche.
+> Questo doc fissa gli ASSI, l'unica API core mancante e lo schema catalogo.
 
 ## 1. Principio
 
@@ -155,3 +166,8 @@ regime anche loro possono convergere su questo schema, ma NON in v1.
    la meccanica che lo usa (screamer/copertura)?
 3. Riparo mobile (auto trascinata): mai, dopo, o subito?
 4. Nome definitivo dell'asse nel codice: `opacity` (proposto) vs `cover`.
+   → v1 implementata con `opacity` (2026-07-03).
+5. (emersa in implementazione) Footprint dei prop `solid`: lo schema §6 ha
+   solo l'altezza H — per marcare la nav in `build_world` servono anche le
+   dimensioni in pianta. Colonna `WxD` nel catalogo, o footprint derivato
+   dal bbox del glb (come fa l'exporter per gli statics)?

@@ -37,7 +37,7 @@ all: test_particles test_impulse test_dormant test_stun test_handles test_query 
      test_types test_density_route test_jam test_blood_fear test_scene test_siege test_turret \
      test_defense test_base test_director test_terrain test_pick test_editor \
      test_breakthrough test_props test_vat_layer test_turret_siege test_drag test_hybrid test_car \
-     test_destruct test_place test_app test_anim
+     test_destruct test_place test_app test_anim test_cover
 
 # audio backend (GAME_APP_DESIGN.md): se l'utente ha scaricato miniaudio.h in
 # vat/, il target `game` suona; altrimenti backend nullo (muto), zero errori.
@@ -120,6 +120,9 @@ test_defense: test_defense.c defense.c sim_particles.c defense.h sim_particles.h
 
 test_turret_siege: test_turret_siege.c defense.c sim_particles.c defense.h sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_turret_siege.c defense.c sim_particles.c $(LDLIBS)
+
+test_cover: test_cover.c defense.c sim_particles.c defense.h sim_particles.h
+	$(CC) $(CFLAGS) -o $@ test_cover.c defense.c sim_particles.c $(LDLIBS)
 
 test_base: test_base.c defense.c sim_particles.c defense.h sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_base.c defense.c sim_particles.c $(LDLIBS)
@@ -223,6 +226,7 @@ test: all
 	./test_editor
 	./test_breakthrough
 	./test_props
+	./test_cover
 	./test_vat_layer
 	./test_drag
 	./test_hybrid
@@ -234,7 +238,7 @@ clean:
 	rm -rf test_particles test_impulse test_dormant test_handles test_query \
 	       test_corpses test_corpse_pile test_types test_density_route test_jam test_blood_fear test_scene \
 	       test_siege test_turret test_defense test_base test_director test_terrain bench_sim test_pick test_editor test_breakthrough test_props test_vat_layer test_drag test_hybrid test_car test_destruct test_place \
-	       test_app test_anim game \
+	       test_app test_anim test_cover game \
 	       sandbox sprite_view vat_view vat_horde frames *.exe vat/*.o
 
 .PHONY: all test clean

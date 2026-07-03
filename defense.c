@@ -69,7 +69,9 @@ struct DefGame {
     int     *hp;        /* per slot */
     uint8_t *body;      /* per slot: DefBody */
     uint8_t *wound;     /* per slot: DefWound */
-    uint8_t *hheat;     /* per slot: heavy hits absorbed (tank) */
+    float   *hheat;     /* per slot: heavy hits absorbed; fractional because a
+                         * shot through semi-transparent cover (ENTITY_DESIGN
+                         * axis C) lands attenuated: heat += transmit */
     DefTurret turrets[TURRET_CAP];
     int   turret_struct[TURRET_CAP];  /* backing structure id, -1 = indestructible */
     int   nturrets;
@@ -104,7 +106,7 @@ DefGame *def_create(SimP *s, int cap) {
     g->hp    = (int *)calloc((size_t)cap, sizeof(int));
     g->body  = (uint8_t *)calloc((size_t)cap, 1);
     g->wound = (uint8_t *)calloc((size_t)cap, 1);
-    g->hheat = (uint8_t *)calloc((size_t)cap, 1);
+    g->hheat = (float *)calloc((size_t)cap, sizeof(float));
     g->qbuf  = (int *)malloc((size_t)cap * sizeof(int));
     g->gw = simp_grid_w(s); g->gh = simp_grid_h(s);
     size_t ncell = (size_t)g->gw * (size_t)g->gh;
@@ -196,18 +198,30 @@ static void wound_roll(DefGame *g, int i, int slot) {
 }
 
 /* Apply one shot's worth of damage to a live handle. Resolved from handle so
- * earlier kills in the same (piercing) shot don't invalidate it. */
-static void apply_damage(DefGame *g, SimPHandle h, const DefTurret *t) {
+ * earlier kills in the same (piercing) shot don't invalidate it. transmit in
+ * (0,1] scales the shot through semi-transparent cover (ENTITY_DESIGN axis C):
+ * deterministic multiplier, same expected DPS as a per-bullet lottery. */
+static void apply_damage(DefGame *g, SimPHandle h, const DefTurret *t,
+                         float transmit) {
     int i = simp_index_of(g->s, h);
     if (i < 0) return;
     int slot = simp_slot_of(g->s, i);
     if (t->heavy) {
-        if (g->body[slot] == BT_TANK &&
-            (int)(++g->hheat[slot]) < ENEMY[BT_TANK].heavy_hits)
-            return;                            /* tank survives this hit */
+        /* attenuated heavy shots accumulate as fractional heat: behind a
+         * fence a normal body takes ceil(1/transmit) hits to gib, a tank
+         * proportionally more. transmit 1 = today's behaviour exactly. */
+        g->hheat[slot] += transmit;
+        if (g->body[slot] == BT_TANK) {
+            if ((int)g->hheat[slot] < ENEMY[BT_TANK].heavy_hits)
+                return;                        /* tank survives this hit */
+        } else if (g->hheat[slot] < 1.0f) {
+            return;                            /* cover soaked this one */
+        }
         gib(g, i);                             /* normal, or tank's last hit */
     } else {
-        g->hp[slot] -= (int)t->damage;
+        int dmg = (int)(t->damage * transmit + 0.5f);
+        if (dmg <= 0) return;              /* cover soaked it: no wound/flinch */
+        g->hp[slot] -= dmg;
         if (g->hp[slot] <= 0) { die_light(g, i, slot); return; }
         int fresh = (g->wound[slot] == DW_NONE);
         if (fresh) wound_roll(g, i, slot);
@@ -237,6 +251,10 @@ static void apply_damage(DefGame *g, SimPHandle h, const DefTurret *t) {
 /* ---- turret update ---- */
 
 #define TRACER_TTL 0.05f
+/* min ray transmittance to acquire a target (ENTITY_DESIGN §4): the turret
+ * engages through a fence (transmit ~0.7 >> this) but not through a wall (0);
+ * low enough that any cover worth shooting through passes. */
+#define T_ACQ 0.05f
 
 static void turret_update(DefGame *g, DefTurret *t, float dt) {
     SimP *s = g->s;
@@ -250,9 +268,12 @@ static void turret_update(DefGame *g, DefTurret *t, float dt) {
     float cs = simp_cell_size(s);
     float moff = simp_is_wall(s, (int)(t->x / cs), (int)(t->y / cs)) ? cs * 1.2f : 0.0f;
 
-    /* acquire: nearest live agent inside range AND arc with a CLEAR LINE OF
-     * SIGHT. A target shielded by a wall/building is skipped (not merely
-     * un-hittable): the turret holds fire or picks a visible target instead. */
+    /* acquire: nearest live agent inside range AND arc with ENOUGH line of
+     * sight (transmittance >= T_ACQ, ENTITY_DESIGN §4): a target behind a
+     * fence is engaged (damage scaled at fire time), one behind a full wall
+     * is skipped (not merely un-hittable) — the turret holds fire or picks a
+     * visible target instead. On opacity-free maps simp_ray_transmit is the
+     * binary wall check of before, at the same cost. */
     float cx = (t->arc_min + t->arc_max) * 0.5f;
     float half = (t->arc_max - t->arc_min) * 0.5f;
     int n = simp_query_circle(s, t->x, t->y, t->range, g->qbuf, g->cap, 0);
@@ -268,8 +289,8 @@ static void turret_update(DefGame *g, DefTurret *t, float dt) {
         if (d > 1e-4f) {
             float ndx = dx / d, ndy = dy / d, md = d - moff;
             if (md > 0.0f &&
-                simp_wall_ray(s, t->x + ndx * moff, t->y + ndy * moff,
-                              ndx, ndy, md) < md)
+                simp_ray_transmit(s, t->x + ndx * moff, t->y + ndy * moff,
+                                  ndx, ndy, md) < T_ACQ)
                 continue;                          /* a wall shields it */
         }
         bestd2 = d2; best = i;
@@ -310,7 +331,13 @@ static void turret_update(DefGame *g, DefTurret *t, float dt) {
     int count = t->piercing ? nh : 1;
     /* convert ALL hits to handles before any kill (M3.4 index trap) */
     for (int k = 0; k < count; k++) g->rayh[k] = simp_handle_of(s, g->raybuf[k]);
-    for (int k = 0; k < count; k++) apply_damage(g, g->rayh[k], t);
+    for (int k = 0; k < count; k++) {
+        /* damage scaled by the cover crossed up to THIS hit (per-hit: a
+         * piercing shot loses more through each fence it punches). 1.0 on
+         * opacity-free maps (the ray was already truncated at full walls). */
+        float tr = simp_ray_transmit(s, ox, oy, mdx, mdy, g->rayt[k]);
+        apply_damage(g, g->rayh[k], t, tr);
+    }
 }
 
 /* ---- §7 base & defeat: structures + siege ---- */

@@ -2,6 +2,7 @@
 
 #define _POSIX_C_SOURCE 200809L   /* strtok_r under -std=c11 */
 #include "props.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,11 +40,13 @@ int prop_catalog_load(const char *path, PropCatalog *c) {
         strncpy(d->label, label ? label : key, PROP_LABEL_LEN - 1);
         d->label[PROP_LABEL_LEN - 1] = '\0';
         /* optional destructible config (DESTRUCT_DESIGN.md §3): trig debris topple.
-         * Present => destructible; absent => inert decor (defaults stay zero). */
+         * Present (and not "-" placeholders) => destructible; absent => inert
+         * decor (defaults stay zero). "-" placeholders let a line skip this trio
+         * to reach the entity-axis columns below. */
         char *trig   = strtok_r(NULL, " \t", &save);
         char *debris = strtok_r(NULL, " \t", &save);
         char *topple = strtok_r(NULL, " \t", &save);
-        if (trig && debris && topple) {
+        if (trig && debris && topple && strcmp(trig, "-") != 0) {
             d->destructible = 1;
             d->trigger_radius = (float)atof(trig);
             if (d->trigger_radius <= 0.0f) d->trigger_radius = 1.0f;
@@ -51,6 +54,38 @@ int prop_catalog_load(const char *path, PropCatalog *c) {
             d->debris[PROP_DEBRIS_LEN - 1] = '\0';
             d->topple = (float)atof(topple);
             if (d->topple < 0.0f) d->topple = 0.0f;
+        }
+        /* unified entity axes (ENTITY_DESIGN.md §6), each optional:
+         * [solid H] [hp mult] [opac] [mass] — "-" = default (inert). */
+        d->cost_mult = 1.0f;
+        char *tok = strtok_r(NULL, " \t", &save);
+        if (tok) {                                      /* axis A slot: "solid H" | "-" */
+            if (strcmp(tok, "solid") == 0) {
+                char *h = strtok_r(NULL, " \t", &save);
+                d->solid = 1;
+                d->height = h ? (float)atof(h) : 0.0f;
+                if (d->height <= 0.0f) d->height = 2.0f;   /* wall_h-ish default */
+            }
+            tok = strtok_r(NULL, " \t", &save);
+        }
+        if (tok) {                                      /* axis B: hp mult */
+            if (strcmp(tok, "inf") == 0) d->hp = INFINITY;
+            else if (strcmp(tok, "-") != 0) d->hp = (float)atof(tok);
+            char *mult = strtok_r(NULL, " \t", &save);
+            if (mult && strcmp(mult, "-") != 0) d->cost_mult = (float)atof(mult);
+            tok = strtok_r(NULL, " \t", &save);
+        }
+        if (tok) {                                      /* axis C: opacity */
+            if (strcmp(tok, "-") != 0) {
+                d->opacity = (float)atof(tok);
+                if (d->opacity < 0.0f) d->opacity = 0.0f;
+                if (d->opacity > 1.0f) d->opacity = 1.0f;
+            }
+            tok = strtok_r(NULL, " \t", &save);
+        }
+        if (tok) {                                      /* axis D: drag mass */
+            if (strcmp(tok, "inf") == 0) d->mass = INFINITY;
+            else if (strcmp(tok, "-") != 0) d->mass = (float)atof(tok);
         }
         c->n++;
     }

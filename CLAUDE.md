@@ -314,6 +314,25 @@ eseguibili si lanciano dalla root del progetto.
 - `test_siege.c` — verifica del sensore d'assedio (`SIEGE_DESIGN.md`):
   selettività into-wall vs tangente + la meccanica completa lato gioco
   (attacchi discreti → crollo → reroute → drain).
+- `test_cover.c` — verifica dell'asse C opacità ai proiettili
+  (`ENTITY_DESIGN.md` §4+§7, 2026-07-03): `simp_set_opacity` per-cella
+  (default: specchia `solid`, 1/0 — bit-compatibile; override DOPO
+  `simp_set_wall`) + `simp_ray_transmit` (prodotto `(1-op)^(len/cella)` sul
+  DDA, fast-path binario su mappe senza celle semi-trasparenti via flag
+  `has_opacity`). `simp_wall_ray`/`simp_query_ray` occludono solo sull'opaco
+  pieno (op≥0.999): la CANCELLATA (solida, op 0.3) si spara attraverso, il
+  muro no. In `defense.c`: acquisizione a soglia `T_ACQ` 0.05, danno leggero
+  `dmg·transmit` (moltiplicatore deterministico, zero RNG), colpo pesante
+  `hheat += transmit` (float per slot) → dietro cancellata servono
+  ceil(1/transmit) colpi. Test: trasmittanze a mano (diagonale, mezza cella),
+  DPS ×0.7 dietro cancellata / zero+non-ingaggio dietro muro (regression LoS),
+  preferenza d'acquisizione, crollo cancellata assediata → opacità 0 → DPS
+  pieno, determinismo. NOTA misurata: l'assedio frontale richiede orda densa
+  hex-packed stile `test_base` (~380), un pack rado resta sotto
+  `ATTACK_MIN_P`. Catalogo §6 parsato in `props.c`
+  (colonne opzionali `[solid H] [hp mult] [opac] [mass]`, `inf` ok,
+  esercitate in `test_props`); applicazione host in `build_world` NON fatta
+  (manca il footprint in pianta, decisione aperta §8.5).
 - `scene.h` / `scene.c` — file di scena VETTORIALI (M7, giugno 2026; sostituisce
   il vecchio formato ASCII a griglia di char). Entità in METRI rasterizzate
   sulla griglia all'instantiate: `cell`/`world W H`/`set <param>`, rect

@@ -222,6 +222,14 @@ bool  simp_is_wall(const SimP *s, int cx, int cy);
 void  simp_set_wall_cost(SimP *s, int cx, int cy, float cost);
 float simp_wall_base_cost(void);                 /* the uniform default toll */
 const float *simp_wall_cost_arr(const SimP *s);  /* gw*gh, for overlays/editor */
+/* Per-cell BULLET OPACITY in [0,1] (ENTITY_DESIGN.md axis C): how much a cell
+ * blocks hitscan rays, INDEPENDENT of collision/nav. Defaults are bit-
+ * compatible with today: simp_set_wall writes 1 on solid cells and 0 on open
+ * ones, so set an override AFTER simp_set_wall. A fence is solid + opacity
+ * ~0.3 (the horde can't pass, turrets shoot through at reduced damage); smoke
+ * is open + opacity > 0. Clamped to [0,1]; render/nav/SDF never read this. */
+void  simp_set_opacity(SimP *s, int cx, int cy, float opacity);
+float simp_opacity(const SimP *s, int cx, int cy);   /* 1 out of bounds */
 /* Force recompute of phi/flow/SDF now (otherwise done lazily on next step). */
 void  simp_terrain_commit(SimP *s);
 
@@ -346,9 +354,23 @@ int simp_query_ray(const SimP *s, float ox, float oy, float dx, float dy,
  * normalized; the returned distance is in metres. Returns 0 if the origin cell
  * is itself solid. Line-of-sight primitive: a segment (x0,y0)->(x1,y1) of
  * length d is unobstructed iff simp_wall_ray(s,x0,y0,x1-x0,y1-y0,d) >= d.
- * Used by turret target acquisition to skip agents shielded by walls. */
+ * Used by turret target acquisition to skip agents shielded by walls.
+ * With per-cell opacity in play (simp_set_opacity) "solid" here means FULLY
+ * OPAQUE (opacity ~1): the ray passes semi-transparent cells (fence) — this
+ * is the distance where the transmittance reaches 0. */
 float simp_wall_ray(const SimP *s, float ox, float oy,
                     float dx, float dy, float maxdist);
+
+/* Transmittance of a hitscan ray (ENTITY_DESIGN.md §4): product of
+ * (1 - opacity) over the cells crossed, each weighted by the ray length
+ * inside the cell over one cell of reference thickness. 1 = clear line,
+ * 0 = fully blocked (wall, or attenuation below epsilon). Turrets use it for
+ * acquisition (engage if >= threshold) and damage (dmg *= transmit) — the
+ * multiplier has the same expected DPS as a per-bullet lottery with zero
+ * extra RNG state. On maps with no semi-transparent cells this is exactly
+ * the binary simp_wall_ray result (fast path, same cost as today). */
+float simp_ray_transmit(const SimP *s, float ox, float oy,
+                        float dx, float dy, float maxdist);
 
 /* ---- behaviour flags ------------------------------------------------------ */
 

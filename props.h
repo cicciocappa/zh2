@@ -16,6 +16,22 @@
  * is shown in the editor HUD. Missing mesh FILES also fall back to placeholder
  * at load time (host decides) so a level authored before the art exists still
  * shows where the props are.
+ *
+ * UNIFIED ENTITY AXES (ENTITY_DESIGN.md §6) — optional trailing columns, all
+ * "-" = today's inert decor (retro-compatible; the destructible trio accepts
+ * "-" placeholders so later columns can be reached):
+ *
+ *     # key  mesh scale label [trig debris topple] [solid H] [hp mult] [opac] [mass]
+ *     fence  -    1.0   Fence  -    -      -        solid 1.8  350 0.6   0.3    -
+ *     bus    -    3.0   Bus    -    -      -        solid 2.6  inf -     1.0    inf
+ *     wreck  -    1.4   Wreck  -    -      -        -          -   -     0.5    120
+ *
+ * `solid H` = the prop's footprint is raised as nav wall (height H meters,
+ * render extrusion + flyer clearance); `hp mult` = siegeable structure with
+ * that HP pool ("inf" = indestructible) and wall-cost tier multiplier;
+ * `opac` = bullet opacity 0..1 (axis C, simp_set_opacity); `mass` = draggable
+ * mass in walker units ("inf" or "-" with solid = not draggable). The host
+ * (build_world) applies these at instantiation; the catalog only stores them.
  */
 #ifndef PROPS_H
 #define PROPS_H
@@ -37,6 +53,14 @@ typedef struct {
     float trigger_radius;        /* m: an agent within this of the prop fires it */
     char  debris[PROP_DEBRIS_LEN]; /* FX style ("wood"/"metal"/...), host->preset */
     float topple;                /* s of topple-tilt before bursting (0=instant) */
+    /* unified entity axes (ENTITY_DESIGN.md §6); zeros = inert decor. */
+    int   solid;                 /* 1 = footprint raised as nav wall (axis A)  */
+    float height;                /* m, solid extrusion (axis G); 0 if !solid   */
+    float hp;                    /* >0 = siegeable (axis B); INFINITY = indestructible */
+    float cost_mult;             /* wall-cost tier multiplier (1 = barricade)  */
+    float opacity;               /* bullet opacity 0..1 (axis C)               */
+    float mass;                  /* draggable mass, walker units (axis D);
+                                    0 = not draggable, INFINITY = immovable    */
 } PropDef;
 
 typedef struct {

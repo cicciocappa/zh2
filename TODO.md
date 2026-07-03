@@ -451,6 +451,14 @@ design → test headless → aggancio vat_horde → verifica visiva → commit.
       `vat/miniaudio.h`, altrimenti muto; SFX procedurali), `vat/font8.h` +
       `vat/ui.fs` (testo/overlay 2D). Rimandati (§6 del design): preload
       asincrono nel briefing, terreno per-livello, voice/video, musica, pausa.
+- [x] **ENTITY_DESIGN v1 — asse C opacità ai proiettili** (3 lug 2026):
+      `simp_set_opacity`/`simp_ray_transmit` nel core (fast-path binario senza
+      celle semi-trasparenti), torrette con acquisizione a soglia + danno
+      `·transmit` (cancellata = riparo parziale, muro = LoS come prima),
+      catalogo prop esteso `[solid H] [hp mult] [opac] [mass]` (solo parsing).
+      Verifica `test_cover` + `test_props`. RESTA: applicazione host in
+      `build_world` (footprint in pianta da decidere, ENTITY_DESIGN §8.5) e
+      tuning del valore opacità cancellata in sandbox (§8.1).
 - [ ] **Fase A — Macchina a stati di missione** (`mission.c`): PREP→ASSAULT→
       WIN/LOSE, `mission` nel `.scn`, director con `pool`/`start_delay`
       (assorbe il task "spawn scriptati" di M5b), LZ/elicottero = core.
