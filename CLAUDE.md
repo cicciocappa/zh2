@@ -315,6 +315,18 @@ Il progetto ha DUE modelli di simulazione complementari:
   sandbox 2D `sandbox_particles.c` usa ancora l'API a griglia e NON compila
   finché non è portato (TODO M7); non è nei target di default. I `.txt`
   legacy (`chokepoint`/`fortress`) sono nel vecchio formato, non più caricabili.
+- `BLENDER_LEVEL.md` — convenzione di authoring livelli in BLENDER → `.scn`
+  (decisione 3 lug 2026, supera in parte EDITOR_PLAN): prefissi nome oggetto
+  = tipo entità, custom properties = parametri, collection `terrain`/`statics`
+  → glb + `.zhm` + poly solid dai footprint, prop = collection instances
+  dalla libreria di catalogo. Export: `gfx/export_scn.py` (FATTO, gira in
+  Blender headless; riusa `bake_zhm()` fattorizzato in `terrain_bake.py` su
+  motore BVH — regressione bit-identica), validazioni BLOCCANTI (prefisso
+  ignoto, chiave prop fuori catalogo, fuori-mondo, limiti formato: exit 1 e
+  niente output). Fixture: `levels/test_level.blend` (generato da
+  `gfx/test_level_make.py`, esercita ogni regola) → `scenes/test_level.scn`
+  verificato con `scene_load`+`scene_instantiate`. La modalità EDIT in-game
+  resta come tuning/debug; il `.blend` è la fonte di verità del livello.
 - `M3_DESIGN.md` — design tecnico di M3 (handle, volo, cadaveri, query, tipi,
   densità→costo): API, dettagli, piani di verifica.
 - `GFX_DESIGN.md` — direzione artistica e design grafico (DECISO, giugno 2026):

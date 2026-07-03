@@ -1,5 +1,12 @@
 # EDITOR_PLAN — piano di completamento dell'editor di livelli
 
+> **SUPERATO IN PARTE (3 lug 2026, vedi `BLENDER_LEVEL.md`)**: l'authoring
+> dei livelli passa a Blender + export `.scn` (`gfx/export_scn.py`). La
+> modalità EDIT in-game resta come tuning rapido/debug; E1 (usabilità) vale
+> ancora in quella chiave, E2 dipende comunque da GAME_PLAN A, mentre
+> E3 (UI nuklear editor), E4 (undo/validazione — la validazione migra
+> nell'export) ed E5 (palette prop) decadono come strada principale.
+
 Piano operativo per portare la modalità EDIT di `vat_horde` a EDITOR COMPLETO
 con cui autorare i livelli del gioco. Compagno di `GAME_PLAN.md` (M9): il
 gioco definisce le entità (`mission`, `exit`, `lz`…), l'editor le fa
