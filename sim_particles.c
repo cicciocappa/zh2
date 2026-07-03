@@ -1255,6 +1255,13 @@ int simp_query_ray(const SimP *s, float ox, float oy, float dx, float dy,
     return n;
 }
 
+float simp_wall_ray(const SimP *s, float ox, float oy,
+                    float dx, float dy, float maxdist) {
+    float len = sqrtf(dx * dx + dy * dy);
+    if (len < 1e-8f) return maxdist;
+    return wall_ray_t(s, ox, oy, dx / len, dy / len, maxdist);
+}
+
 static inline void impulse_one(SimP *s, int i, float x, float y,
                                float radius, float strength, float up_ratio) {
     float dx = s->px[i] - x, dy = s->py[i] - y;

@@ -244,7 +244,15 @@ static void turret_update(DefGame *g, DefTurret *t, float dt) {
     t->fired = 0;
     if (t->tracer_ttl > 0.0f) t->tracer_ttl -= dt;
 
-    /* acquire: nearest live agent inside range AND arc */
+    /* muzzle offset: a DESTRUCTIBLE turret sits on its own solid cell, so a ray
+     * (line of sight OR bullet) from the centre self-blocks. Start it just past
+     * the emplacement cell; a free-standing turret keeps the centre (moff = 0). */
+    float cs = simp_cell_size(s);
+    float moff = simp_is_wall(s, (int)(t->x / cs), (int)(t->y / cs)) ? cs * 1.2f : 0.0f;
+
+    /* acquire: nearest live agent inside range AND arc with a CLEAR LINE OF
+     * SIGHT. A target shielded by a wall/building is skipped (not merely
+     * un-hittable): the turret holds fire or picks a visible target instead. */
     float cx = (t->arc_min + t->arc_max) * 0.5f;
     float half = (t->arc_max - t->arc_min) * 0.5f;
     int n = simp_query_circle(s, t->x, t->y, t->range, g->qbuf, g->cap, 0);
@@ -252,10 +260,19 @@ static void turret_update(DefGame *g, DefTurret *t, float dt) {
     for (int k = 0; k < n; k++) {
         int i = g->qbuf[k];
         float dx = px[i] - t->x, dy = py[i] - t->y;
+        float d2 = dx * dx + dy * dy;
+        if (d2 >= bestd2) continue;                /* farther than best visible */
         float bearing = atan2f(dy, dx);
         if (fabsf(wrap_pi(bearing - cx)) > half) continue;   /* outside arc */
-        float d2 = dx * dx + dy * dy;
-        if (d2 < bestd2) { bestd2 = d2; best = i; }
+        float d = sqrtf(d2);                       /* line of sight to target */
+        if (d > 1e-4f) {
+            float ndx = dx / d, ndy = dy / d, md = d - moff;
+            if (md > 0.0f &&
+                simp_wall_ray(s, t->x + ndx * moff, t->y + ndy * moff,
+                              ndx, ndy, md) < md)
+                continue;                          /* a wall shields it */
+        }
+        bestd2 = d2; best = i;
     }
 
     if (best >= 0) {                           /* dwell: turn toward target */
@@ -283,17 +300,9 @@ static void turret_update(DefGame *g, DefTurret *t, float dt) {
     t->tracer_ttl = TRACER_TTL;
 
     int max_out = t->piercing ? MAXPIERCE : 1;
-    /* muzzle: a DESTRUCTIBLE turret sits on its own solid cell, so a ray fired
-     * from the centre self-blocks (wall_ray_t returns 0 for a muzzle in a wall).
-     * Start it just beyond the emplacement cell. Free-standing turrets keep the
-     * centre origin -> identical behaviour (test_defense baseline). */
+    /* fire from the muzzle (offset past the emplacement cell, computed above). */
     float mdx = cosf(t->ang), mdy = sinf(t->ang);
-    float ox = t->x, oy = t->y, moff = 0.0f;
-    float cs = simp_cell_size(s);
-    if (simp_is_wall(s, (int)(t->x / cs), (int)(t->y / cs))) {
-        moff = cs * 1.2f;                      /* clears the 1-cell emplacement */
-        ox += mdx * moff; oy += mdy * moff;
-    }
+    float ox = t->x + mdx * moff, oy = t->y + mdy * moff;
     int nh = simp_query_ray(s, ox, oy, mdx, mdy,
                             t->range - moff, g->raybuf, g->rayt, max_out, 0);
     t->last_t = (nh > 0) ? g->rayt[0] + moff : t->range;

@@ -108,6 +108,30 @@ int main(void) {
            shots_at_death, def_kills(g), simp_corpse_count(s), !bad2b);
     def_destroy(g); simp_destroy(s);
 
+    /* ---- 2c) line of sight: a nearer target shielded by a wall is skipped
+     *         in favour of a farther VISIBLE one (old code aimed at the near
+     *         one and the blocked bullet killed nobody). ---- */
+    s = simp_create(GW, GH, CELL, 64);
+    /* short vertical wall at cx=16 (world x=8), y in [29.5,31.0) */
+    for (int cy = 59; cy <= 61; cy++) simp_set_wall(s, 16, cy, true);
+    simp_terrain_commit(s);
+    g = def_create(s, 64);
+    int sh = def_spawn(g, 11.0f, 30.0f, BT_MAN);   /* NEAR, behind the wall  */
+    int vi = def_spawn(g, 12.0f, 34.0f, BT_MAN);   /* FAR, clear line of sight */
+    (void)sh; (void)vi;
+    DefTurret lt2 = mk_turret(5.0f, 30.0f, 0, 60.0f, 0.08f, 0);  /* 2 hits/man */
+    def_add_turret(g, &lt2);
+    for (int k = 0; k < 600 && simp_count(s) > 1; k++) {
+        simp_step(s, DT); def_update(g, DT);
+    }
+    /* the visible one must die; the shielded one survives (turret holds fire) */
+    int survivors = simp_count(s);
+    float sx = survivors == 1 ? simp_px(s)[0] : -1.0f;
+    int bad2c = (def_kills(g) != 1) || (survivors != 1) || (sx < 10.0f || sx > 12.0f);
+    printf("2c) LoS: kills %d (want 1), survivors %d (want 1, shielded x=%.1f) -> ok=%d\n",
+           def_kills(g), survivors, sx, !bad2c);
+    def_destroy(g); simp_destroy(s);
+
     /* ---- 3) determinism: same scenario twice -> same kills ---- */
     int run_kills[2];
     for (int run = 0; run < 2; run++) {
@@ -125,7 +149,7 @@ int main(void) {
     printf("3) determinism: run A %d kills, run B %d kills -> ok=%d\n",
            run_kills[0], run_kills[1], !bad3);
 
-    int ok = !bad1 && !bad2a && !bad2b && !bad3;
+    int ok = !bad1 && !bad2a && !bad2b && !bad2c && !bad3;
     printf(ok ? "PASS\n" : "FAIL\n");
     return ok ? 0 : 1;
 }

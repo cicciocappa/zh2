@@ -341,6 +341,15 @@ int simp_query_ray(const SimP *s, float ox, float oy, float dx, float dy,
                    float maxdist, int *out, float *out_t, int max_out,
                    uint32_t flags);
 
+/* Distance to the first solid nav cell along the ray from (ox,oy) in direction
+ * (dx,dy), or maxdist if none is reached within maxdist. (dx,dy) need not be
+ * normalized; the returned distance is in metres. Returns 0 if the origin cell
+ * is itself solid. Line-of-sight primitive: a segment (x0,y0)->(x1,y1) of
+ * length d is unobstructed iff simp_wall_ray(s,x0,y0,x1-x0,y1-y0,d) >= d.
+ * Used by turret target acquisition to skip agents shielded by walls. */
+float simp_wall_ray(const SimP *s, float ox, float oy,
+                    float dx, float dy, float maxdist);
+
 /* ---- behaviour flags ------------------------------------------------------ */
 
 #define SIMP_DORMANT 0x1u    /* stands still until woken                       */
