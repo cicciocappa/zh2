@@ -171,3 +171,15 @@ regime anche loro possono convergere su questo schema, ma NON in v1.
    solo l'altezza H — per marcare la nav in `build_world` servono anche le
    dimensioni in pianta. Colonna `WxD` nel catalogo, o footprint derivato
    dal bbox del glb (come fa l'exporter per gli statics)?
+   → **DECISA (2026-07-03, input utente): colonna `WxD` nel catalogo.**
+   Tutti i prop-ostacolo sono RETTANGOLI in pianta: muri/cancellate/barriere
+   = SEGMENTI singoli tileabili (es. 0.5×2 o 0.5×3 m) da affiancare per
+   ostacoli più lunghi; bus e cassonetto = rettangoli anch'essi. Lo spessore
+   minimo utile è la cella nav (0.5 m) anche se la mesh è più sottile: la
+   piccola discrepanza vista/collisione è accettata. Implementazione
+   naturale: rettangolo W×D ruotato dello yaw dell'istanza → rasterizzato
+   come i `poly solid` (scanline convessa già esistente); a 0°/90° su
+   posizioni multiple di cella mappa 1:1 sulle celle. NOTA: vale per i prop
+   STATICI (bus = celle nav); i prop TRASCINABILI (cassonetto, mass finita)
+   non vivono nella griglia — il rettangolo è solo visivo, la collisione è
+   il corpo PBD (disco, o 2 dischi+rod come l'auto).
