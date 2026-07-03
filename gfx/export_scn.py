@@ -2,8 +2,8 @@
 # Convention: BLENDER_LEVEL.md. Runs INSIDE Blender on the authored .blend:
 #
 #   blender --background levels/level1.blend --python gfx/export_scn.py -- \
-#           --out scenes/level1.scn [--mesh-dir meshes] [--ppm 4] [--no-bake]
-#           [--catalog props/catalog.txt]
+#           --out assets/scenes/level1.scn [--mesh-dir assets/terrain] [--ppm 4]
+#           [--no-bake] [--catalog assets/props/catalog.txt]
 #
 # Rules (see BLENDER_LEVEL.md for the full convention):
 #   - object-name prefix = entity type (goal/spawn/pack/cost/wall/turret/poly/
@@ -53,13 +53,13 @@ def parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     p = argparse.ArgumentParser(prog="export_scn.py")
     p.add_argument("--out", required=True, help="output .scn path")
-    p.add_argument("--mesh-dir", default="meshes",
-                   help="output dir for terrain/statics glb + zhm (default meshes)")
+    p.add_argument("--mesh-dir", default="assets/terrain",
+                   help="output dir for terrain/statics glb + zhm (default assets/terrain)")
     p.add_argument("--ppm", type=float, default=4.0,
                    help="zhm samples per meter (default 4)")
     p.add_argument("--no-bake", action="store_true",
                    help="skip the .zhm bake (layout-only iteration)")
-    p.add_argument("--catalog", default="props/catalog.txt",
+    p.add_argument("--catalog", default="assets/props/catalog.txt",
                    help="prop catalog for key validation")
     return p.parse_args(argv)
 
