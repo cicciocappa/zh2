@@ -75,6 +75,15 @@ struct DefGame {
     DefTurret turrets[TURRET_CAP];
     int   turret_struct[TURRET_CAP];  /* backing structure id, -1 = indestructible */
     int   nturrets;
+    /* fire lure (def_set_fire_lure): per-turret linger clock + applied stamp
+     * (cell index + EXACT delta read back after the clamped simp_add_cost,
+     * so removal restores the field bit-exactly even under overlaps). */
+    float lure_w, lure_r, lure_linger;      /* w >= 0 = lure off            */
+    float lure_t[TURRET_CAP];               /* linger countdown (s)         */
+    uint8_t lure_on[TURRET_CAP];            /* stamp currently applied      */
+    int32_t *lure_cell[TURRET_CAP];         /* lazily sized (2r+1)^2 arrays */
+    float   *lure_delta[TURRET_CAP];
+    int      lure_n[TURRET_CAP];
     int  *qbuf;         /* cap: acquire buffer (query_circle) */
     int   raybuf[MAXPIERCE];
     float rayt[MAXPIERCE];
@@ -116,11 +125,13 @@ DefGame *def_create(SimP *s, int cap) {
     g->atk_timer = (float *)calloc((size_t)cap, sizeof(float));
     g->turret_dps = TURRET_DPS_DEF;
     g->turret_reach = TURRET_REACH_DEF;
+    g->lure_w = 0.0f;                       /* lure off by default (opt-in) */
     return g;
 }
 
 void def_destroy(DefGame *g) {
     if (!g) return;
+    for (int i = 0; i < TURRET_CAP; i++) { free(g->lure_cell[i]); free(g->lure_delta[i]); }
     free(g->hp); free(g->body); free(g->wound); free(g->hheat); free(g->qbuf);
     free(g->cell_struct); free(g->atk_timer);
     free(g);
@@ -490,6 +501,92 @@ void def_set_turret_contact(DefGame *g, float dps, float reach) {
     if (reach > 0.0f) g->turret_reach = reach;
 }
 
+/* ---- fire lure (def_set_fire_lure, defense.h) ----------------------------
+ * The noise of a firing turret attracts the horde: negative user cost in a
+ * disc (linear falloff), applied when the turret wakes, removed exactly when
+ * it falls silent (linger elapsed) or dies. Deltas are what simp_add_cost
+ * ACTUALLY changed (read back around the call): under the core clamp [-0.8,]
+ * and overlapping lures, add/subtract of the nominal weight would corrupt
+ * neighbouring stamps — the recorded delta always restores bit-exactly. */
+#define LURE_EPS 0.02f          /* skip rim cells with |w| below this */
+
+static void lure_apply(DefGame *g, int id) {
+    SimP *s = g->s;
+    float cs = simp_cell_size(s);
+    float tx = g->turrets[id].x, ty = g->turrets[id].y, R = g->lure_r;
+    int cr = (int)ceilf(R / cs);
+    int cx0 = (int)(tx / cs) - cr, cx1 = (int)(tx / cs) + cr;
+    int cy0 = (int)(ty / cs) - cr, cy1 = (int)(ty / cs) + cr;
+    if (cx0 < 0) cx0 = 0;
+    if (cy0 < 0) cy0 = 0;
+    if (cx1 >= g->gw) cx1 = g->gw - 1;
+    if (cy1 >= g->gh) cy1 = g->gh - 1;
+    if (!g->lure_cell[id]) {
+        int cap = (2 * cr + 1) * (2 * cr + 1);
+        g->lure_cell[id]  = (int32_t *)malloc((size_t)cap * sizeof(int32_t));
+        g->lure_delta[id] = (float *)malloc((size_t)cap * sizeof(float));
+    }
+    const float *uc = simp_user_cost(s);
+    int n = 0;
+    for (int cy = cy0; cy <= cy1; cy++)
+        for (int cx = cx0; cx <= cx1; cx++) {
+            float dx = (cx + 0.5f) * cs - tx, dy = (cy + 0.5f) * cs - ty;
+            float d = sqrtf(dx * dx + dy * dy);
+            if (d >= R) continue;
+            /* linear cone: monotonic toward the centre, so the cheapest line
+             * HUGS the emplacement (a flat plateau lets routes cross the disc
+             * anywhere and they only graze; measured in test_lure). Full
+             * game weight (-0.8 = the cost_user floor) is what makes the
+             * Dijkstra pay the detour. */
+            float w = g->lure_w * (1.0f - d / R);
+            if (w > -LURE_EPS) continue;
+            int idx = cy * g->gw + cx;
+            float before = uc[idx];
+            simp_add_cost(s, cx, cy, w);
+            float delta = uc[idx] - before;
+            if (delta == 0.0f) continue;             /* clamped away: nothing to undo */
+            g->lure_cell[id][n] = idx;
+            g->lure_delta[id][n] = delta;
+            n++;
+        }
+    g->lure_n[id] = n;
+    g->lure_on[id] = 1;
+}
+
+static void lure_remove(DefGame *g, int id) {
+    SimP *s = g->s;
+    for (int k = 0; k < g->lure_n[id]; k++) {
+        int idx = g->lure_cell[id][k];
+        simp_add_cost(s, idx % g->gw, idx / g->gw, -g->lure_delta[id][k]);
+    }
+    g->lure_n[id] = 0;
+    g->lure_on[id] = 0;
+}
+
+static void lure_update(DefGame *g, float dt) {
+    if (g->lure_w >= 0.0f) return;
+    for (int id = 0; id < g->nturrets; id++) {
+        int firing = g->turrets[id].fired && !def_turret_disabled(g, id);
+        if (firing) g->lure_t[id] = g->lure_linger;
+        else if (g->lure_t[id] > 0.0f) g->lure_t[id] -= dt;
+        int want = g->lure_t[id] > 0.0f && !def_turret_disabled(g, id);
+        if (want && !g->lure_on[id])       lure_apply(g, id);
+        else if (!want && g->lure_on[id])  lure_remove(g, id);
+    }
+}
+
+void def_set_fire_lure(DefGame *g, float weight, float radius, float linger_s) {
+    if (weight >= 0.0f) {                    /* off: also undo active stamps */
+        for (int id = 0; id < g->nturrets; id++)
+            if (g->lure_on[id]) lure_remove(g, id);
+        g->lure_w = 0.0f;
+        return;
+    }
+    g->lure_w = weight;
+    g->lure_r = radius > 0.0f ? radius : 8.0f;
+    g->lure_linger = linger_s > 0.0f ? linger_s : 2.5f;
+}
+
 int   def_struct_count(const DefGame *g) { return g->nstructs; }
 int   def_cell_struct(const DefGame *g, int cx, int cy) {
     if (cx < 0 || cy < 0 || cx >= g->gw || cy >= g->gh) return -1;
@@ -519,6 +616,7 @@ void def_update(DefGame *g, float dt) {
     }
     siege_update(g, dt);
     turret_contact_update(g, dt);
+    lure_update(g, dt);          /* after turret_update: reads fresh 'fired' */
 }
 
 /* ---- §8 placement budget ---- */

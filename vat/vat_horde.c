@@ -24,6 +24,7 @@
 //            vat_horde_shot.bmp, esce. VAT_HORDE_CAM="cx,cz,hh,az,el".
 //            VAT_HORDE_BLAST="frame,x,y[,str,up]" -> esplosione+lancio a quel frame.
 //            VAT_HORDE_BARRICADE="x,y,len[,mass]" / VAT_HORDE_CAR="x,y[,len][,mass]".
+//            VAT_HORDE_LURE="w,r,linger" = richiamo da fuoco (default -0.8,8,2.5; w>=0 off).
 #include <SDL3/SDL.h>
 #include "vat_gl.h"
 #include "vat_layer.h"
@@ -1126,9 +1127,18 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     float turret_hp = getenv("VAT_HORDE_TURRET_HP")?atof(getenv("VAT_HORDE_TURRET_HP")):250.0f;
     // contact-siege tuning (def_set_turret_contact): 0 = keep default. Lets the
     // turrets be made tougher/weaker to the swarm at a glance, HP unchanged.
+    // Reach di gioco 2.0 m (default defense 0.9): chi passa nel corridoio
+    // adiacente morde la torretta — insieme al lure sotto, le torrette nel
+    // flusso si pagano (2026-07-04).
     def_set_turret_contact(g,
         getenv("VAT_HORDE_TURRET_DPS")?atof(getenv("VAT_HORDE_TURRET_DPS")):0.0f,
-        getenv("VAT_HORDE_TURRET_REACH")?atof(getenv("VAT_HORDE_TURRET_REACH")):0.0f);
+        getenv("VAT_HORDE_TURRET_REACH")?atof(getenv("VAT_HORDE_TURRET_REACH")):2.0f);
+    // richiamo da fuoco (def_set_fire_lure): le torrette che sparano ATTIRANO
+    // l'orda (rumore) — cost_user negativo attorno finché sparano, rimozione
+    // esatta al silenzio/crollo. VAT_HORDE_LURE="w,r,linger" (w>=0 = off).
+    { float lw=-0.5f, lr=6.0f, ll=2.5f;
+      if(getenv("VAT_HORDE_LURE")) sscanf(getenv("VAT_HORDE_LURE"),"%f,%f,%f",&lw,&lr,&ll);
+      def_set_fire_lure(g,lw,lr,ll); }
     if(designed){
         for(int k=0;k<sc->n_turret;k++){ const SceneTurret *st=&sc->turret[k];
             DefTurret t={0};

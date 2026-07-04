@@ -137,6 +137,16 @@ int   def_struct_is_turret(const DefGame *g, int id);
  * dps = HP/s per contacting agent; reach = m beyond the emplacement half-cell.
  * <= 0 keeps the current value. HP stays the per-turret toughness knob. */
 void  def_set_turret_contact(DefGame *g, float dps, float reach);
+/* Fire lure ("richiamo da fuoco", 2026-07-04): a turret that FIRES attracts
+ * the horde — the noise. While a turret has fired within the last linger_s
+ * (and isn't disabled), a disc of NEGATIVE user cost (weight at the centre,
+ * linear falloff to the rim) is stamped around its emplacement via
+ * simp_add_cost; when it falls silent or dies the stamp is removed EXACTLY
+ * (per-cell applied deltas are recorded — the core clamp at -0.8 makes blind
+ * subtraction wrong under overlaps). Routes bend toward active turrets, the
+ * contact siege eats the mob-ed ones: turrets must be defended. weight >= 0
+ * disables (default: off — the game host opts in). radius in m. */
+void  def_set_fire_lure(DefGame *g, float weight, float radius, float linger_s);
 
 /* Advance all turrets: acquire/dwell or sweep, fire on cadence (only with a
  * target in arc+range), apply damage → wounds / death. Then process the siege

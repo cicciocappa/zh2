@@ -387,6 +387,19 @@ eseguibili si lanciano dalla root del progetto.
   `gfx/test_level_make.py`, esercita ogni regola) → `scenes/test_level.scn`
   verificato con `scene_load`+`scene_instantiate`. La modalità EDIT in-game
   resta come tuning/debug; il `.blend` è la fonte di verità del livello.
+- **Richiamo da fuoco** (`def_set_fire_lure`, 2026-07-04): una torretta che
+  SPARA attira l'orda — cono di `cost_user` negativo (peso al centro, falloff
+  lineare al bordo; il minimo DEVE stare al centro: un plateau piatto fa solo
+  sfiorare le rotte, misurato) applicato finché ha sparato negli ultimi
+  `linger` s, rimosso ESATTAMENTE al silenzio/crollo (delta per-cella letti
+  di ritorno da `simp_user_cost`: il clamp a −0.8 rende sbagliata la
+  sottrazione cieca sotto overlap). Default gioco (vat_horde): −0.8, r 8 m,
+  linger 2.5 s (`VAT_HORDE_LURE`, w≥0 = off; default defense = off) + reach
+  di contatto 2.0 m. Le torrette nel flusso vanno DIFESE (barricate davanti
+  = fase B). `test_lure`: impunita senza (250 HP), sbranata con (109),
+  interazione col sangue misurata (k_danger 400 → 174: la paura attenua ma
+  non azzera, e continua a dirottare la massa — perno anti-killbox intatto),
+  rimozione bit-esatta, determinismo.
 - `mission.h` / `.c` — macchina a stati di missione (GAME_PLAN fase A, FATTA
   2026-07-04): PREP (exit muti, piazzamento aperto; `prep 0` = illimitata,
   si esce con `mission_go`/INVIO) → ASSAULT (un director per `exit` di scena,
