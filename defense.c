@@ -504,6 +504,12 @@ float def_struct_hp_max(const DefGame *g, int id) {
 int def_struct_collapsed(const DefGame *g, int id) {
     return (id >= 0 && id < g->nstructs) ? g->structs[id].collapsed : 0;
 }
+void def_struct_damage(DefGame *g, int id, float dmg) {
+    if (id < 0 || id >= g->nstructs || g->structs[id].collapsed) return;
+    if (dmg <= 0.0f) return;
+    g->structs[id].hp -= dmg;
+    if (g->structs[id].hp <= 0.0f) collapse_structure(g, id);
+}
 int def_lost(const DefGame *g) { return g->lost; }
 
 void def_update(DefGame *g, float dt) {
@@ -540,6 +546,8 @@ struct DefDirector {
     int      nrects;
     float    radius, base_rate, rate_ramp, wave_period;
     DefSpawnFn on_spawn; void *user;
+    float    start_delay;      /* s of silence before the first spawn        */
+    int      pool;             /* total to emit; 0 = unlimited (legacy)      */
     float    time, accum;
     int      emitted;
     uint32_t rng;
@@ -572,6 +580,8 @@ DefDirector *def_director_create(DefGame *g, const DefDirectorCfg *cfg) {
     d->rate_ramp   = cfg->rate_ramp;
     d->wave_period = cfg->wave_period > 0.0f ? cfg->wave_period : 20.0f;
     d->on_spawn = cfg->on_spawn; d->user = cfg->user;
+    d->start_delay = cfg->start_delay > 0.0f ? cfg->start_delay : 0.0f;
+    d->pool = cfg->pool > 0 ? cfg->pool : 0;
     d->rng = cfg->seed ? cfg->seed : 0xD17EC709u;
     return d;
 }
@@ -581,12 +591,16 @@ void def_director_destroy(DefDirector *d) { free(d); }
 void def_director_update(DefDirector *d, float dt) {
     if (d->nrects <= 0) return;
     d->time += dt;
-    int wave = (int)(d->time / d->wave_period);
+    if (d->time < d->start_delay) return;             /* scripted silence     */
+    if (d->pool > 0 && d->emitted >= d->pool) return; /* finite pool drained  */
+    float t = d->time - d->start_delay;               /* waves ramp from wake */
+    int wave = (int)(t / d->wave_period);
     float rate = d->base_rate + (float)wave * d->rate_ramp;
     if (rate < 0.0f) rate = 0.0f;
     d->accum += rate * dt;
     int want = (int)d->accum; d->accum -= (float)want;
     if (want > DIR_MAX_PER_FRAME) want = DIR_MAX_PER_FRAME;
+    if (d->pool > 0 && d->emitted + want > d->pool) want = d->pool - d->emitted;
 
     SimP *s = d->g->s;
     for (int k = 0; k < want; k++) {
@@ -604,8 +618,15 @@ void def_director_update(DefDirector *d, float dt) {
     }
 }
 
-int def_director_wave(const DefDirector *d) { return (int)(d->time / d->wave_period); }
+int def_director_wave(const DefDirector *d) {
+    float t = d->time - d->start_delay;
+    return t > 0.0f ? (int)(t / d->wave_period) : 0;
+}
 int def_director_emitted(const DefDirector *d) { return d->emitted; }
+int def_director_pool(const DefDirector *d)    { return d->pool; }
+int def_director_done(const DefDirector *d) {
+    return d->pool > 0 && d->emitted >= d->pool;
+}
 
 /* ---- read access ---- */
 

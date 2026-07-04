@@ -37,7 +37,7 @@ all: test_particles test_impulse test_dormant test_stun test_handles test_query 
      test_types test_density_route test_jam test_blood_fear test_scene test_siege test_turret \
      test_defense test_base test_director test_terrain test_pick test_editor \
      test_breakthrough test_props test_vat_layer test_turret_siege test_drag test_hybrid test_car \
-     test_destruct test_place test_app test_anim test_cover test_prop_world
+     test_destruct test_place test_app test_anim test_cover test_prop_world test_mission
 
 # audio backend (GAME_APP_DESIGN.md): se l'utente ha scaricato miniaudio.h in
 # vat/, il target `game` suona; altrimenti backend nullo (muto), zero errori.
@@ -142,6 +142,10 @@ test_prop_world: test_prop_world.c prop_world.c prop_world.h props.c scene.c \
                  sim_particles.c defense.c
 	$(CC) $(CFLAGS) -o $@ test_prop_world.c prop_world.c props.c scene.c sim_particles.c defense.c $(LDLIBS)
 
+# macchina a stati di missione (GAME_PLAN fase A)
+test_mission: test_mission.c mission.c mission.h scene.c sim_particles.c defense.c
+	$(CC) $(CFLAGS) -o $@ test_mission.c mission.c scene.c sim_particles.c defense.c $(LDLIBS)
+
 # VAT render-layer animation bookkeeping (headless, no GL): hit one-shot + death pool
 test_vat_layer: test_vat_layer.c vat/vat_layer.c sim_particles.c vat/vat_layer.h sim_particles.h
 	$(CC) $(CFLAGS) -I. -o $@ test_vat_layer.c vat/vat_layer.c sim_particles.c $(LDLIBS)
@@ -183,7 +187,7 @@ vat_view: vat/vat_view.c vat/glad.c vat/stb_impl.c assets/shaders/vat.vs assets/
 # Orda reale del core sim_particles resa in 3D VAT (vat_layer + vat_horde) su
 # scena vettoriale (scene.c). Ostacoli estrusi via assets/shaders/flat.vs/.fs.
 SHADERS = $(wildcard assets/shaders/*.vs) $(wildcard assets/shaders/*.fs)
-VAT_HORDE_SRC = vat/vat_horde.c vat/vat_layer.c sim_particles.c fx_particles.c scene.c defense.c place.c terrain.c props.c prop_world.c destruct.c anim.c
+VAT_HORDE_SRC = vat/vat_horde.c vat/vat_layer.c sim_particles.c fx_particles.c scene.c defense.c place.c terrain.c props.c prop_world.c mission.c destruct.c anim.c
 VAT_HORDE_DEP = $(VAT_HORDE_SRC) vat/glad.c vat/stb_impl.c vat/cgltf_impl.c $(SHADERS) sim_particles.h fx_particles.h vat/vat_layer.h vat/vat_gl.h vat/cgltf.h terrain.h scene.h defense.h place.h props.h destruct.h anim.h
 
 vat_horde: $(VAT_HORDE_DEP)
@@ -232,6 +236,7 @@ test: all
 	./test_breakthrough
 	./test_props
 	./test_prop_world
+	./test_mission
 	./test_cover
 	./test_vat_layer
 	./test_drag
@@ -244,7 +249,7 @@ clean:
 	rm -rf test_particles test_impulse test_dormant test_handles test_query \
 	       test_corpses test_corpse_pile test_types test_density_route test_jam test_blood_fear test_scene \
 	       test_siege test_turret test_defense test_base test_director test_terrain bench_sim test_pick test_editor test_breakthrough test_props test_vat_layer test_drag test_hybrid test_car test_destruct test_place \
-	       test_app test_anim test_cover test_prop_world game \
+	       test_app test_anim test_cover test_prop_world test_mission game \
 	       sandbox sprite_view vat_view vat_horde frames *.exe vat/*.o
 
 .PHONY: all test clean

@@ -28,6 +28,17 @@
  *     wall  800 1.0  48 20 24 1.5                     # destructible: hp cost_mult x y w h
  *     turret 60 30 30 0 250                           # turret: x y [range] [heavy] [hp]
  *     prop  bench 24 30 90                            # decor: catalog key x y rot(deg)
+ *     exit  2 20 4 30 12 5 400        # fase A: spawn rect + director script:
+ *                                     #   x y w h rate [delay] [pool 0=inf]
+ *     lz    50 35                     # helicopter LZ (one per level): host makes
+ *                                     #   it the core structure + central goal
+ *     mission survive 300 prep 90 budget 500   # or: mission clear 0 [prep N]…
+ *     budget 500                      # standalone budget (if no mission line)
+ *
+ * `exit`/`lz`/`mission`/`budget` are the GAME_PLAN fase A entities (names
+ * reserved by BLENDER_LEVEL §8): stored here, applied by the host via
+ * mission.c — one director per exit, started only in ASSAULT; `prep 0` (or
+ * omitted) = unlimited PREP, the player launches the assault.
  *
  * `wall` is a DESTRUCTIBLE structure (game-side, defense.c): the rect is
  * rasterized to nav cells sharing one HP pool (hp), each cell carrying a
@@ -81,6 +92,23 @@ typedef struct { float x, y, range; int heavy; float hp; } SceneTurret;
  * Render-only (no sim effect); resolved against props/catalog.txt by the host. */
 typedef struct { char key[SCENE_PROP_KEY_LEN]; float x, y, rot; } SceneProp;
 
+/* Scripted exit (GAME_PLAN fase A): a spawn rect PLUS the script of its own
+ * director — rate (agents/s), delay (s of silence after assault start), pool
+ * (total agents; 0 = unlimited). Applied by the host (mission.c), like walls. */
+typedef struct { float x, y, w, h, rate, delay; int pool; } SceneExit;
+
+/* Mission declaration (fase A). kind NONE = legacy demo scene (no mission
+ * machine; the host keeps its old behavior). prep_s 0 = unlimited PREP (the
+ * player launches the assault); budget < 0 = not declared (host default). */
+typedef enum { SCENE_MISSION_NONE = 0, SCENE_MISSION_SURVIVE,
+               SCENE_MISSION_CLEAR } SceneMissionKind;
+typedef struct {
+    SceneMissionKind kind;
+    float survive_s;            /* SURVIVE: win after this long in ASSAULT */
+    float prep_s;               /* 0 = unlimited PREP                      */
+    float budget;               /* placement budget; < 0 = not declared    */
+} SceneMission;
+
 typedef struct {
     float cell;                 /* meters per cell */
     float world_w, world_h;     /* world extent in meters */
@@ -97,6 +125,9 @@ typedef struct {
     SceneWall wall[SCENE_MAX_RECT];   int n_wall;   /* destructible structures (host-side) */
     SceneTurret turret[SCENE_MAX_RECT]; int n_turret; /* fixed turrets (host-side) */
     SceneProp prop[SCENE_MAX_PROP];   int n_prop;   /* pure-decor instances (render-only) */
+    SceneExit exits[SCENE_MAX_RECT];  int n_exit;   /* scripted exits (host-side, fase A) */
+    SceneMission mission;             /* kind NONE = legacy demo scene      */
+    float lz_x, lz_y; int has_lz;     /* helicopter LZ (host: core + goal)  */
 } Scene;
 
 /* Load/save/free. Return 0 on success, negative on error (file or format). */

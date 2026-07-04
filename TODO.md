@@ -456,14 +456,17 @@ design → test headless → aggancio vat_horde → verifica visiva → commit.
       celle semi-trasparenti), torrette con acquisizione a soglia + danno
       `·transmit` (cancellata = riparo parziale, muro = LoS come prima),
       catalogo prop esteso `[solid H] [hp mult] [opac] [mass]` (solo parsing).
-      Verifica `test_cover` + `test_props`. RESTA: applicazione host in
-      `build_world` (footprint in pianta da decidere, ENTITY_DESIGN §8.5) e
-      tuning del valore opacità cancellata in sandbox (§8.1).
-- [ ] **Fase A — Macchina a stati di missione** (`mission.c`): PREP→ASSAULT→
-      WIN/LOSE, `mission` nel `.scn`, director con `pool`/`start_delay`
-      (assorbe il task "spawn scriptati" di M5b), LZ/elicottero = core.
-      La shell qui sopra le fa già da guscio: fase A sostituisce il suo
-      win/lose minimo (timer+core) restando dietro `app_report_result`.
+      Verifica `test_cover` + `test_props`. FATTO 2026-07-04: applicazione
+      host (`prop_world.c`, colonna `WxD` §8.5, `test_prop_world`) + loader
+      glb prop in vat_horde. RESTA: tuning opacità cancellata in sandbox
+      (§8.1), asse D (prop massa finita → draggable).
+- [x] **Fase A — Macchina a stati di missione** (`mission.c`): FATTA
+      2026-07-04. PREP→ASSAULT→WIN/LOSE, `mission`/`exit`/`lz`/`budget` nel
+      `.scn`, director con `pool`/`start_delay` (assorbito il task "spawn
+      scriptati" di M5b), LZ → core+goal (`build_lz_core`). La shell resta
+      guscio: in APP_PREP missione congelata, START_ASSAULT → `mission_go`,
+      esito da `mission_state` dietro `app_report_result`. `test_mission` +
+      banco `assets/scenes/mission_demo.scn`.
 - [ ] **Fase B — Barriere a LINEA** (`place.c` + `PL_WALL_LINE`): drag di
       segmenti alla AoE, costo per cella, un segmento = una struttura;
       catalogo filo spinato / mura / cancellata.

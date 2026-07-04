@@ -35,6 +35,7 @@
 #include "terrain.h"
 #include "props.h"
 #include "prop_world.h"
+#include "mission.h"
 #include "destruct.h"
 #include "edit_pick.h"
 #include "editor.h"
@@ -1060,6 +1061,31 @@ static int build_struct_mesh(DefGame *g, float cell, float *buf, int maxV){
 // barricata) del costo di sfondamento per-cella → l'orda li aggira invece di
 // premerli. La collisione SDF è quella standard del muro.
 #define PALAZZO_WALL_MULT 10.0f
+
+// missione dichiarata nel .scn (GAME_PLAN fase A): la macchina possiede i
+// director (uno per exit) e li fa emettere solo in ASSAULT. gMissionOn=0 =
+// scena legacy -> director unico di demo come sempre.
+static Mission gMission; static int gMissionOn=0;
+static int gLzCore=-1;                  // id struttura core della LZ (se lz)
+
+// entita' `lz x y` (fase A): goal centrale 3x3 (profondo >=2 celle, trappola
+// tank di M3.5) + anello 5x5 di celle-core assediabili (is_core: crollo =
+// sconfitta). L'elicottero e' fiction renderer-side (placeholder: pilastrino
+// del core); HP da VAT_HORDE_LZ_HP (default 1500).
+static void build_lz_core(DefGame *g, SimP *s, const Scene *sc){
+    gLzCore=-1;
+    int cx0=(int)(sc->lz_x/sc->cell), cy0=(int)(sc->lz_y/sc->cell);
+    for(int cy=cy0-1;cy<=cy0+1;cy++)for(int cx=cx0-1;cx<=cx0+1;cx++)
+        if(!simp_is_wall(s,cx,cy)) simp_set_goal(s,cx,cy,true);
+    float hp=getenv("VAT_HORDE_LZ_HP")?atof(getenv("VAT_HORDE_LZ_HP")):1500.0f;
+    int id=def_add_structure(g,hp,1), h=2;
+    if(id<0) return;
+    for(int cy=cy0-h;cy<=cy0+h;cy++)for(int cx=cx0-h;cx<=cx0+h;cx++)
+        if(cx==cx0-h||cx==cx0+h||cy==cy0-h||cy==cy0+h) def_struct_cell(g,id,cx,cy);
+    simp_terrain_commit(s);
+    gLzCore=id; gStructOn=1;
+}
+
 typedef struct { SimP *s; int n; } HoleCtx;
 static void hole_wall_cb(void *u, int cx, int cy){
     HoleCtx *c = (HoleCtx*)u;
@@ -1160,11 +1186,28 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     if(fillN){ int got=prefill_lattice(s,g,vl,sc,fillN);
         printf("prefill: target %d -> %d agenti piazzati\n", fillN, got); }
 
+    // missione dal .scn (fase A): PRIMA del director legacy — se la scena la
+    // dichiara, i director (uno per exit) li possiede la missione e il legacy
+    // non parte. LZ -> core assediabile + goal. Il vecchio gMission (rebuild
+    // EDIT->PLAY / cambio livello) si smonta qui: tocca solo i suoi malloc.
+    if(gMissionOn){ mission_destroy(&gMission); gMissionOn=0; }
+    gMissionOn = (mission_create(&gMission, sc, s, g, on_director_spawn, spctx)==0);
+    if(gMissionOn){
+        if(sc->has_lz) build_lz_core(g,s,sc);
+        char pool[24]="inf";
+        if(gMission.pool_total>0) snprintf(pool,sizeof pool,"%d",gMission.pool_total);
+        printf("missione: %s %.0fs prep %s, %d exit (pool %s), budget %d%s\n",
+               gMission.kind==SCENE_MISSION_SURVIVE?"SURVIVE":"CLEAR",
+               (double)gMission.survive_s,
+               gMission.prep_s>0.0f?"a tempo":"illimitata (INVIO=via)",
+               gMission.ndir, pool, def_budget(g), sc->has_lz?" + LZ":"");
+    }
+
     DefRect drects[16]; int ndr=sc->n_spawn<16?sc->n_spawn:16;
     for(int k=0;k<ndr;k++){ drects[k].x=sc->spawn[k].x; drects[k].y=sc->spawn[k].y;
         drects[k].w=sc->spawn[k].w; drects[k].h=sc->spawn[k].h; }
     DefDirector *dir=NULL;
-    if(!fillN && ndr>0){ DefDirectorCfg dc={0};
+    if(!gMissionOn && !fillN && ndr>0){ DefDirectorCfg dc={0};
         dc.rects=drects; dc.nrects=ndr; dc.spawn_radius=0.34f;
         dc.base_rate=getenv("VAT_HORDE_RATE")?atof(getenv("VAT_HORDE_RATE")):16.0f;
         dc.rate_ramp=8.0f; dc.wave_period=15.0f; dc.seed=0x5EED1234u;
@@ -1241,7 +1284,10 @@ static void shell_load_level(void){
     free_world(*gHost.s,*gHost.g,*gHost.dir);
     if(build_world(gHost.sc,gHost.vl,0,gHost.spctx,gHost.s,gHost.g,gHost.dir)!=0){
         *gHost.running=0; return; }
-    shell_build_core(*gHost.g,*gHost.s,gHost.sc,L->core_hp);
+    // fase A: se la scena dichiara missione + lz, il core l'ha già alzato
+    // build_lz_core dentro build_world — niente secondo anello dai goal.
+    if(!(gMissionOn && gHost.sc->has_lz))
+        shell_build_core(*gHost.g,*gHost.s,gHost.sc,L->core_hp);
     destruct_init(gHost.dz,gHost.sc,&gCatalog);
     *gHost.obNV=upload_obstacle_mesh(gHost.obVbo,gHost.sc,!gHost.ground_on);
     *gHost.prNV=upload_prop_mesh(gHost.prVbo,gHost.sc,&gCatalog,gHost.dz,*gHost.g);
@@ -1264,7 +1310,9 @@ static void shell_do_act(AppAction act){
             au_set_volume((float)gApp.vol_sfx/10.0f,(float)gApp.vol_music/10.0f);
             break;
         case APP_ACT_LOAD_LEVEL:    shell_load_level(); break;
-        case APP_ACT_START_ASSAULT: gSurviveT=0.0f; au_play(SND_ASSAULT); break;
+        case APP_ACT_START_ASSAULT: gSurviveT=0.0f;
+            if(gMissionOn) mission_go(&gMission);            // fase A: via ai director
+            au_play(SND_ASSAULT); break;
         case APP_ACT_START_PREP:    /* gating della sim legge lo stato */ break;
         default: break;
     }
@@ -1439,7 +1487,8 @@ int main(int argc, char **argv){
     int bench_warm=0, bench_meas=0;
     if (getenv("VAT_HORDE_BENCH")) { sscanf(getenv("VAT_HORDE_BENCH"), "%d,%d", &bench_warm, &bench_meas);
         if (bench_meas <= 0) bench_meas = 300; }
-    if (sc.n_spawn == 0 && !fillN) { fprintf(stderr, "scene ha 0 spawn rect\n"); return 1; }
+    if (sc.n_spawn == 0 && sc.n_exit == 0 && !fillN) {
+        fprintf(stderr, "scene senza spawn rect ne' exit\n"); return 1; }
 
     char metas[NVAR][256];
     const char *metap[NVAR];
@@ -1925,6 +1974,8 @@ int main(int argc, char **argv){
                 if(motion && drag_cam) continue;               // pan/rotate applicati nel frame body
                 // --- placement runtime (PLAY, mouse nudo): cursore + LMB commit ---
                 if(plc.active && !ed.active){
+                    // fase A: fuori PREP il piazzamento si chiude da solo
+                    if(gMissionOn && !mission_placement_open(&gMission)){ plc.active=0; continue; }
                     float wx,wy; if(pick_y0(vp,mxf,myf,SW,SH,&wx,&wy)) pl_set_cursor(&plc,wx,wy);
                     if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
                         if(e.button.button==SDL_BUTTON_LEFT){ if(pl_commit(&plc,g,s)) gStructOn=1; }
@@ -2054,7 +2105,14 @@ int main(int argc, char **argv){
                 case SDLK_C:cam_free=!cam_free;break; case SDLK_T:useTex=!useTex;break;
                 case SDLK_SPACE:paused=!paused;break;
                 case SDLK_E:blast_x=cx;blast_y=cz;blast_pending=1;break;
+                case SDLK_RETURN: case SDLK_KP_ENTER:  // fase A: via all'assalto
+                    if(gMissionOn && gMission.state==MISSION_PREP){
+                        mission_go(&gMission); plc.active=0;
+                        printf("missione: ASSALTO\n"); }
+                    break;
                 case SDLK_P:    // piazzamento runtime: attiva/disattiva (budget di prova se 0)
+                    if(gMissionOn && !mission_placement_open(&gMission)){
+                        printf("placement: solo in PREP (fase A)\n"); break; }
                     plc.active=!plc.active;
                     if(plc.active && def_budget(g)<=0){ def_set_budget(g,99999); printf("placement ON (budget di prova)\n"); }
                     break;
@@ -2117,6 +2175,17 @@ int main(int argc, char **argv){
                 dir_on=(gApp.state==APP_ASSAULT);
 #endif
                 if(dir && dir_on && simp_count(s)<MAXA) def_director_update(dir,FIXED_DT);
+                // missione (fase A): la macchina aggiorna i SUOI director
+                // (solo in ASSAULT) e decide WIN/LOSE. Con la shell comanda
+                // la shell: in APP_PREP la missione resta congelata (niente
+                // auto-timer), INVIO -> START_ASSAULT -> mission_go.
+                if(gMissionOn){
+#ifdef GAME_SHELL
+                    if(gApp.state==APP_ASSAULT) mission_update(&gMission,FIXED_DT);
+#else
+                    mission_update(&gMission,FIXED_DT);
+#endif
+                }
                 Uint64 t0=SDL_GetPerformanceCounter();
                 simp_step(s,FIXED_DT);
                 Uint64 t1=SDL_GetPerformanceCounter();
@@ -2143,8 +2212,15 @@ int main(int argc, char **argv){
                 if(gApp.state==APP_ASSAULT){                 // esito missione
                     const AppLevel *SL=app_cur_level(&gApp);
                     gSurviveT+=FIXED_DT;
-                    int lost=def_lost(g);
-                    if(lost || (SL && gSurviveT>=SL->survive_s)){
+                    int lost, won;
+                    if(gMissionOn){                          // fase A: comanda mission.c
+                        lost=(gMission.state==MISSION_LOST);
+                        won =(gMission.state==MISSION_WON);
+                    } else {                                 // legacy: timer AppLevel
+                        lost=def_lost(g);
+                        won =(SL && gSurviveT>=SL->survive_s);
+                    }
+                    if(lost || won){
                         au_play(lost?SND_LOSE:SND_WIN);
                         shell_do_act(app_report_result(&gApp,!lost));
                     }
@@ -2417,9 +2493,22 @@ int main(int argc, char **argv){
             if(gCoreId>=0){ int pc=(int)(100.0f*def_struct_hp(g,gCoreId)/(def_struct_hp_max(g,gCoreId)+1e-3f));
                 int po=(int)(100.0f*def_struct_hp(g,gOuterId)/(def_struct_hp_max(g,gOuterId)+1e-3f));
                 snprintf(base,sizeof base, def_lost(g)?" | BASE PERSA":" | ring %d%% core %d%%", po<0?0:po, pc<0?0:pc); }
+            else if(gLzCore>=0){ int pc=(int)(100.0f*def_struct_hp(g,gLzCore)/(def_struct_hp_max(g,gLzCore)+1e-3f));
+                snprintf(base,sizeof base, def_lost(g)?" | LZ PERSA":" | LZ %d%%", pc<0?0:pc); }
             else if(gStructOn){ int ns=def_struct_count(g),up=0; for(int q=0;q<ns;q++) if(!def_struct_collapsed(g,q)) up++;
                 snprintf(base,sizeof base," | mura %d/%d", up, ns); }
-            char wv[48]=""; if(dir) snprintf(wv,sizeof wv," | ondata %d budget %d",def_director_wave(dir),def_budget(g));
+            char wv[80]="";
+            if(dir) snprintf(wv,sizeof wv," | ondata %d budget %d",def_director_wave(dir),def_budget(g));
+            else if(gMissionOn){                        // fase A: fase/timer/pool
+                float tl=mission_time_left(&gMission);
+                char tls[16]=""; if(tl>=0.0f) snprintf(tls,sizeof tls," %.0fs",(double)tl);
+                char pls[24]="";
+                if(mission_pool(&gMission)>0) snprintf(pls,sizeof pls," %d/%d",
+                    mission_emitted(&gMission),mission_pool(&gMission));
+                const char *mst = gMission.state==MISSION_PREP?"PREP (INVIO=via)":
+                                  gMission.state==MISSION_ASSAULT?"ASSALTO":
+                                  gMission.state==MISSION_WON?"VINTA":"PERSA";
+                snprintf(wv,sizeof wv," | %s%s%s budget %d",mst,tls,pls,def_budget(g)); }
             char pl[96]="";
             if(plc.active){ const PlItem *it=pl_selected(&plc);
                 const char *why = plc.reason==PL_NOFUNDS?"$":plc.reason==PL_BLOCKED?"statico":plc.reason==PL_OVERLAP?"occupato":"ok";

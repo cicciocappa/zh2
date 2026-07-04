@@ -81,6 +81,7 @@ int scene_load(const char *path, Scene *sc) {
     memset(sc, 0, sizeof *sc);
     sc->cell = 0.5f;
     sc->world_w = sc->world_h = 0.0f;
+    sc->mission.budget = -1.0f;            /* < 0 = not declared (host default) */
 
     char line[LINE_MAX_LEN];
     int err = 0;
@@ -180,6 +181,42 @@ int scene_load(const char *path, Scene *sc) {
             pr->x = (float)atof(x); pr->y = (float)atof(y);
             pr->rot = r ? (float)atof(r) : 0.0f;
             sc->n_prop++;
+        } else if (!strcmp(key, "exit")) {             /* fase A: scripted exit */
+            if (sc->n_exit >= SCENE_MAX_RECT) { err = -2; break; }
+            char *t[5]; int ok = 1;                    /* x y w h rate mandatory */
+            for (int i = 0; i < 5; i++) { t[i] = strtok_r(NULL, " \t", &save); if (!t[i]) ok = 0; }
+            if (!ok) { err = -2; break; }
+            char *dl = strtok_r(NULL, " \t", &save);   /* [delay] [pool] optional */
+            char *pl = strtok_r(NULL, " \t", &save);
+            SceneExit e = { (float)atof(t[0]), (float)atof(t[1]),
+                            (float)atof(t[2]), (float)atof(t[3]),
+                            (float)atof(t[4]), dl ? (float)atof(dl) : 0.0f,
+                            pl ? atoi(pl) : 0 };
+            sc->exits[sc->n_exit++] = e;
+        } else if (!strcmp(key, "lz")) {               /* fase A: helicopter LZ */
+            char *x = strtok_r(NULL, " \t", &save), *y = strtok_r(NULL, " \t", &save);
+            if (!x || !y) { err = -2; break; }
+            sc->lz_x = (float)atof(x); sc->lz_y = (float)atof(y); sc->has_lz = 1;
+        } else if (!strcmp(key, "mission")) {          /* fase A: mission decl  */
+            char *kind = strtok_r(NULL, " \t", &save);
+            char *secs = strtok_r(NULL, " \t", &save);
+            if (!kind || !secs) { err = -2; break; }
+            if (!strcmp(kind, "survive"))    sc->mission.kind = SCENE_MISSION_SURVIVE;
+            else if (!strcmp(kind, "clear")) sc->mission.kind = SCENE_MISSION_CLEAR;
+            else { err = -2; break; }
+            sc->mission.survive_s = (float)atof(secs);
+            char *opt;                                 /* [prep N] [budget N]   */
+            while ((opt = strtok_r(NULL, " \t", &save)) != NULL) {
+                char *v = strtok_r(NULL, " \t", &save);
+                if (!v) { err = -2; break; }
+                if (!strcmp(opt, "prep"))        sc->mission.prep_s = (float)atof(v);
+                else if (!strcmp(opt, "budget")) sc->mission.budget = (float)atof(v);
+                else { err = -2; break; }
+            }
+        } else if (!strcmp(key, "budget")) {           /* standalone (BLENDER_LEVEL §8) */
+            char *v = strtok_r(NULL, " \t", &save);
+            if (!v) { err = -2; break; }
+            sc->mission.budget = (float)atof(v);
         } else {
             err = -2;                              /* unknown directive */
         }
@@ -234,6 +271,20 @@ int scene_save(const char *path, const Scene *sc) {
     for (int k = 0; k < sc->n_prop; k++)
         fprintf(f, "prop %s %g %g %g\n", sc->prop[k].key, (double)sc->prop[k].x,
                 (double)sc->prop[k].y, (double)sc->prop[k].rot);
+    for (int k = 0; k < sc->n_exit; k++)
+        fprintf(f, "exit %g %g %g %g %g %g %d\n", (double)sc->exits[k].x,
+                (double)sc->exits[k].y, (double)sc->exits[k].w, (double)sc->exits[k].h,
+                (double)sc->exits[k].rate, (double)sc->exits[k].delay, sc->exits[k].pool);
+    if (sc->has_lz) fprintf(f, "lz %g %g\n", (double)sc->lz_x, (double)sc->lz_y);
+    if (sc->mission.kind != SCENE_MISSION_NONE) {
+        fprintf(f, "mission %s %g",
+                sc->mission.kind == SCENE_MISSION_SURVIVE ? "survive" : "clear",
+                (double)sc->mission.survive_s);
+        if (sc->mission.prep_s > 0.0f) fprintf(f, " prep %g", (double)sc->mission.prep_s);
+        if (sc->mission.budget >= 0.0f) fprintf(f, " budget %g", (double)sc->mission.budget);
+        fputc('\n', f);
+    } else if (sc->mission.budget >= 0.0f)
+        fprintf(f, "budget %g\n", (double)sc->mission.budget);
     int bad = ferror(f);
     fclose(f);
     return bad ? -1 : 0;

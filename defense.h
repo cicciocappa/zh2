@@ -95,6 +95,10 @@ void  def_struct_cell(DefGame *g, int id, int cx, int cy);
 void  def_struct_set_debris(DefGame *g, int id, float mass);
 
 int   def_struct_count(const DefGame *g);
+/* Direct HP damage (explosions — EXPLOSION_DESIGN §8 — and tests). Collapse
+ * behaves exactly like the siege path (cells freed, reroute, debris, loss on
+ * core). No-op on invalid/collapsed ids. */
+void  def_struct_damage(DefGame *g, int id, float dmg);
 /* Structure id owning nav cell (cx,cy), or -1 (none / freed on collapse). Lets
  * the renderer rebuild the live structure mesh (collapsed cells disappear). */
 int   def_cell_struct(const DefGame *g, int cx, int cy);
@@ -187,6 +191,9 @@ typedef struct {
     float wave_period;                /* seconds per wave (0 → 20 s)          */
     uint32_t seed;                    /* RNG seed (0 → default); determinism  */
     DefSpawnFn on_spawn; void *user;
+    /* scripted exits (GAME_PLAN fase A / TODO M5b — one director per exit): */
+    float start_delay;                /* s of silence before the first spawn  */
+    int   pool;                       /* total agents to emit; 0 = unlimited  */
 } DefDirectorCfg;
 
 typedef struct DefDirector DefDirector;
@@ -197,6 +204,8 @@ void def_director_destroy(DefDirector *d);
 void def_director_update(DefDirector *d, float dt);
 int  def_director_wave(const DefDirector *d);      /* current wave index (0-based) */
 int  def_director_emitted(const DefDirector *d);   /* total agents spawned so far  */
+int  def_director_pool(const DefDirector *d);      /* configured pool (0 = unlimited) */
+int  def_director_done(const DefDirector *d);      /* 1 = finite pool exhausted    */
 
 /* ---- read access (tests / HUD) ---- */
 int  def_kills(const DefGame *g);

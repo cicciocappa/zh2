@@ -387,6 +387,19 @@ eseguibili si lanciano dalla root del progetto.
   `gfx/test_level_make.py`, esercita ogni regola) → `scenes/test_level.scn`
   verificato con `scene_load`+`scene_instantiate`. La modalità EDIT in-game
   resta come tuning/debug; il `.blend` è la fonte di verità del livello.
+- `mission.h` / `.c` — macchina a stati di missione (GAME_PLAN fase A, FATTA
+  2026-07-04): PREP (exit muti, piazzamento aperto; `prep 0` = illimitata,
+  si esce con `mission_go`/INVIO) → ASSAULT (un director per `exit` di scena,
+  `start_delay`+`pool` finiti aggiunti a defense §8) → WON/LOST. SURVIVE
+  vince al timer, CLEAR a pool esauriti e zero vivi non dormienti; `def_lost`
+  perde ovunque. Formato `.scn` esteso: `exit x y w h rate [delay] [pool]`,
+  `lz x y` (in vat_horde → core assediabile 5×5 + goal, `build_lz_core`, HP
+  `VAT_HORDE_LZ_HP` def 1500), `mission survive|clear s [prep N] [budget N]`,
+  `budget N`. Con GAME_SHELL comanda la shell (in APP_PREP missione
+  congelata, START_ASSAULT → `mission_go`); senza, INVIO. `def_struct_damage`
+  = danno diretto pubblico (nato qui, serve a EXPLOSION_DESIGN §8).
+  `test_mission` = vinta/persa/CLEAR/pool esatti/determinismo; banco
+  `assets/scenes/mission_demo.scn`.
 - `EXPLOSION_DESIGN.md` — esplosioni × mondo (DECISO 2026-07-04, da
   implementare): primitiva condivisa `def_blast` (agenti+strutture+cadaveri
   con falloff unico) + fiction host (burst/incendi/scorch/decal); risposta

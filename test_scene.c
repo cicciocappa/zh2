@@ -38,6 +38,11 @@ static int roundtrip(void) {
     a.n_turret = 2;
     a.turret[0] = (SceneTurret){ 12, 8, 25.0f, 0, 400.0f };  /* tough emplacement */
     a.turret[1] = (SceneTurret){ 20, 6, 30.0f, 1, 0.0f };    /* hp omitted -> default */
+    a.n_exit = 2;                                            /* fase A entities */
+    a.exits[0] = (SceneExit){ 1, 4, 2, 8, 12.0f, 5.0f, 400 };
+    a.exits[1] = (SceneExit){ 27, 4, 2, 8, 6.0f, 0.0f, 0 };  /* no delay, inf pool */
+    a.has_lz = 1; a.lz_x = 15.0f; a.lz_y = 10.0f;
+    a.mission = (SceneMission){ SCENE_MISSION_SURVIVE, 300.0f, 90.0f, 500.0f };
 
     int ok = scene_save(TMP, &a) == 0;
     Scene b;
@@ -62,8 +67,18 @@ static int roundtrip(void) {
          strcmp(b.prop[0].key, "bench") == 0 && fabsf(b.prop[0].x - 7.5f) < 1e-6f &&
          fabsf(b.prop[0].rot - 90.0f) < 1e-6f &&
          strcmp(b.prop[1].key, "sign") == 0 && fabsf(b.prop[1].y - 4.5f) < 1e-6f;
-    printf("roundtrip: %dx%d set=%d poly=%d goal=%d prop=%d turret=%d | %s\n",
-           b.gw, b.gh, b.n_set, b.n_poly, b.n_goal, b.n_prop, b.n_turret, ok ? "ok" : "BAD");
+    ok = ok && b.n_exit == 2 &&                              /* fase A roundtrip */
+         fabsf(b.exits[0].rate - 12.0f) < 1e-6f && fabsf(b.exits[0].delay - 5.0f) < 1e-6f &&
+         b.exits[0].pool == 400 && b.exits[1].pool == 0 &&
+         fabsf(b.exits[1].x - 27.0f) < 1e-6f;
+    ok = ok && b.has_lz && fabsf(b.lz_x - 15.0f) < 1e-6f && fabsf(b.lz_y - 10.0f) < 1e-6f;
+    ok = ok && b.mission.kind == SCENE_MISSION_SURVIVE &&
+         fabsf(b.mission.survive_s - 300.0f) < 1e-6f &&
+         fabsf(b.mission.prep_s - 90.0f) < 1e-6f &&
+         fabsf(b.mission.budget - 500.0f) < 1e-6f;
+    printf("roundtrip: %dx%d set=%d poly=%d goal=%d prop=%d turret=%d exit=%d | %s\n",
+           b.gw, b.gh, b.n_set, b.n_poly, b.n_goal, b.n_prop, b.n_turret, b.n_exit,
+           ok ? "ok" : "BAD");
     scene_free(&a); scene_free(&b);
     return ok;
 }
@@ -89,6 +104,8 @@ static int parse_and_instantiate(void) {
     ok = ok && sc.gw == 10 && sc.gh == 6 && fabsf(sc.cell - 1.0f) < 1e-6f;
     ok = ok && sc.n_spawn == 1 && fabsf(sc.spawn[0].x - 1.0f) < 1e-6f;
     ok = ok && sc.n_prop == 1 && strcmp(sc.prop[0].key, "cart") == 0;
+    ok = ok && sc.mission.kind == SCENE_MISSION_NONE &&      /* legacy scene */
+         sc.mission.budget < 0.0f && sc.n_exit == 0 && !sc.has_lz;
     SimP *s = ok ? scene_instantiate(&sc, 256) : NULL;
     ok = ok && s != NULL;
     if (ok) {

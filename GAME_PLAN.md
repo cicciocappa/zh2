@@ -108,6 +108,15 @@ Raccomandazione (motivata, da confermare col primo uso):
 
 ## Fase A — Macchina a stati di missione (`mission.c`)
 
+> **FATTA (2026-07-04).** `mission.h/.c` + director con `start_delay`/`pool`
+> (defense §8), formato `.scn` esteso (`exit`/`lz`/`mission`/`budget`, nomi
+> BLENDER_LEVEL §8), `lz` → core assediabile + goal (`build_lz_core` in
+> vat_horde, elicottero = fiction futura), piazzamento solo in PREP, INVIO =
+> via all'assalto (nella shell comanda la shell: in APP_PREP la missione è
+> congelata, START_ASSAULT → `mission_go`). Verifica: `test_mission` (SURVIVE
+> vinta/persa via `def_struct_damage`, CLEAR con pool esatti e dormienti
+> ignorati, determinismo); banco visivo `assets/scenes/mission_demo.scn`.
+
 **Obiettivo**: trasformare la demo in PARTITA: PREP → ASSAULT → WIN/LOSE,
 con la missione dichiarata nel `.scn`.
 
