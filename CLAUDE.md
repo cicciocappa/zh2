@@ -387,6 +387,13 @@ eseguibili si lanciano dalla root del progetto.
   `gfx/test_level_make.py`, esercita ogni regola) → `scenes/test_level.scn`
   verificato con `scene_load`+`scene_instantiate`. La modalità EDIT in-game
   resta come tuning/debug; il `.blend` è la fonte di verità del livello.
+- `EXPLOSION_DESIGN.md` — esplosioni × mondo (DECISO 2026-07-04, da
+  implementare): primitiva condivisa `def_blast` (agenti+strutture+cadaveri
+  con falloff unico) + fiction host (burst/incendi/scorch/decal); risposta
+  per ARCHETIPO dagli assi ENTITY_DESIGN + 2 colonne catalogo (`resist`,
+  `burn`); scorch direzionale v1 senza asset, convenzione nodi `glass_*`/
+  `dmg_*` per il v2; chiude il buco danno-da-caduta (`simp_landed` mai
+  consumato). Prerequisito di mine (fase D) e mortaio (fase F).
 - `M3_DESIGN.md` — design tecnico di M3 (handle, volo, cadaveri, query, tipi,
   densità→costo): API, dettagli, piani di verifica.
 - `GFX_DESIGN.md` — direzione artistica e design grafico (DECISO, giugno 2026):
