@@ -21,17 +21,21 @@
  * "-" = today's inert decor (retro-compatible; the destructible trio accepts
  * "-" placeholders so later columns can be reached):
  *
- *     # key  mesh scale label [trig debris topple] [solid H] [hp mult] [opac] [mass]
- *     fence  -    1.0   Fence  -    -      -        solid 1.8  350 0.6   0.3    -
- *     bus    -    3.0   Bus    -    -      -        solid 2.6  inf -     1.0    inf
- *     wreck  -    1.4   Wreck  -    -      -        -          -   -     0.5    120
+ *     # key  mesh scale label [trig debris topple] [solid H [WxD]] [hp mult] [opac] [mass]
+ *     fence  -    1.0   Fence  -    -      -        solid 1.8 2x0.5   350 0.6   0.3    -
+ *     bus    -    3.0   Bus    -    -      -        solid 2.6 11x2.5  inf -     1.0    inf
+ *     wreck  -    1.4   Wreck  -    -      -        -                 -   -     0.5    120
  *
  * `solid H` = the prop's footprint is raised as nav wall (height H meters,
- * render extrusion + flyer clearance); `hp mult` = siegeable structure with
+ * render extrusion + flyer clearance); the optional `WxD` token right after H
+ * (ENTITY_DESIGN §8.5, e.g. "2x0.5") is the footprint rectangle in meters,
+ * W along the prop's local x and D along local y, yawed by the instance rot;
+ * omitted = one nav cell. `hp mult` = siegeable structure with
  * that HP pool ("inf" = indestructible) and wall-cost tier multiplier;
  * `opac` = bullet opacity 0..1 (axis C, simp_set_opacity); `mass` = draggable
  * mass in walker units ("inf" or "-" with solid = not draggable). The host
- * (build_world) applies these at instantiation; the catalog only stores them.
+ * applies these at instantiation via prop_world_apply (prop_world.h); the
+ * catalog only stores them.
  */
 #ifndef PROPS_H
 #define PROPS_H
@@ -56,6 +60,7 @@ typedef struct {
     /* unified entity axes (ENTITY_DESIGN.md §6); zeros = inert decor. */
     int   solid;                 /* 1 = footprint raised as nav wall (axis A)  */
     float height;                /* m, solid extrusion (axis G); 0 if !solid   */
+    float fw, fd;                /* §8.5 footprint W×D (m); 0 = one nav cell   */
     float hp;                    /* >0 = siegeable (axis B); INFINITY = indestructible */
     float cost_mult;             /* wall-cost tier multiplier (1 = barricade)  */
     float opacity;               /* bullet opacity 0..1 (axis C)               */

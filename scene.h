@@ -110,4 +110,12 @@ void scene_free(Scene *sc);   /* no heap today; zeroes the struct */
  * NULL on allocation failure. */
 SimP *scene_instantiate(const Scene *sc, int max_agents);
 
+/* Scanline-rasterize a simple polygon (world meters, even-odd rule, at most
+ * SCENE_POLY_MAX_VERTS verts): cb(ud, cx, cy) for every grid cell whose CENTER
+ * falls inside. The same kernel scene_instantiate uses for poly entities,
+ * exposed for host-side footprints (prop_world.c, ENTITY_DESIGN §8.5). */
+void scene_raster_cells(const float *vx, const float *vy, int nverts,
+                        float cell, int gw, int gh,
+                        void (*cb)(void *ud, int cx, int cy), void *ud);
+
 #endif /* SCENE_H */

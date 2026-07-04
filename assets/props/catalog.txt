@@ -1,19 +1,27 @@
-# horde prop catalog — pure decor (EDITOR_DESIGN §10 stadio 5b)
-# Render + terrain seating only: NO sim/nav effect. See props.h for the format.
-# mesh "-" (or a missing .glb) -> procedural placeholder drawn by the host.
+# horde prop catalog — see props.h for the format.
+# mesh = runtime glb (exported from blend/props.blend by gfx/props_export_glb.py,
+# real-world size -> scale 1.0); "-" or a missing file -> procedural placeholder.
 #
-# key    mesh                      scale  label
-bench    -                         1.0    Bench
-sign     -                         1.0    Sign
-cart     -                         1.2    Cart
-bin      -                         0.7    Bin
-crate    -                         0.8    Crate
+# key    mesh                              scale  label
+bench    assets/models/props/bench.glb     1.0    Bench
+sign     assets/models/props/sign.glb      1.0    Sign
+cart     assets/models/props/cart.glb      1.0    Cart
+bin      assets/models/props/bin.glb       1.0    Bin
+crate    assets/models/props/crate.glb     1.0    Crate
 #
 # Distruttibili (DESTRUCT_DESIGN.md): aggiungi  trig  debris  topple  dopo label.
 # trig = raggio (m) di innesco; debris = stile FX (wood/metal); topple = s di
 # abbattimento prima dello scoppio (0 = frantumazione istantanea).
-# key    mesh                      scale  label   trig  debris  topple
-table    -                         1.0    Table   1.2   wood    0.0
-chair    -                         0.7    Chair   1.0   wood    0.0
-trafsign -                         1.0    TrafSign 1.2  metal   0.35
-traflight -                        1.2    TrafLight 1.3 metal   0.40
+# key    mesh                              scale  label     trig  debris  topple
+table    assets/models/props/table.glb     1.0    Table     1.2   wood    0.0
+chair    assets/models/props/chair.glb     1.0    Chair     1.0   wood    0.0
+trafsign assets/models/props/trafsign.glb  1.0    TrafSign  1.2   metal   0.35
+traflight assets/models/props/traflight.glb 1.0   TrafLight 1.3   metal   0.40
+#
+# Solidi (ENTITY_DESIGN §6+§8.5, applicati da prop_world_apply in build_world):
+# solid H WxD = footprint nav W×D m (ruotato dello yaw dell'istanza), alto H;
+# hp mult = assediabile (inf = indistruttibile -> tier palazzo); opac = asse C.
+# key    mesh                              scale  label     trig debris topple  solid H WxD      hp  mult  opac  mass
+fence    assets/models/props/fence.glb     1.0    Fence     -    -      -       solid 1.8 2x0.5  350 0.6   0.3   -
+bus      assets/models/props/bus.glb       1.0    Bus       -    -      -       solid 2.6 11x2.5 inf -     1.0   -
+building assets/models/props/building.glb  1.0    Building  -    -      -       solid 8 10x8     inf -     1.0   -

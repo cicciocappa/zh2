@@ -34,6 +34,7 @@
 #include "cgltf.h"
 #include "terrain.h"
 #include "props.h"
+#include "prop_world.h"
 #include "destruct.h"
 #include "edit_pick.h"
 #include "editor.h"
@@ -429,6 +430,79 @@ static const PlItem PL_CAT[] = {
 // catalogo prop di decoro (§10 stadio 5b): tipo->mesh+scala+label, render-only.
 static PropCatalog gCatalog; static int gCatN = 0;
 
+// assi §6 applicati al mondo vivo (prop_world_apply in build_world): footprint
+// nav dei prop solidi, id struttura per gli assediabili (render: scurimento col
+// danno, sparizione al crollo, skip dei box grigi struct-cell).
+static PropWorld gPropW;
+
+// --- prop glb models (EDITOR_PLAN E5): la colonna mesh del catalogo, caricata
+// come triangle soup 9-float (pos+nrm+rgb; colore = baseColorFactor del
+// materiale, node transform mondo applicato, posizioni scalate dalla colonna
+// scale). File assente/oltre il cap -> placeholder procedurale come prima.
+// Texture NON lette (flat color: basta per i placeholder; si aggiunge il path
+// texturato quando arrivano i prop veri). Stampati per-istanza nel VBO prop da
+// build_prop_mesh (yaw + lean topple), stesso pattern delle torrette.
+typedef struct { float *v; int nv; } PropModel;    // nv verts * 9 float
+static PropModel gPropM[PROP_MAX_DEFS];
+#define PROP_GLB_MAX_VERTS 6000
+static void load_prop_models(const PropCatalog *cat){
+    int loaded=0, with_mesh=0;
+    for(int i=0;i<cat->n;i++){
+        const PropDef *d=&cat->defs[i]; gPropM[i].v=NULL; gPropM[i].nv=0;
+        if(!d->mesh[0]) continue;
+        with_mesh++;
+        cgltf_options opt={0}; cgltf_data *data=NULL;
+        if(cgltf_parse_file(&opt,d->mesh,&data)!=cgltf_result_success){
+            fprintf(stderr,"prop '%s': %s assente/illeggibile -> placeholder\n",d->key,d->mesh); continue; }
+        if(cgltf_load_buffers(&opt,data,d->mesh)!=cgltf_result_success){
+            fprintf(stderr,"prop '%s': buffers fail -> placeholder\n",d->key);
+            cgltf_free(data); continue; }
+        size_t tot=0;
+        for(size_t n=0;n<data->nodes_count;n++){ cgltf_node *nd=&data->nodes[n];
+            if(!nd->mesh) continue;
+            for(size_t p=0;p<nd->mesh->primitives_count;p++){
+                cgltf_primitive *pr=&nd->mesh->primitives[p];
+                if(pr->type!=cgltf_primitive_type_triangles||!pr->indices) continue;
+                tot+=pr->indices->count; } }
+        if(!tot || tot>PROP_GLB_MAX_VERTS){
+            if(tot) fprintf(stderr,"prop '%s': %d vert > cap %d -> placeholder\n",
+                            d->key,(int)tot,PROP_GLB_MAX_VERTS);
+            cgltf_free(data); continue; }
+        float *v=malloc(tot*9*sizeof(float)); size_t c=0;
+        for(size_t n=0;n<data->nodes_count;n++){ cgltf_node *nd=&data->nodes[n];
+            if(!nd->mesh) continue;
+            float M[16]; cgltf_node_transform_world(nd,M);
+            for(size_t p=0;p<nd->mesh->primitives_count;p++){
+                cgltf_primitive *pr=&nd->mesh->primitives[p];
+                if(pr->type!=cgltf_primitive_type_triangles||!pr->indices) continue;
+                cgltf_accessor *pos=NULL,*nrm=NULL;
+                for(size_t a=0;a<pr->attributes_count;a++){ cgltf_attribute *at=&pr->attributes[a];
+                    if(at->type==cgltf_attribute_type_position) pos=at->data;
+                    else if(at->type==cgltf_attribute_type_normal) nrm=at->data; }
+                if(!pos) continue;
+                float col[3]={0.65f,0.65f,0.65f};
+                if(pr->material && pr->material->has_pbr_metallic_roughness){
+                    const cgltf_float *bc=pr->material->pbr_metallic_roughness.base_color_factor;
+                    col[0]=bc[0]; col[1]=bc[1]; col[2]=bc[2]; }
+                for(size_t k=0;k<pr->indices->count;k++){
+                    cgltf_size ix=cgltf_accessor_read_index(pr->indices,k);
+                    float P[3]={0,0,0}, N[3]={0,1,0};
+                    cgltf_accessor_read_float(pos,ix,P,3);
+                    if(nrm) cgltf_accessor_read_float(nrm,ix,N,3);
+                    float *o=v+c*9;
+                    o[0]=(M[0]*P[0]+M[4]*P[1]+M[8]*P[2]+M[12])*d->scale;
+                    o[1]=(M[1]*P[0]+M[5]*P[1]+M[9]*P[2]+M[13])*d->scale;
+                    o[2]=(M[2]*P[0]+M[6]*P[1]+M[10]*P[2]+M[14])*d->scale;
+                    o[3]=M[0]*N[0]+M[4]*N[1]+M[8]*N[2];
+                    o[4]=M[1]*N[0]+M[5]*N[1]+M[9]*N[2];
+                    o[5]=M[2]*N[0]+M[6]*N[1]+M[10]*N[2];
+                    o[6]=col[0]; o[7]=col[1]; o[8]=col[2];
+                    c++; } } }
+        gPropM[i].v=v; gPropM[i].nv=(int)c; loaded++;
+    }
+    if(with_mesh) printf("prop mesh: %d/%d glb caricati\n",loaded,with_mesh);
+}
+
 typedef struct { GLuint vao, vbo, ebo, tex; int nidx, hasTex; } Ground;
 
 // carica la base-color texture del primo materiale (uri su file o embedded nel
@@ -648,25 +722,38 @@ static int prop_box_lean(float *buf, int c, float cx, float cz, float ox, float 
     return c;
 }
 
-#define PROP_VERTS_EACH 60   // corpo (30) + montante (30)
-#define PROP_MESH_CAP   (SCENE_MAX_PROP*PROP_VERTS_EACH)   // cap fisso del VBO prop
+#define PROP_VERTS_EACH 60   // placeholder: corpo (30) + montante (30)
+// cap fisso del VBO prop: budget medio per istanza (i glb possono superare il
+// placeholder; PROP_GLB_MAX_VERTS limita il singolo modello, questo il totale)
+#define PROP_MESH_CAP   (SCENE_MAX_PROP*600)
 #define PROP_TOPPLE_MAX 1.40f  // ~80 deg di abbattimento a t=1
 // build nel buffer del chiamante (>= PROP_MESH_CAP vertici: n_prop è cappato a
 // SCENE_MAX_PROP), stato di distruzione opzionale (NULL = tutti intatti, es. in
 // EDIT). Ritorna il conteggio vertici. Niente malloc: durante un topple viene
 // richiamata a ogni step della sim.
 static int build_prop_mesh(const Scene *sc, const PropCatalog *cat,
-                           const Destruct *dz, float *buf) {
-    int c = 0;
+                           const Destruct *dz, const DefGame *g, float *buf) {
+    int c = 0; static int warned = 0;
     for (int i = 0; i < sc->n_prop; i++) {
         int st = dz ? destruct_state(dz, i) : DESTRUCT_INERT;
         if (st == DESTRUCT_GONE) continue;                 // distrutto: sparito
+        // §6: struttura assediabile — scurisce col danno, sparisce al crollo
+        // (le celle nav le ha già liberate defense). Prop piazzati in EDIT dopo
+        // il build_world hanno indice >= gPropW.n: nessuna struttura.
+        int sid = (g && i < gPropW.n) ? gPropW.struct_id[i] : -1;
+        float dmg = 1.0f;
+        if (sid >= 0) {
+            if (def_struct_collapsed(g, sid)) continue;
+            float frac = def_struct_hp(g, sid) / (def_struct_hp_max(g, sid) + 1e-3f);
+            dmg = 0.35f + 0.65f * frac;                    // come i muri di scena
+        }
         const SceneProp *pr = &sc->prop[i];
         const PropDef *d = prop_catalog_find(cat, pr->key);
         float sc_m = d ? d->scale : 1.0f;
-        float r,g,b;
-        if (d) { int idx = (int)(d - cat->defs) & 7; r=PROP_PAL[idx][0]; g=PROP_PAL[idx][1]; b=PROP_PAL[idx][2]; }
-        else   { r=0.90f; g=0.10f; b=0.85f; }            // chiave sconosciuta = magenta
+        float cr,cg,cb;
+        if (d) { int idx = (int)(d - cat->defs) & 7; cr=PROP_PAL[idx][0]; cg=PROP_PAL[idx][1]; cb=PROP_PAL[idx][2]; }
+        else   { cr=0.90f; cg=0.10f; cb=0.85f; }         // chiave sconosciuta = magenta
+        cr*=dmg; cg*=dmg; cb*=dmg;
         float a = pr->rot * 0.01745329f, ca = cosf(a), sa = sinf(a);
         float zb = ter_z(pr->x, pr->y);
         // abbattimento: theta cresce 0..MAX, la faccia alta ruota attorno alla base
@@ -674,14 +761,36 @@ static int build_prop_mesh(const Scene *sc, const PropCatalog *cat,
         float st_=sinf(th), ct_=cosf(th);
         float dh = (st==DESTRUCT_TOPPLING) ? destruct_dir(dz,i) : 0.0f;
         float ddx=cosf(dh), ddz=sinf(dh);
+        // mesh glb del catalogo (loader E5): stamp yaw + shear di abbattimento
+        // (la quota locale h ruota attorno alla base, come prop_box_lean)
+        const PropModel *pm = d ? &gPropM[(int)(d - cat->defs)] : NULL;
+        if (pm && pm->nv) {
+            if (c + pm->nv > PROP_MESH_CAP) {
+                if(!warned){ fprintf(stderr,"prop: VBO pieno (cap %d), istanze oltre non disegnate\n",PROP_MESH_CAP); warned=1; }
+                break; }
+            for (int k = 0; k < pm->nv; k++) {
+                const float *iv = pm->v + (size_t)k*9; float *o = buf + (size_t)(c+k)*9;
+                float rx = iv[0]*ca - iv[2]*sa, rz = iv[0]*sa + iv[2]*ca, h = iv[1];
+                o[0] = pr->x + rx + h*st_*ddx;
+                o[1] = zb + h*ct_;
+                o[2] = pr->y + rz + h*st_*ddz;
+                o[3] = iv[3]*ca - iv[5]*sa; o[4] = iv[4]; o[5] = iv[3]*sa + iv[5]*ca;
+                o[6] = iv[6]*dmg; o[7] = iv[7]*dmg; o[8] = iv[8]*dmg;
+            }
+            c += pm->nv;
+            continue;
+        }
+        if (c + PROP_VERTS_EACH > PROP_MESH_CAP) {
+            if(!warned){ fprintf(stderr,"prop: VBO pieno (cap %d), istanze oltre non disegnate\n",PROP_MESH_CAP); warned=1; }
+            break; }
         // corpo: 0.7×0.4 m, alto 0.45 m
         float bH=0.45f*sc_m;
-        c = prop_box_lean(buf, c, pr->x, pr->y, 0,0, zb, 0.35f*sc_m, 0.20f*sc_m, bH, ca,sa, r,g,b,
+        c = prop_box_lean(buf, c, pr->x, pr->y, 0,0, zb, 0.35f*sc_m, 0.20f*sc_m, bH, ca,sa, cr,cg,cb,
                           bH*st_*ddx, bH*st_*ddz, bH*ct_);
         // montante sul lato frontale (+x locale): 0.1×0.1 m, alto 1.0 m
         float mH=1.0f*sc_m;
         c = prop_box_lean(buf, c, pr->x, pr->y, 0.30f*sc_m,0, zb, 0.06f*sc_m, 0.06f*sc_m, mH, ca,sa,
-                          r*0.8f, g*0.8f, b*0.8f, mH*st_*ddx, mH*st_*ddz, mH*ct_);
+                          cr*0.8f, cg*0.8f, cb*0.8f, mH*st_*ddx, mH*st_*ddz, mH*ct_);
     }
     return c;
 }
@@ -690,10 +799,10 @@ static int build_prop_mesh(const Scene *sc, const PropCatalog *cat,
 // distruggono). Lo store GL è preallocato a PROP_MESH_CAP (DYNAMIC_DRAW) e il
 // buffer CPU è uno solo, riusato: durante un topple l'upload gira a 60 Hz.
 static int upload_prop_mesh(GLuint vbo, const Scene *sc, const PropCatalog *cat,
-                            const Destruct *dz){
+                            const Destruct *dz, const DefGame *g){
     static float *buf = NULL;
     if(!buf) buf = malloc((size_t)PROP_MESH_CAP*9*sizeof(float));
-    int nv = build_prop_mesh(sc,cat,dz,buf);
+    int nv = build_prop_mesh(sc,cat,dz,g,buf);
     glBindBuffer(GL_ARRAY_BUFFER,vbo);
     if(nv) glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)nv*9*sizeof(float),buf);
     return nv;
@@ -918,6 +1027,7 @@ static int build_struct_mesh(DefGame *g, float cell, float *buf, int maxV){
         if(c+30 > maxV) return c;                         // cap: non sforare il VBO
         int id=def_cell_struct(g,cx,cy); if(id<0) continue;
         if(def_struct_is_turret(g,id)) continue;          // drawn as a turret pillar
+        if(id<PROP_WORLD_MAX_STRUCT && gPropW.struct_is_prop[id]) continue; // il prop disegna la sua mesh (§6)
         float frac=def_struct_hp(g,id)/ (def_struct_hp_max(g,id)+1e-3f); // 1..0
         float t=0.35f+0.65f*frac;                         // darken with damage
         float cr,cg,cb;
@@ -1039,6 +1149,14 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
         printf("base: core HP %.0f + ring HP %.0f\n",
                (double)def_struct_hp_max(g,gCoreId),(double)def_struct_hp_max(g,gOuterId)); }
 
+    // prop solidi/assediabili dal catalogo (ENTITY_DESIGN §6+§8.5,
+    // prop_world_apply): footprint W×D → celle nav + opacità + strutture per
+    // gli hp finiti. PRIMA del prefill/director: niente spawn dentro un bus.
+    prop_world_apply(sc, &gCatalog, s, g, &gPropW);
+    if(gPropW.n_solid>0)
+        printf("prop solidi (§6): %d footprint nav, %d assediabili\n",
+               gPropW.n_solid, gPropW.n_siege);
+
     if(fillN){ int got=prefill_lattice(s,g,vl,sc,fillN);
         printf("prefill: target %d -> %d agenti piazzati\n", fillN, got); }
 
@@ -1126,7 +1244,7 @@ static void shell_load_level(void){
     shell_build_core(*gHost.g,*gHost.s,gHost.sc,L->core_hp);
     destruct_init(gHost.dz,gHost.sc,&gCatalog);
     *gHost.obNV=upload_obstacle_mesh(gHost.obVbo,gHost.sc,!gHost.ground_on);
-    *gHost.prNV=upload_prop_mesh(gHost.prVbo,gHost.sc,&gCatalog,gHost.dz);
+    *gHost.prNV=upload_prop_mesh(gHost.prVbo,gHost.sc,&gCatalog,gHost.dz,*gHost.g);
     *gHost.cam_x=gHost.sc->world_w*0.5f; *gHost.cam_z=gHost.sc->world_h*0.5f;
     anim_init(&gAnim); gSurviveT=0.0f;
     printf("livello %d (%s): %s pronto\n",gApp.cur+1,L->name,L->scene);
@@ -1293,6 +1411,7 @@ int main(int argc, char **argv){
     gCatN = prop_catalog_load(cpath, &gCatalog);
     if (gCatN > 0) printf("prop catalog: %s (%d tipi)\n", cpath, gCatN);
     else { gCatN = 0; printf("prop catalog: %s assente -> tool prop disabilitato\n", cpath); }
+    load_prop_models(&gCatalog);   // colonna mesh -> glb (fallback placeholder)
 
     // terreno render-only (§9): glb dalla scena (o VAT_HORDE_TERRAIN), heightmap
     // .zhm a fianco (stesso path, estensione .zhm). Il .zhm è CPU-only → caricato
@@ -1495,7 +1614,7 @@ int main(int argc, char **argv){
     glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
     glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
     glBindVertexArray(0);
-    int prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz);
+    int prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g);
     printf("prop: %d istanze (%d triangoli)\n",sc.n_prop,prNV/3);
 
     // overlay editor (rect/poly/cursore): stesso layout del flat shader, dinamico.
@@ -1825,14 +1944,14 @@ int main(int argc, char **argv){
                         } else if(ed.tool==ED_WALL||ed.tool==ED_COSTPOLY){
                             ed_poly_vertex(&ed,&sc,wx,wy);
                         } else if(ed.tool==ED_PROP){
-                            if(ed_place_prop(&ed,&sc,wx,wy)){ destruct_init(&dz,&sc,&gCatalog); prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz); }
+                            if(ed_place_prop(&ed,&sc,wx,wy)){ destruct_init(&dz,&sc,&gCatalog); prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g); }
                         }
                     } else if(e.button.button==SDL_BUTTON_RIGHT){
                         if(ed.npoly>0) ed.npoly--;                 // annulla ultimo vertice
                         else if(ed_delete_at(&sc,wx,wy)){ ed.dirty=1;
                             obNV=upload_obstacle_mesh(obVbo,&sc,!groundOn);
                             destruct_init(&dz,&sc,&gCatalog);
-                            prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz); }
+                            prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g); }
                     }
                 } else if(motion && ed.dragging && hit){ ed.bx=wx; ed.by=wy; }
                 else if(e.type==SDL_EVENT_MOUSE_BUTTON_UP &&
@@ -1889,7 +2008,7 @@ int main(int argc, char **argv){
                             if(build_world(&sc,vl,fillN,&spctx,&s,&g,&dir)!=0){running=0;break;}
                             destruct_init(&dz,&sc,&gCatalog);     // ri-stato distruttibili
                             obNV=upload_obstacle_mesh(obVbo,&sc,!groundOn);
-                            prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz); ed.dirty=0; }
+                            prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g); ed.dirty=0; }
                         ed.active=0;
                     } else ed.active=1;
                     break;
@@ -2036,7 +2155,14 @@ int main(int argc, char **argv){
                 // cade su brute-force, corretta). Re-upload se cambia o sta cadendo.
                 if(destruct_update(&dz,s,&sc,FIXED_DT,on_prop_burst,&dctx)
                    || destruct_animating(&dz))
-                    prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz);
+                    prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g);
+                // prop assediabili (§6): ridisegna al cambio di HP (scurimento
+                // col danno, sparizione al crollo). La somma cambia solo sotto
+                // assedio: il re-upload resta un evento raro.
+                { static float hpSum=-1.0f; float cur=0.0f;
+                  for(int pi=0;pi<gPropW.n;pi++){ int psid=gPropW.struct_id[pi];
+                      if(psid>=0) cur+=def_struct_hp(g,psid); }
+                  if(cur!=hpSum){ prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g); hpSum=cur; } }
                 // i feriti si insanguinano (outfit+16); i maimed_legs passano
                 // anche alla mesh crawler (a runtime)
                 { const uint8_t *wnd=def_wound(g); int nn=simp_count(s);

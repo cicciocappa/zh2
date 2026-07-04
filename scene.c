@@ -242,19 +242,21 @@ int scene_save(const char *path, const Scene *sc) {
 /* ---- rasterization ------------------------------------------------------- */
 
 /* Scanline fill of a simple polygon (convex or concave) into the grid. For
- * each cell whose CENTER falls inside the polygon, calls cb(s, cx, cy, ud).
- * Even-odd rule on horizontal lines through cell-row centers. */
-static void raster_poly(SimP *s, const ScenePoly *p, float cell, int gw, int gh,
-                        void (*cb)(SimP *, int, int, const ScenePoly *), const ScenePoly *ud) {
+ * each cell whose CENTER falls inside the polygon, calls cb(ud, cx, cy).
+ * Even-odd rule on horizontal lines through cell-row centers. Public: also
+ * the kernel for host-side prop footprints (prop_world.c, §8.5). */
+void scene_raster_cells(const float *pvx, const float *pvy, int nverts,
+                        float cell, int gw, int gh,
+                        void (*cb)(void *ud, int cx, int cy), void *ud) {
     float xs[SCENE_POLY_MAX_VERTS];
     for (int cy = 0; cy < gh; cy++) {
         float yc = ((float)cy + 0.5f) * cell;
         int n = 0;
-        for (int i = 0, j = p->nverts - 1; i < p->nverts; j = i++) {
-            float yi = p->vy[i], yj = p->vy[j];
+        for (int i = 0, j = nverts - 1; i < nverts; j = i++) {
+            float yi = pvy[i], yj = pvy[j];
             if ((yi <= yc && yc < yj) || (yj <= yc && yc < yi)) {
                 float t = (yc - yi) / (yj - yi);
-                xs[n++] = p->vx[i] + t * (p->vx[j] - p->vx[i]);
+                xs[n++] = pvx[i] + t * (pvx[j] - pvx[i]);
             }
         }
         /* insertion sort the crossings */
@@ -268,14 +270,16 @@ static void raster_poly(SimP *s, const ScenePoly *p, float cell, int gw, int gh,
             int cx1 = (int)floorf(xs[a + 1] / cell - 0.5f);
             if (cx0 < 0) cx0 = 0;
             if (cx1 >= gw) cx1 = gw - 1;
-            for (int cx = cx0; cx <= cx1; cx++) cb(s, cx, cy, ud);
+            for (int cx = cx0; cx <= cx1; cx++) cb(ud, cx, cy);
         }
     }
 }
 
-static void cb_poly(SimP *s, int cx, int cy, const ScenePoly *p) {
-    if (p->solid) simp_set_wall(s, cx, cy, true);
-    else          simp_add_cost(s, cx, cy, p->cost);
+typedef struct { SimP *s; const ScenePoly *p; } PolyRasterCtx;
+static void cb_poly(void *ud, int cx, int cy) {
+    PolyRasterCtx *c = (PolyRasterCtx *)ud;
+    if (c->p->solid) simp_set_wall(c->s, cx, cy, true);
+    else             simp_add_cost(c->s, cx, cy, c->p->cost);
 }
 
 /* rect in meters -> inclusive cell range; cb per cell */
@@ -319,8 +323,11 @@ SimP *scene_instantiate(const Scene *sc, int max_agents) {
         else           *(float *)((char *)P + e->off) = sc->set[k].value;
     }
 
-    for (int k = 0; k < sc->n_poly; k++)
-        raster_poly(s, &sc->poly[k], sc->cell, sc->gw, sc->gh, cb_poly, &sc->poly[k]);
+    for (int k = 0; k < sc->n_poly; k++) {
+        PolyRasterCtx ctx = { s, &sc->poly[k] };
+        scene_raster_cells(sc->poly[k].vx, sc->poly[k].vy, sc->poly[k].nverts,
+                           sc->cell, sc->gw, sc->gh, cb_poly, &ctx);
+    }
     for (int k = 0; k < sc->n_cost; k++)
         raster_rect(s, &sc->cost[k], sc->cell, sc->gw, sc->gh, cb_cost);
     for (int k = 0; k < sc->n_goal; k++)

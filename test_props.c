@@ -53,26 +53,35 @@ int main(void) {
     /* ---- 4) unified entity axes (ENTITY_DESIGN.md §6) ------------------- */
     f = fopen(TMP, "w");
     if (!f) { printf("FAIL (tmp)\n"); return 1; }
-    fputs("# key  mesh scale label [trig debris topple] [solid H] [hp mult] [opac] [mass]\n"
-          "fence  -    1.0   Fence  -    -      -        solid 1.8  350 0.6   0.3    -\n"
-          "bus    -    3.0   Bus    -    -      -        solid 2.6  inf -     1.0    inf\n"
-          "wreck  -    1.4   Wreck  -    -      -        -          -   -     0.5    120\n"
-          "table  -    1.0   Table  0.8  wood   0.4      -          -   -     -      -\n"
+    fputs("# key  mesh scale label [trig debris topple] [solid H [WxD]] [hp mult] [opac] [mass]\n"
+          "fence  -    1.0   Fence  -    -      -        solid 1.8 2x0.5  350 0.6   0.3    -\n"
+          "bus    -    3.0   Bus    -    -      -        solid 2.6 11x2.5 inf -     1.0    inf\n"
+          "wreck  -    1.4   Wreck  -    -      -        -                -   -     0.5    120\n"
+          "table  -    1.0   Table  0.8  wood   0.4      -                -   -     -      -\n"
+          "hut    -    1.0   Hut    -    -      -        solid 4          inf -     1.0    -\n"
           "bench  -    1.0   Bench\n",                     /* old format: inert */
           f);
     fclose(f);
     int n4 = prop_catalog_load(TMP, &c);
-    int ok4 = (n4 == 5);
+    int ok4 = (n4 == 6);
 
     const PropDef *fe = prop_catalog_find(&c, "fence");
     ok4 = ok4 && fe && fe->solid && fabsf(fe->height - 1.8f) < 1e-6f &&
+          fabsf(fe->fw - 2.0f) < 1e-6f && fabsf(fe->fd - 0.5f) < 1e-6f &&
           fabsf(fe->hp - 350.0f) < 1e-3f && fabsf(fe->cost_mult - 0.6f) < 1e-6f &&
           fabsf(fe->opacity - 0.3f) < 1e-6f && fe->mass == 0.0f &&
           !fe->destructible;
 
     const PropDef *bu = prop_catalog_find(&c, "bus");
     ok4 = ok4 && bu && bu->solid && fabsf(bu->height - 2.6f) < 1e-6f &&
+          fabsf(bu->fw - 11.0f) < 1e-6f && fabsf(bu->fd - 2.5f) < 1e-6f &&
           isinf(bu->hp) && fabsf(bu->opacity - 1.0f) < 1e-6f && isinf(bu->mass);
+
+    /* WxD omitted (§8.5 default = one nav cell): later columns still land */
+    const PropDef *hu = prop_catalog_find(&c, "hut");
+    ok4 = ok4 && hu && hu->solid && fabsf(hu->height - 4.0f) < 1e-6f &&
+          hu->fw == 0.0f && hu->fd == 0.0f && isinf(hu->hp) &&
+          fabsf(hu->opacity - 1.0f) < 1e-6f && hu->mass == 0.0f;
 
     const PropDef *wr = prop_catalog_find(&c, "wreck");
     ok4 = ok4 && wr && !wr->solid && wr->hp == 0.0f &&

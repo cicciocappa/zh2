@@ -330,9 +330,28 @@ eseguibili si lanciano dalla root del progetto.
   pieno, determinismo. NOTA misurata: l'assedio frontale richiede orda densa
   hex-packed stile `test_base` (~380), un pack rado resta sotto
   `ATTACK_MIN_P`. Catalogo §6 parsato in `props.c`
-  (colonne opzionali `[solid H] [hp mult] [opac] [mass]`, `inf` ok,
-  esercitate in `test_props`); applicazione host in `build_world` NON fatta
-  (manca il footprint in pianta, decisione aperta §8.5).
+  (colonne opzionali `[solid H [WxD]] [hp mult] [opac] [mass]`, `inf` ok,
+  esercitate in `test_props`); applicazione host FATTA (2026-07-04): vedi
+  `prop_world.c` sotto.
+- `prop_world.h` / `.c` — applicazione host degli assi catalogo §6+§8.5
+  (2026-07-04): `prop_world_apply` (chiamata da `build_world` in `vat_horde`
+  PRIMA del prefill) rasterizza il footprint `WxD` di ogni prop `solid`
+  (rettangolo ruotato dello yaw, scanline `scene_raster_cells` resa pubblica
+  da `scene.c`; omesso = 1 cella nav, lati clampati a ≥ cella) in celle muro:
+  hp finiti → `def_add_structure` assediabile a tier `cost_mult` (crollo →
+  celle libere + reroute; il render scurisce col danno e sparisce al crollo);
+  hp `inf`/0 → muro permanente a tier ≥ palazzo (10×: un bersaglio
+  insfondabile non deve mai vincere l'asta d'assedio); opacità per-cella
+  (asse C, default 1 sui solidi). Asse D (massa finita → corpo draggable)
+  NON applicato in v1. `test_prop_world` = raster vs brute force (0°/90°/31°),
+  tier, trasmittanza, WxD omesso, determinismo. In `vat_horde`:
+  `load_prop_models` carica la colonna mesh del catalogo come glb flat-color
+  (triangle soup pos+nrm+baseColorFactor, niente texture, fallback
+  placeholder procedurale); libreria placeholder `blend/props.blend`
+  (`gfx/props_library_make.py`) esportata con `gfx/props_export_glb.py` in
+  `assets/models/props/*.glb`; banco visivo `assets/scenes/props_demo.scn`
+  (bus/building indistruttibili + cancellate assediabili davanti a due
+  torrette). STRUCT_CAP di defense alzato a 192 (mura + torrette + prop).
 - `scene.h` / `scene.c` — file di scena VETTORIALI (M7, giugno 2026; sostituisce
   il vecchio formato ASCII a griglia di char). Entità in METRI rasterizzate
   sulla griglia all'instantiate: `cell`/`world W H`/`set <param>`, rect

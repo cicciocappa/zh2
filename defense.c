@@ -38,7 +38,7 @@ static const DefEnemyDef ENEMY[BT_COUNT] = {
 #define DANGER_W   0.25f     /* blood-fear added per death (saturates at 1)   */
 
 /* §7 siege of structures — same discrete-attack model as test_siege.c */
-#define STRUCT_CAP    64
+#define STRUCT_CAP    192   /* walls + destructible turrets + siegeable props */
 #define ATTACK_PERIOD 0.8f   /* s between hits while an agent presses        */
 #define ATTACK_DAMAGE 5.0f   /* HP per hit                                   */
 #define ATTACK_MIN_P  0.006f /* min wall_pressure to count as a real attack

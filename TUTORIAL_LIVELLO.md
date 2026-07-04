@@ -83,17 +83,22 @@ Trappole:
 
 Due strade:
 
-1. **Con libreria** (`props/props.blend`, una collection per chiave di
-   catalogo): File → Link della collection, poi Add → Collection Instance.
+1. **Con libreria** (`blend/props.blend`, una collection per chiave di
+   catalogo — placeholder generati da `gfx/props_library_make.py`):
+   File → Link della collection, poi Add → Collection Instance.
    Sposti/ruoti l'istanza e vedi la mesh vera; l'export usa il **nome della
    collection** come chiave.
 2. **Senza libreria** (placeholder): un empty chiamato `prop_<chiave>`,
    es. `prop_bench.003`.
 
 La chiave DEVE esistere in `assets/props/catalog.txt`, sennò l'export blocca.
-(Le colonne nuove del catalogo — `solid/hp/opac/mass`, asse C di
-ENTITY_DESIGN — oggi sono solo parsate: l'applicazione host arriva con la
-decisione ENTITY_DESIGN §8.5 sul footprint.)
+Le colonne entity-axis del catalogo (`solid H WxD / hp mult / opac / mass`)
+sono APPLICATE dall'host (2026-07-04, `prop_world.c`): un prop `solid` alza
+il suo footprint W×D nella nav (ruotato con l'istanza), con hp finiti è
+assediabile e crolla, `opac` regola i proiettili. Quindi **anche gli edifici
+possono essere prop** (es. `building`): conviene quando lo stesso palazzo
+ricorre in più livelli o dovrà avere stati di danno; `statics` resta per i
+volumi fusi nel terreno del singolo livello.
 
 ## 6. Parametri di scena (Scene Properties → Custom Properties)
 

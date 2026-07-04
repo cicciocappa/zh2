@@ -59,14 +59,24 @@ int prop_catalog_load(const char *path, PropCatalog *c) {
          * [solid H] [hp mult] [opac] [mass] — "-" = default (inert). */
         d->cost_mult = 1.0f;
         char *tok = strtok_r(NULL, " \t", &save);
-        if (tok) {                                      /* axis A slot: "solid H" | "-" */
+        if (tok) {                                      /* axis A slot: "solid H [WxD]" | "-" */
             if (strcmp(tok, "solid") == 0) {
                 char *h = strtok_r(NULL, " \t", &save);
                 d->solid = 1;
                 d->height = h ? (float)atof(h) : 0.0f;
                 if (d->height <= 0.0f) d->height = 2.0f;   /* wall_h-ish default */
-            }
-            tok = strtok_r(NULL, " \t", &save);
+                /* optional footprint "WxD" (§8.5): meters, W local x / D local y.
+                 * Only a float-x-float token matches, so the next column ("-",
+                 * "inf" or a plain number) can never be eaten by mistake. */
+                tok = strtok_r(NULL, " \t", &save);
+                float fw, fd; char tail;
+                if (tok && sscanf(tok, "%fx%f%c", &fw, &fd, &tail) == 2 &&
+                    fw > 0.0f && fd > 0.0f) {
+                    d->fw = fw; d->fd = fd;
+                    tok = strtok_r(NULL, " \t", &save);
+                }
+            } else
+                tok = strtok_r(NULL, " \t", &save);
         }
         if (tok) {                                      /* axis B: hp mult */
             if (strcmp(tok, "inf") == 0) d->hp = INFINITY;

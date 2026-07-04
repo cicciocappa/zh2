@@ -127,9 +127,10 @@ chi modella: l'export identifica per NOME OGGETTO, non per collection.
 
 I prop (`props/catalog.txt`) si piazzano nel modo Blender-nativo:
 
-1. **Libreria**: `props/props.blend` con UNA collection per chiave di
-   catalogo (`bench`, `cart`, `trafsign`…), mesh alla scala giusta,
-   origine alla base (dove tocca terra).
+1. **Libreria**: `blend/props.blend` (generata da
+   `gfx/props_library_make.py`, placeholder alla scala vera) con UNA
+   collection per chiave di catalogo (`bench`, `cart`, `trafsign`…), mesh
+   alla scala giusta, origine alla base (dove tocca terra).
 2. **Nel livello**: File → Link (o Append) della collection, poi Add →
    Collection Instance. Si vede la mesh vera nel viewport, si sposta/ruota
    l'empty di istanza. L'export riconosce `obj.instance_collection` e usa
@@ -186,7 +187,10 @@ la semantica; l'exporter aggiunge l'emissione DOPO che `scene_load` +
    danno da bombardamento (texture "danneggiata"), migreranno a prop di
    catalogo con stati visivi (DESTRUCT/EDITOR_DESIGN §10) e la collection
    `statics` si svuoterà verso istanze §6. La convenzione §6 già li copre;
-   il lavoro è runtime (loader mesh prop = EDITOR_PLAN E5), non di export.
+   il runtime ORA anche (2026-07-04): loader glb prop (`load_prop_models`)
+   + footprint nav dal catalogo (`prop_world_apply`, colonna `WxD` §8.5) —
+   un palazzo-prop è una riga `solid H WxD inf` (es. `building`, già in
+   catalogo). `statics` resta per i palazzi fusi nel terreno del livello.
 4. **Validazione di raggiungibilità** (goal raggiungibile da ogni spawn):
    flood-fill sul `phi` del core — vive meglio in un tool C headless che
    carica il `.scn` esportato (`scene_instantiate` di prova), invocabile

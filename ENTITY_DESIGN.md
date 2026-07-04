@@ -5,11 +5,20 @@
 > soglia `T_ACQ` e scalano il danno per la trasmittanza (`defense.c`; il colpo
 > pesante accumula `hheat += transmit`, per cui dietro una cancellata servono
 > ceil(1/transmit) colpi), il catalogo prop parsa le colonne §6
-> (`props.c`, campi `solid/height/hp/cost_mult/opacity/mass`). Verifica:
-> `test_cover` (piano §7 completo) + `test_props` (§6). NON ancora fatto:
-> l'APPLICAZIONE host delle colonne catalogo in `build_world` — il footprint
-> del prop non ha dimensioni nello schema §6 (serve una colonna `WxD` o il
-> footprint dal glb: da decidere, si aggiunge alla lista §8).
+> (`props.c`, campi `solid/height/hp/cost_mult/opacity/mass` + footprint
+> `fw/fd` dalla colonna `WxD` §8.5). Verifica: `test_cover` (piano §7
+> completo) + `test_props` (§6). **APPLICAZIONE HOST FATTA (2026-07-04)**:
+> `prop_world.c` (`prop_world_apply`, chiamato da `build_world` prima del
+> prefill) rasterizza il footprint W×D ruotato dello yaw (scanline condivisa
+> `scene_raster_cells`), hp finiti → struttura assediabile `def_add_structure`
+> con tier `cost_mult`, hp inf/0 → muro permanente a tier palazzo, opacità
+> per-cella (default 1 sui solidi). Verifica: `test_prop_world`. Loader glb
+> dei prop (colonna mesh, EDITOR_PLAN E5) in `vat_horde` (`load_prop_models`):
+> triangle soup pos+nrm+baseColorFactor, fallback placeholder, scurimento col
+> danno e sparizione al crollo; libreria `blend/props.blend` →
+> `gfx/props_export_glb.py` → `assets/models/props/*.glb`. Banco:
+> `assets/scenes/props_demo.scn`. Restano fuori v1: asse D (prop a massa
+> finita → corpo draggable) e opacità dei non-solidi (fumo/siepe, §8.2).
 >
 > Nata dalla riflessione in `considerazioni.txt`
 > dopo il line-of-sight delle torrette: le mura bloccano zombie E proiettili,
@@ -172,6 +181,9 @@ regime anche loro possono convergere su questo schema, ma NON in v1.
    dimensioni in pianta. Colonna `WxD` nel catalogo, o footprint derivato
    dal bbox del glb (come fa l'exporter per gli statics)?
    → **DECISA (2026-07-03, input utente): colonna `WxD` nel catalogo.**
+   → **IMPLEMENTATA (2026-07-04)**: token opzionale `WxD` dopo `solid H`
+   (`props.c`, campi `fw/fd`; omesso = una cella nav), applicata da
+   `prop_world_apply` (`prop_world.c`, testata in `test_prop_world`).
    Tutti i prop-ostacolo sono RETTANGOLI in pianta: muri/cancellate/barriere
    = SEGMENTI singoli tileabili (es. 0.5×2 o 0.5×3 m) da affiancare per
    ostacoli più lunghi; bus e cassonetto = rettangoli anch'essi. Lo spessore
