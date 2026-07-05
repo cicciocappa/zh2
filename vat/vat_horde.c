@@ -462,6 +462,38 @@ static const PlItem PL_CAT_GAME[] = {
     { PL_BARRICADE, "Cancellata",  20,  2.5f, 1.0f, 0.0f, 200.0f, 15.0f, 0,    0,0,0,         0.3f  },
 };
 #define PL_NCAT_GAME ((int)(sizeof(PL_CAT_GAME)/sizeof(PL_CAT_GAME[0])))
+
+// Registro host dei moduli di barriera a LINEA (PREP_UI_DESIGN §5, verdetto
+// visivo 2026-07-05): il render disegna ogni modulo come box RUOTATO lungo la
+// linea (geometria dal PlLinePlan al commit); la rasterizzazione per-cella
+// resta SOLO per collisione/nav — la scala di celle diventa fisica invisibile.
+// gSidMod: id struttura -> 1+indice modulo (0 = non-modulo, render per-cella).
+// Gli id struttura crescono monotoni in PREP e l'undo è remove-LAST, quindi
+// gPlMod resta ordinato per sid e il trim è dal fondo.
+enum { PLMOD_MAX = 192, PLMOD_SIDCAP = 256 };   // >= STRUCT_CAP di defense
+typedef struct { int sid; float x, y, ang, len, th; } PlModule;
+static PlModule gPlMod[PLMOD_MAX]; static int gPlModN = 0;
+static unsigned char gSidMod[PLMOD_SIDCAP];
+static void plmod_clear(void){
+    for(int i=0;i<gPlModN;i++) gSidMod[gPlMod[i].sid]=0;
+    gPlModN=0;
+}
+// dopo un pl_line_commit riuscito: le nuove strutture sono le ULTIME nmod
+static void plmod_record(DefGame *g, const PlLinePlan *lp, float th){
+    int base=def_struct_count(g)-lp->nmod;
+    for(int m=0;m<lp->nmod;m++){
+        int sid=base+m;
+        if(gPlModN>=PLMOD_MAX || sid<0 || sid>=PLMOD_SIDCAP) return;
+        gPlMod[gPlModN]=(PlModule){sid,lp->mx[m],lp->my[m],lp->ang,lp->mlen[m],th};
+        gSidMod[sid]=(unsigned char)(1+gPlModN); gPlModN++;
+    }
+}
+// dopo un pl_undo_pop: butta i record delle strutture rimosse (sid >= count)
+static void plmod_trim(DefGame *g){
+    int n=def_struct_count(g);
+    while(gPlModN>0 && gPlMod[gPlModN-1].sid>=n){
+        gSidMod[gPlMod[gPlModN-1].sid]=0; gPlModN--; }
+}
 #endif
 
 // catalogo prop di decoro (§10 stadio 5b): tipo->mesh+scala+label, render-only.
@@ -1065,6 +1097,9 @@ static int build_struct_mesh(DefGame *g, float cell, float *buf, int maxV){
         int id=def_cell_struct(g,cx,cy); if(id<0) continue;
         if(def_struct_is_turret(g,id)) continue;          // drawn as a turret pillar
         if(id<PROP_WORLD_MAX_STRUCT && gPropW.struct_is_prop[id]) continue; // il prop disegna la sua mesh (§6)
+#ifdef GAME_SHELL
+        if(id<PLMOD_SIDCAP && gSidMod[id]) continue;      // modulo linea: box ruotato (sotto)
+#endif
         float frac=def_struct_hp(g,id)/ (def_struct_hp_max(g,id)+1e-3f); // 1..0
         float t=0.35f+0.65f*frac;                         // darken with damage
         float cr,cg,cb;
@@ -1085,6 +1120,41 @@ static int build_struct_mesh(DefGame *g, float cell, float *buf, int maxV){
 #undef VS
 #undef QS
     }
+#ifdef GAME_SHELL
+    // moduli di linea (PREP_UI §5): box ruotati lungo la linea al posto delle
+    // celle saltate sopra. Stesso acciaio + scurimento col danno; il crollo li
+    // fa sparire come le celle (le celle fisiche le libera defense).
+    for(int m=0;m<gPlModN;m++){
+        const PlModule *md=&gPlMod[m];
+        if(c+30>maxV) return c;
+        if(def_struct_collapsed(g,md->sid)) continue;
+        float frac=def_struct_hp(g,md->sid)/(def_struct_hp_max(g,md->sid)+1e-3f);
+        float t=0.35f+0.65f*frac;
+        float cr=0.55f*t, cg=0.57f*t, cb=0.62f*t;
+        float ca=cosf(md->ang), sa=sinf(md->ang);
+        float hl=0.5f*md->len, ht=0.5f*md->th;
+        /* corners: center ± hl·u ± ht·v, u=(ca,sa) lungo linea, v=(-sa,ca) */
+        float px[4]={ md->x-ca*hl+sa*ht, md->x+ca*hl+sa*ht,
+                      md->x+ca*hl-sa*ht, md->x-ca*hl-sa*ht };
+        float pz[4]={ md->y-sa*hl-ca*ht, md->y+sa*hl-ca*ht,
+                      md->y+sa*hl+ca*ht, md->y-sa*hl+ca*ht };
+        float zb=ter_z(md->x,md->y), H1=zb+H;
+#define VM(PX,PY,PZ,NX,NY,NZ) do{float*o=buf+c*9;o[0]=PX;o[1]=PY;o[2]=PZ;\
+        o[3]=NX;o[4]=NY;o[5]=NZ;o[6]=cr;o[7]=cg;o[8]=cb;c++;}while(0)
+#define QM(A,B,YA,YB,nx,nz) do{ /* lato A->B, sotto YA sopra YB */ \
+        VM(px[A],YA,pz[A],nx,0,nz);VM(px[B],YA,pz[B],nx,0,nz);\
+        VM(px[B],YB,pz[B],nx,0,nz);VM(px[A],YA,pz[A],nx,0,nz);\
+        VM(px[B],YB,pz[B],nx,0,nz);VM(px[A],YB,pz[A],nx,0,nz);}while(0)
+        VM(px[0],H1,pz[0],0,1,0);VM(px[1],H1,pz[1],0,1,0);VM(px[2],H1,pz[2],0,1,0);
+        VM(px[0],H1,pz[0],0,1,0);VM(px[2],H1,pz[2],0,1,0);VM(px[3],H1,pz[3],0,1,0);
+        QM(1,2,zb,H1,  ca, sa);      /* +u (testa) */
+        QM(3,0,zb,H1, -ca,-sa);      /* -u (coda)  */
+        QM(2,3,zb,H1, -sa, ca);      /* +v (fianco) */
+        QM(0,1,zb,H1,  sa,-ca);      /* -v (fianco) */
+#undef VM
+#undef QM
+    }
+#endif
     return c;
 }
 
@@ -1341,6 +1411,7 @@ static void shell_load_level(void){
     anim_init(&gAnim); gSurviveT=0.0f;
     if(gHost.plc){ pl_undo_clear(gHost.plc);   // mondo nuovo: record stantii via
                    gHost.plc->active=0; }
+    plmod_clear();                             // registro moduli render idem
     printf("livello %d (%s): %s pronto\n",gApp.cur+1,L->name,L->scene);
     app_level_ready(&gApp);
 }
@@ -1518,7 +1589,9 @@ static int prep_ui_click(float mx,float my,int SW,int SH,DefGame *g,SimP *s){
     Placement *p=gHost.plc;
     for(int t=0;t<PREP_TABS;t++)
         if(ui_hit(&gPrepTabR[t],mx,my)){ prep_tab_set(t,g); return 1; }
-    if(ui_hit(&gPrepUndoR,mx,my)){ if(pl_undo_pop(p,g,s)) gStructOn=1; return 1; }
+    if(ui_hit(&gPrepUndoR,mx,my)){
+        if(pl_undo_pop(p,g,s)) gStructOn=1;
+        plmod_trim(g); return 1; }
     if(ui_hit(&gPrepGoR,mx,my)){                    // = INVIO (APP_IN_CONFIRM)
         au_play(SND_MENU_SELECT);
         shell_do_act(app_input(&gApp,APP_IN_CONFIRM)); return 1; }
@@ -2257,8 +2330,13 @@ int main(int argc, char **argv){
                         } else if(e.type==SDL_EVENT_MOUSE_BUTTON_UP &&
                                   e.button.button==SDL_BUTTON_LEFT && plineOn){
                             plineOn=0;
-                            if(pl_line_commit(&plc,g,s,plineAx,plineAy,plc.cx,plc.cy))
+                            PlLinePlan lp;   // piano per il registro render (§5)
+                            int okv=pl_line_validate(&plc,g,s,plineAx,plineAy,
+                                                     plc.cx,plc.cy,&lp);
+                            if(pl_line_commit(&plc,g,s,plineAx,plineAy,plc.cx,plc.cy)){
                                 gStructOn=1;
+                                if(okv) plmod_record(g,&lp,lsel->h);
+                            }
                         }
                         continue;
                     }
@@ -2410,7 +2488,8 @@ int main(int argc, char **argv){
                 case SDLK_3: if(gApp.state==APP_PREP) prep_tab_set(2,g); break;
                 case SDLK_Z:            // Ctrl+Z = undo del piazzamento (§6)
                     if((e.key.mod&SDL_KMOD_CTRL) && gApp.state==APP_PREP){
-                        if(pl_undo_pop(&plc,g,s)) gStructOn=1; }
+                        if(pl_undo_pop(&plc,g,s)) gStructOn=1;
+                        plmod_trim(g); }
                     break;
 #else
                 case SDLK_LEFTBRACKET:  if(plc.active) pl_cycle(&plc,-1); break;
