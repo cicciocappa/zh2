@@ -43,6 +43,12 @@ all: test_particles test_impulse test_dormant test_stun test_handles test_query 
 # vat/, il target `game` suona; altrimenti backend nullo (muto), zero errori.
 ifneq ($(wildcard vat/miniaudio.h),)
   AUDIO_DEF := -DHAVE_MINIAUDIO
+  # OGG music: miniaudio non decoda Vorbis. Se l'utente scarica stb_vorbis.c
+  # (mackron non lo include: nothings/stb) in vat/, lo accendiamo. Altrimenti
+  # la musica gira lo stesso via WAV/FLAC/MP3 (decoder built-in).
+  ifneq ($(wildcard vat/stb_vorbis.c),)
+    AUDIO_DEF += -DAU_HAVE_VORBIS
+  endif
 else
   AUDIO_DEF :=
 endif
@@ -192,13 +198,15 @@ vat_view: vat/vat_view.c vat/glad.c vat/stb_impl.c assets/shaders/vat.vs assets/
 # scena vettoriale (scene.c). Ostacoli estrusi via assets/shaders/flat.vs/.fs.
 SHADERS = $(wildcard assets/shaders/*.vs) $(wildcard assets/shaders/*.fs)
 VAT_HORDE_SRC = vat/vat_horde.c vat/vat_layer.c sim_particles.c fx_particles.c scene.c defense.c place.c terrain.c props.c prop_world.c mission.c destruct.c anim.c
-VAT_HORDE_DEP = $(VAT_HORDE_SRC) vat/glad.c vat/stb_impl.c vat/cgltf_impl.c $(SHADERS) sim_particles.h fx_particles.h vat/vat_layer.h vat/vat_gl.h vat/cgltf.h terrain.h scene.h defense.h place.h props.h destruct.h anim.h
+VAT_HORDE_DEP = $(VAT_HORDE_SRC) audio.c audio.h vat/glad.c vat/stb_impl.c vat/cgltf_impl.c $(SHADERS) sim_particles.h fx_particles.h vat/vat_layer.h vat/vat_gl.h vat/cgltf.h terrain.h scene.h defense.h place.h props.h destruct.h anim.h
 
+# audio.c NON è in VAT_HORDE_SRC (il target game lo compila già a parte): lo
+# aggiungiamo solo qui alla riga di link, con AUDIO_DEF, così la sandbox suona.
 vat_horde: $(VAT_HORDE_DEP)
 	$(CC) -O2 -w -Ivat $(SDL_CFLAGS) -c vat/glad.c -o vat/glad.o
 	$(CC) -O2 -w -Ivat -c vat/stb_impl.c -o vat/stb_impl.o
 	$(CC) -O2 -w -Ivat -c vat/cgltf_impl.c -o vat/cgltf_impl.o
-	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Ivat -I. -o $@$(EXE) $(VAT_HORDE_SRC) vat/glad.o vat/stb_impl.o vat/cgltf_impl.o $(SDL_LIBS) $(PLAT_LIBS) $(LDLIBS) $(DL_LIB)
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) $(AUDIO_DEF) -Ivat -I. -o $@$(EXE) $(VAT_HORDE_SRC) audio.c vat/glad.o vat/stb_impl.o vat/cgltf_impl.o $(SDL_LIBS) $(PLAT_LIBS) $(LDLIBS) $(DL_LIB)
 
 # L'ESEGUIBILE DEL GIOCO (GAME_APP_DESIGN.md): vat_horde + shell applicativa
 # (-DGAME_SHELL): title/menu/briefing/prep/assalto/debrief, campagna, audio.

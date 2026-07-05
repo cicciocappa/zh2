@@ -1,0 +1,125 @@
+================================================================
+  "LA MARCIA DELL'ORDA" — tema zombie per zh2
+  Sorgente: Strudel (strudel.cc). Trascrizione per ricostruzione in DAW
+  (Reaper / LMMS). Do minore, 85 BPM, 4/4.
+================================================================
+
+GENERALE
+  - Tempo:      85 BPM, tempo in 4/4.
+  - Tonalità:   Do minore (C minor naturale: C D Eb F G Ab Bb).
+  - Carattere:  marcia lenta, ostinata. Tanto vuoto fra le note (spazio).
+  - Struttura:  frase da 8 battute che si ripete in loop.
+  - Effetti globali: riverbero generoso su melodia e pad; il basso "respira"
+                con un filtro passa-basso che si apre e chiude lentamente.
+
+----------------------------------------------------------------
+TRACCE (6)
+----------------------------------------------------------------
+
+1) BASSO  —  onda a dente di sega (sawtooth), passa-basso
+   Nota: la MASSA dell'orda che preme.
+   - Una nota per battuta, ciclo di 4 battute:
+        batt.1  C2
+        batt.2  C2
+        batt.3  G1
+        batt.4  Ab1
+     (poi si ripete)
+   - Filtro passa-basso (LPF) con cutoff che oscilla lentamente da ~200 Hz a
+     ~900 Hz e ritorno, su un ciclo di ~8 battute (LFO sinusoidale, molto lento).
+     In DAW: automazione del cutoff, o un LFO su un filtro.
+   - Un filo di riverbero. Volume pieno ma non clippare.
+
+2) CASSA (kick)  —  Roland TR-808 (o kick elettronica corposa)
+   Nota: il passo pesante e ZOPPICANTE.
+   - Griglia di 8 crome (ottavi) per battuta. Colpi su:
+        X . . X . . X .
+     cioè crome n. 1, 4 e 7  =  battere 1, "e-di-2" (2&), battere 4.
+     È un pattern 3-3-2 (zoppo), non regolare. Loop di 1 battuta.
+
+3) RULLANTE (snare)  —  TR-808
+   Nota: rullante marziale.
+   - 1 colpo per battuta, sul 3° movimento (backbeat spostato):
+        . . X .   (quarti: colpo sul battere 3)
+   - Variazione: ogni tanto (circa 1 volta su 5, casuale) il colpo RADDOPPIA
+     (due colpi rapidi al posto di uno) — dà l'idea che l'orda acceleri.
+     In DAW: ogni 4-8 battute metti un doppio colpo (flam / ghost) sul 3.
+
+4) HI-HAT  —  TR-808, chiuso
+   Nota: nervosismo di fondo.
+   - 8 crome per battuta, dinamica alternata forte/piano:
+        f  p  f  p  f  p  f  p     (accento su ogni croma dispari)
+     Volumi indicativi: forte ~ -8 dB, piano ~ -18 dB.
+   - Ogni tanto (raro) un colpo suona a velocità/pitch doppio (glitch leggero).
+
+5) MELODIA  —  onda triangolare (triangle), con delay/eco
+   Nota: melodia SPETTRALE, poche note.
+   - Una nota (o pausa) per battuta, frase di 8 battute:
+        batt.1  C3
+        batt.2  (pausa)
+        batt.3  F3
+        batt.4  Eb3
+        batt.5  (pausa)
+        batt.6  C4
+        batt.7  Ab3
+        batt.8  (pausa)
+   - Inviluppo: attacco morbido (~50 ms), rilascio lungo (~0.4 s).
+   - Delay/eco: tempo ~ croma puntata, feedback ~45%, ben presente.
+   - Riverbero medio-alto. Volume medio.
+
+6) PAD di ACCORDI  —  sawtooth filtrato (LPF ~600 Hz), lento
+   Nota: la tensione armonica sotto tutto.
+   - Accordi lunghi, ognuno dura 2 battute; ciclo di 8 battute:
+        batt.1-2  Do minore   (C4  Eb4  G4)
+        batt.3-4  (pausa)
+        batt.5-6  Lab maggiore (Ab3  C4  Eb4)
+        batt.7-8  (pausa)
+   - Inviluppo molto morbido: attacco ~1 s, rilascio ~2 s (entra e sfuma).
+   - Passa-basso fisso ~600 Hz (suono ovattato). Riverbero abbondante.
+   - Volume basso, è un tappeto (~ -15 dB sotto il resto).
+
+----------------------------------------------------------------
+NOTE DI RICOSTRUZIONE
+----------------------------------------------------------------
+  - L'atmosfera "horror" viene dal Lab (Ab) sotto la tonica nel basso e
+    dall'alternanza Cm <-> Ab del pad: sono i due colori da tenere.
+  - Melodia e pad NON suonano fitti: il silenzio fa parte del brano.
+  - Per un loop pulito lavora su multipli di 8 battute (una frase intera).
+    A 85 BPM 4/4:  1 battuta = 60/85*4 ≈ 2.82 s;  8 battute ≈ 22.6 s.
+  - Per il gioco esporta a 48 kHz stereo (FLAC consigliato, o OGG). Vedi
+    audio.c / au_music_play().
+
+================================================================
+CODICE STRUDEL ORIGINALE (incolla su strudel.cc, Ctrl+Invio per suonare)
+================================================================
+
+// "Marcia dell'Orda" — tema zombie per zh2
+setcps(85/60/4)   // ~85 BPM, passo da marcia lenta
+
+stack(
+  // basso — la massa che preme, filtro che respira
+  note("<c2 c2 g1 ab1>").s("sawtooth")
+    .lpf(sine.range(200, 900).slow(8))
+    .gain(0.7).room(0.3),
+
+  // cassa — passo pesante, zoppicante
+  s("bd ~ ~ bd ~ ~ bd ~").bank("RolandTR808").gain(1),
+
+  // rullante marziale, ogni tanto raddoppia (l'orda accelera)
+  s("~ ~ sd ~").bank("RolandTR808")
+    .sometimesBy(0.2, x => x.fast(2)).gain(0.6),
+
+  // hi-hat nervoso, dinamica alternata
+  s("hh*8").gain("[0.3 0.12]*4")
+    .sometimesBy(0.1, x => x.speed(2)),
+
+  // melodia spettrale — poche note, tanto vuoto
+  n("<0 ~ 3 2 ~ 7 5 ~>").scale("c3:minor")
+    .s("triangle").attack(0.05).release(0.4)
+    .delay(0.5).delaytime(0.375).delayfeedback(0.45)
+    .room(0.6).gain(0.5),
+
+  // pad d'accordi — tensione sotto tutto
+  note("<[c4,eb4,g4] ~ [ab3,c4,eb4] ~>/2").s("sawtooth")
+    .lpf(600).attack(1).release(2)
+    .gain(0.22).room(0.7)
+)

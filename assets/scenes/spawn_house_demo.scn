@@ -1,0 +1,44 @@
+# spawn_house_demo — banco del concetto "casa-spawn" (2026-07-05).
+#
+# IDEA: invece di far apparire gli zombie dal nulla, li facciamo sgorgare da
+# una PORTA di un edificio. Qui la v1 minimale: un BUILDING solido (footprint
+# 10x8, indistruttibile, tier palazzo) fa da guscio a ovest; la exit rect e'
+# piazzata piccola, appena DAVANTI alla facciata est del building = la "porta".
+# L'orda spawna li' (auto-strozzata da simp_free_at -> flusso da tunnel) e il
+# flow field la porta a est verso la LZ. Niente muri per il routing: lo fa il
+# campo.
+#
+# COSA GUARDARE: gli zombie escono dalla soglia e marciano a est. Attenzione al
+# VENTAGLIO laterale a ridosso della facciata — se sfiorano/clippano i pixel del
+# muro accanto alla porta, e' il segnale che serve la v2 (due building che
+# flankano un varco = stipiti dell'imbuto, confina il fan alla larghezza porta).
+#
+# VAT_HORDE_RATE accelera lo spawn; INVIO (o GAME_SHELL START) fa partire l'assalto.
+cell 0.5
+world 100 70
+set k_density 2.5
+set k_jam 8
+
+mission survive 90 prep 5
+lz 88 35
+
+# --- casa-spawn a ovest ---
+# building: guscio solido, facciata est a x=19 (footprint x 9..19, y 31..39)
+prop building 14 35 0
+# porta = exit piccola appena davanti alla facciata (x 19.4..20.6, y 34..36),
+# rate 8 zombie/s, pool illimitato
+exit 19.4 34 1.2 2 8 0 0
+# vetrata nel vano: decor distruttibile, il primo zombie che sgorga la frantuma
+# in schegge ciano (one-shot). Non blocca lo spawn (non-solida, invisibile a
+# simp_free_at). Posta nel piano della porta, sulla facciata (x=19.5).
+prop vetrata 19.5 35 0
+
+# --- difese di partenza davanti alla LZ (contesto: c'e' qualcosa da difendere) ---
+turret 78 30 32
+turret 78 40 32
+wall 500 1.0 74 28 1.5 14
+
+# --- decor sparso, inerte, per riferimento visivo ---
+prop bench 40 35 20
+prop crate 44 32 0
+prop traflight 50 26 0

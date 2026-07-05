@@ -17,6 +17,9 @@ table    assets/models/props/table.glb     1.0    Table     1.2   wood    0.0
 chair    assets/models/props/chair.glb     1.0    Chair     1.0   wood    0.0
 trafsign assets/models/props/trafsign.glb  1.0    TrafSign  1.2   metal   0.35
 traflight assets/models/props/traflight.glb 1.0   TrafLight 1.3   metal   0.40
+# vetrata: anta di vetro nel vano porta; decor non-solido, si frantuma al primo
+# contatto (topple 0 = istantaneo) in schegge ciano (debris "glass").
+vetrata  assets/models/props/vetrata.glb   1.0    Vetrata   0.8   glass   0.0
 #
 # Solidi (ENTITY_DESIGN §6+§8.5, applicati da prop_world_apply in build_world):
 # solid H WxD = footprint nav W×D m (ruotato dello yaw dell'istanza), alto H;

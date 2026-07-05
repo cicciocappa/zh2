@@ -42,12 +42,12 @@
 #include "editor.h"
 #include "place.h"
 #include "anim.h"
+#include "audio.h"    // sia sandbox che game (la sandbox ora suona: SFX vetro/boom)
 #ifdef GAME_SHELL
 // GAME_SHELL (GAME_APP_DESIGN.md): stessa sorgente compilata come eseguibile
 // `game` — title/menu/briefing/prep/assalto/debrief sopra il mondo esistente.
 //   ./game [campaign.txt]      (il dev tool `vat_horde` resta senza shell)
 #include "app.h"
-#include "audio.h"
 #include "font8.h"
 #endif
 
@@ -203,15 +203,34 @@ static const FxEmitterDef METAL_DEBRIS_DEF = {
     .color_variant_count=4, .sprite_first=-1, .sprite_last=-1,
     .wind_scale=0.2f, .ground_stop=true, .blend=FX_BLEND_ALPHA, .rate=20.0f,
 };
+// vetro: molte schegge piccole e veloci, ciano-bianche additive (glint), vita
+// corta, sparse su tutta l'altezza dell'anta (spawn_offset_y ampio).
+static const FxEmitterDef GLASS_DEBRIS_DEF = {
+    .count=30, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.20f, .spawn_box_z=0.20f,
+    .spawn_offset_y_min=-0.60f, .spawn_offset_y_max=0.60f,
+    .speed_xy_min=2.5f, .speed_xy_max=7.0f, .speed_y_min=1.0f, .speed_y_max=4.5f,
+    .gravity=9.81f, .drag=0.18f, .lifetime_min=0.4f, .lifetime_max=1.0f,
+    .start_scale_min=0.03f, .start_scale_max=0.08f, .end_scale_min=0.008f, .end_scale_max=0.02f,
+    .start_color={0.80f,0.92f,1.0f,0.95f}, .end_color={0.60f,0.78f,0.90f,0.0f},
+    .color_variants={ {0.85f,0.95f,1.0f,0.95f},{0.70f,0.88f,0.98f,0.85f},
+                      {0.95f,0.98f,1.0f,1.0f},{0.75f,0.90f,1.0f,0.90f} },
+    .color_variant_count=4, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.15f, .ground_stop=true, .blend=FX_BLEND_ADD, .rate=20.0f,
+};
 
 // scoppio di un prop distruttibile -> burst FX nel verso di spinta (cono ~35°).
 typedef struct { FxParticles *fx; } DestructCtx;
 static void on_prop_burst(int idx, const char *debris, float x, float y, float dir, void *ud){
     (void)idx;
     DestructCtx *c=(DestructCtx*)ud;
-    int metal = (debris && (debris[0]=='m'||debris[0]=='g'));   // metal/glass vs wood
-    const FxEmitterDef *def = metal ? &METAL_DEBRIS_DEF : &WOOD_DEBRIS_DEF;
-    float o[3]={x, ter_z(x,y)+(metal?0.8f:0.4f), y};
+    char k = debris ? debris[0] : 'w';                          // g=glass m=metal else wood
+    const FxEmitterDef *def; float oy;
+    if      (k=='g') { def=&GLASS_DEBRIS_DEF; oy=0.9f;          // vetro: sparso sull'anta
+                       au_play(SND_GLASS); }                   // crash di vetri
+    else if (k=='m') { def=&METAL_DEBRIS_DEF; oy=0.8f; }
+    else             { def=&WOOD_DEBRIS_DEF;  oy=0.4f; }
+    float o[3]={x, ter_z(x,y)+oy, y};
     fx_emit(c->fx, o, def, dir, 0.6f);                          // half_angle ~35°
 }
 
@@ -1307,6 +1326,22 @@ static void shell_load_level(void){
     app_level_ready(&gApp);
 }
 
+// musica di battaglia: cerca il primo formato presente in assets/music/
+// (l'utente esporta il tema da Strudel). FLAC/MP3/WAV = decoder built-in di
+// miniaudio; OGG solo se scaricato stb_vorbis (vedi audio.c / Makefile). File
+// mancante o formato non gestito = si prova il prossimo; nessuno = silenzio,
+// nessun crash (au_music_play torna -1). base = path SENZA estensione.
+static int shell_music_start(const char *base, int loop){
+    static const char *ext[]={".ogg",".flac",".mp3",".wav"};
+    char path[192];
+    for(int i=0;i<4;i++){
+        snprintf(path,sizeof path,"%s%s",base,ext[i]);
+        if(au_music_play(path,loop)==0){ printf("musica: %s\n",path); return 0; }
+    }
+    fprintf(stderr,"musica: nessun file %s.{ogg,flac,mp3,wav} (silenzio)\n",base);
+    return -1;
+}
+
 static void shell_do_act(AppAction act){
     switch(act){
         case APP_ACT_QUIT: *gHost.running=0; break;
@@ -1322,7 +1357,9 @@ static void shell_do_act(AppAction act){
         case APP_ACT_LOAD_LEVEL:    shell_load_level(); break;
         case APP_ACT_START_ASSAULT: gSurviveT=0.0f;
             if(gMissionOn) mission_go(&gMission);            // fase A: via ai director
-            au_play(SND_ASSAULT); break;
+            au_play(SND_ASSAULT);
+            shell_music_start("assets/music/marcia_dell_orda",1);   // tema in loop
+            break;
         case APP_ACT_START_PREP:    /* gating della sim legge lo stato */ break;
         default: break;
     }
@@ -1457,6 +1494,8 @@ int main(int argc, char **argv){
            au_backend_live()?"miniaudio":"muto (vat/miniaudio.h assente)");
 #else
     const char *scene_path = argc > 1 ? argv[1] : "assets/scenes/obstacles.scn";
+    if(au_init()!=0) fprintf(stderr,"audio init fail (si continua muti)\n");
+    printf("audio: %s\n", au_backend_live()?"miniaudio":"muto (vat/miniaudio.h assente)");
 #endif
     Scene sc;
     if (scene_load(scene_path, &sc) != 0) { fprintf(stderr, "scene load fail: %s\n", scene_path); return 1; }
@@ -2171,9 +2210,7 @@ int main(int argc, char **argv){
             if(blast_pending){ simp_apply_impulse_ex(s,blast_x,blast_y,8.0f,blast_str,blast_up);
                 blast_pending=0; printf("blast @ (%.1f,%.1f) str %.1f up %.2f\n",
                     (double)blast_x,(double)blast_y,(double)blast_str,(double)blast_up);
-#ifdef GAME_SHELL
                 au_play(SND_BOOM);
-#endif
             }
             acc_t+=frame_t;
             while(acc_t>=FIXED_DT){
@@ -2556,11 +2593,20 @@ int main(int argc, char **argv){
             else if(gStructOn){ int ns=def_struct_count(g),up=0; for(int q=0;q<ns;q++) if(!def_struct_collapsed(g,q)) up++;
                 printf("  strutture: %d/%d in piedi\n", up, ns); }
             shot_done=1; running=0; }
+#ifdef GAME_SHELL
+        // watcher musica: appena si esce dall'ASSAULT (vittoria, sconfitta o
+        // ESC verso il menu) ferma la traccia di battaglia. Un solo punto,
+        // dopo input E sim-update, cattura tutte le uscite dallo stato.
+        { static AppState music_prev=APP_TITLE;
+          if(gApp.state!=APP_ASSAULT && music_prev==APP_ASSAULT) au_music_stop();
+          music_prev=gApp.state; }
+#endif
         SDL_GL_SwapWindow(win);
     }
     free(stBuf); free(turBuf); free(dragBuf); if(dir) def_director_destroy(dir);
+    au_shutdown();
 #ifdef GAME_SHELL
-    au_shutdown(); free(gUiBuf);
+    free(gUiBuf);
 #endif
     if(gTerOn) terrain_free(&gTer);
     def_destroy(g); vat_layer_destroy(vl); simp_destroy(s); scene_free(&sc);
