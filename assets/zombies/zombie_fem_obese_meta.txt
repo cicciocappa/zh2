@@ -2,21 +2,21 @@ texW=256
 texH=2522
 rowsPerFrame=2
 fps=30
-scale=0.01135061
+scale=0.01101307
 totalFrames=1261
-clip=walk startFrame=0 numFrames=122 duration_s=4.0667 stride_m=1.3588
-clip=walk_2 startFrame=122 numFrames=47 duration_s=1.5667 stride_m=0.8497
-clip=walk_3 startFrame=169 numFrames=91 duration_s=3.0333 stride_m=2.5617
-clip=walk_4 startFrame=260 numFrames=64 duration_s=2.1333 stride_m=2.9519
-clip=walk_5 startFrame=324 numFrames=36 duration_s=1.2000 stride_m=0.9107
-clip=walk_6 startFrame=360 numFrames=50 duration_s=1.6667 stride_m=0.9126
-clip=run startFrame=410 numFrames=25 duration_s=0.8333 stride_m=2.4401
-clip=run_2 startFrame=435 numFrames=20 duration_s=0.6667 stride_m=1.5480
+clip=walk startFrame=0 numFrames=122 duration_s=4.0667 stride_m=1.3183
+clip=walk_2 startFrame=122 numFrames=47 duration_s=1.5667 stride_m=0.8245
+clip=walk_3 startFrame=169 numFrames=91 duration_s=3.0333 stride_m=2.4855
+clip=walk_4 startFrame=260 numFrames=64 duration_s=2.1333 stride_m=2.8635
+clip=walk_5 startFrame=324 numFrames=36 duration_s=1.2000 stride_m=0.8837
+clip=walk_6 startFrame=360 numFrames=50 duration_s=1.6667 stride_m=0.8855
+clip=run startFrame=410 numFrames=25 duration_s=0.8333 stride_m=2.3675
+clip=run_2 startFrame=435 numFrames=20 duration_s=0.6667 stride_m=1.4945
 clip=idle startFrame=455 numFrames=121 duration_s=4.0333 stride_m=0.0000
 clip=idle_2 startFrame=576 numFrames=128 duration_s=4.2667 stride_m=0.0001
 clip=attack startFrame=704 numFrames=80 duration_s=2.6667 stride_m=0.0000
 clip=attack_2 startFrame=784 numFrames=140 duration_s=4.6667 stride_m=0.0000
-clip=scream startFrame=924 numFrames=85 duration_s=2.8333 stride_m=0.0004
+clip=scream startFrame=924 numFrames=85 duration_s=2.8333 stride_m=0.0002
 clip=hit startFrame=1009 numFrames=61 duration_s=2.0333 stride_m=0.0000
-clip=dying startFrame=1070 numFrames=101 duration_s=3.3667 stride_m=1.1668
-clip=death startFrame=1171 numFrames=90 duration_s=3.0000 stride_m=1.2040
+clip=dying startFrame=1070 numFrames=101 duration_s=3.3667 stride_m=1.1321
+clip=death startFrame=1171 numFrames=90 duration_s=3.0000 stride_m=1.1682
