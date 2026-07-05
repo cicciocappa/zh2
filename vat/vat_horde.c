@@ -448,6 +448,22 @@ static const PlItem PL_CAT[] = {
 };
 #define PL_NCAT ((int)(sizeof(PL_CAT)/sizeof(PL_CAT[0])))
 
+#ifdef GAME_SHELL
+// Catalogo v1 del GAME (PREP_UI_DESIGN §2): niente bin/auto (entità di livello,
+// §9), barriere prezzate AL METRO (strumento a linea, place.h) con spessore
+// 1.0 m (>= 2 celle: niente pinch diagonali nella scala rasterizzata). La
+// cancellata è il cover semi-trasparente dell'asse C: opacità 0.3, le torrette
+// sparano attraverso (test_cover). Parametri combat a 0 = default di place.c.
+static const PlItem PL_CAT_GAME[] = {
+    /* kind        name          cost   w     h    radius  hp     mass   heavy range per dmg  opac */
+    { PL_TURRET,    "Leggera",    100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 0,    0,0,0,         0     },
+    { PL_TURRET,    "Pesante",    250,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 1,    0,0,0,         0     },
+    { PL_BARRICADE, "Barricata",   12,  2.5f, 1.0f, 0.0f, 300.0f, 30.0f, 0,    0,0,0,         0     },
+    { PL_BARRICADE, "Cancellata",  20,  2.5f, 1.0f, 0.0f, 200.0f, 15.0f, 0,    0,0,0,         0.3f  },
+};
+#define PL_NCAT_GAME ((int)(sizeof(PL_CAT_GAME)/sizeof(PL_CAT_GAME[0])))
+#endif
+
 // catalogo prop di decoro (§10 stadio 5b): tipo->mesh+scala+label, render-only.
 static PropCatalog gCatalog; static int gCatN = 0;
 
@@ -1298,6 +1314,7 @@ typedef struct {
     VatLayer *vl; SpawnCtx *spctx; Destruct *dz;
     GLuint obVbo, prVbo; int *obNV, *prNV; int ground_on;
     float *cam_x, *cam_z; int *running;
+    Placement *plc;
 } ShellHost;
 static ShellHost gHost;
 
@@ -1322,6 +1339,8 @@ static void shell_load_level(void){
     *gHost.prNV=upload_prop_mesh(gHost.prVbo,gHost.sc,&gCatalog,gHost.dz,*gHost.g);
     *gHost.cam_x=gHost.sc->world_w*0.5f; *gHost.cam_z=gHost.sc->world_h*0.5f;
     anim_init(&gAnim); gSurviveT=0.0f;
+    if(gHost.plc){ pl_undo_clear(gHost.plc);   // mondo nuovo: record stantii via
+                   gHost.plc->active=0; }
     printf("livello %d (%s): %s pronto\n",gApp.cur+1,L->name,L->scene);
     app_level_ready(&gApp);
 }
@@ -1357,6 +1376,8 @@ static void shell_do_act(AppAction act){
         case APP_ACT_LOAD_LEVEL:    shell_load_level(); break;
         case APP_ACT_START_ASSAULT: gSurviveT=0.0f;
             if(gMissionOn) mission_go(&gMission);            // fase A: via ai director
+            if(gHost.plc){ pl_undo_clear(gHost.plc);         // via = impegno (§6)
+                           gHost.plc->active=0; }
             au_play(SND_ASSAULT);
             shell_music_start("assets/music/marcia_dell_orda",1);   // tema in loop
             break;
@@ -1395,16 +1416,187 @@ static void ui_text_c(float cxpx,float y,float s,const char*str,float r,float g,
     ui_text(cxpx-ui_text_w(s,str)*0.5f,y,s,str,r,g,b,a);
 }
 
-static void shell_build_ui(int SW,int SH,DefGame *g){
+// ---- barra PREP (PREP_UI_DESIGN §3-§4): 3 tab filtro su PlKind, card voce,
+// pannello info, undo, VIA ALL'ORDA. Layout ricomputato on demand (render E
+// hit test chiamano prep_ui_layout: mai rect stantii, mai commit sotto la UI).
+typedef struct { float x,y,w,h; } UiRect;
+static int ui_hit(const UiRect *r,float mx,float my){
+    return mx>=r->x && mx<r->x+r->w && my>=r->y && my<r->y+r->h; }
+
+enum { PREP_TABS=3, PREP_TAB_ITEMS=8 };
+typedef struct { const char *label; PlKind kind; int items[PREP_TAB_ITEMS]; int n; } PrepTab;
+static PrepTab gPrepTabs[PREP_TABS]={ {"1 TORRETTE",PL_TURRET,{0},0},
+                                      {"2 BARRIERE",PL_BARRICADE,{0},0},
+                                      {"3 TRAPPOLE",PL_TRAP,{0},0} };
+static int   gPrepTab=0;
+static float gPrepBarY=1e9f;                       // sopra = mondo, sotto = UI
+static UiRect gPrepTabR[PREP_TABS], gPrepCardR[PREP_TAB_ITEMS], gPrepUndoR, gPrepGoR;
+// ghost di linea (drag in corso): il blocco ghost del frame scrive qui, la
+// barra (disegnata dopo) legge per il costo live accanto al cursore (§5).
+static int gLineOn=0, gLineValid=0, gLineCost=0; static float gLineLen=0.0f;
+
+static void prep_tabs_build(const Placement *p){   // indice tab->voci, una volta
+    for(int t=0;t<PREP_TABS;t++) gPrepTabs[t].n=0;
+    for(int i=0;i<p->ncat;i++)
+        for(int t=0;t<PREP_TABS;t++)
+            if(p->cat[i].kind==gPrepTabs[t].kind && gPrepTabs[t].n<PREP_TAB_ITEMS)
+                gPrepTabs[t].items[gPrepTabs[t].n++]=i;
+    gPrepTab=0;
+}
+// cambio tab: selezione sulla prima voce affordabile (o la prima) — §4.
+static void prep_tab_set(int t,DefGame *g){
+    if(t<0||t>=PREP_TABS||gPrepTabs[t].n<=0) return;   // TRAPPOLE vuota: resta
+    gPrepTab=t;
+    Placement *p=gHost.plc;
+    int pick=gPrepTabs[t].items[0];
+    for(int i=0;i<gPrepTabs[t].n;i++){
+        int idx=gPrepTabs[t].items[i];
+        if(def_budget(g)>=p->cat[idx].cost){ pick=idx; break; }
+    }
+    pl_select(p,pick);
+}
+static void prep_cycle(int dir){                   // [ ] = voce prec/succ NELLA tab
+    PrepTab *tb=&gPrepTabs[gPrepTab];
+    if(tb->n<=0) return;
+    Placement *p=gHost.plc;
+    int pos=0;
+    for(int i=0;i<tb->n;i++) if(tb->items[i]==p->sel){ pos=i; break; }
+    pos=((pos+dir)%tb->n+tb->n)%tb->n;
+    pl_select(p,tb->items[pos]);
+}
+#define PREP_BAR_H   110.0f
+#define PREP_CARD_W  104.0f
+#define PREP_CARD_H   62.0f
+static void prep_ui_layout(int SW,int SH){
+    float y0=(float)SH-PREP_BAR_H; gPrepBarY=y0;
+    float x=10.0f;
+    for(int t=0;t<PREP_TABS;t++){                   // riga tab
+        float w=ui_text_w(2,gPrepTabs[t].label)+20.0f;
+        gPrepTabR[t]=(UiRect){x,y0+6,w,22}; x+=w+8.0f;
+    }
+    gPrepUndoR=(UiRect){x+12,y0+6,ui_text_w(2,"ANNULLA")+20.0f,22};
+    x=10.0f;
+    for(int c=0;c<PREP_TAB_ITEMS;c++){              // riga card (tab attiva)
+        gPrepCardR[c]=(UiRect){x,y0+36,PREP_CARD_W,PREP_CARD_H}; x+=PREP_CARD_W+8.0f; }
+    float gw=ui_text_w(3,"VIA ALL'ORDA")+28.0f;
+    gPrepGoR=(UiRect){(float)SW-gw-12,y0+62,gw,34};
+}
+// icona placeholder della card (§2: quadratino evocativo, niente pipeline icone)
+static void prep_icon(const PlItem *it,float cx,float cy,float dim){
+    float a=dim;
+    if(it->kind==PL_TURRET){
+        float r=it->heavy?0.85f:0.55f, g=it->heavy?0.45f:0.75f, b=it->heavy?0.20f:0.90f;
+        ui_quad(cx-9,cy-7,18,14,r*0.5f,g*0.5f,b*0.5f,a);          // base
+        ui_quad(cx-2,cy-15,4,10,r,g,b,a);                          // canna
+    } else if(it->opacity>0.0f && it->opacity<1.0f){               // cancellata
+        for(int k=0;k<5;k++) ui_quad(cx-13+k*6,cy-11,3,22,0.72f,0.74f,0.80f,a);
+        ui_quad(cx-14,cy-12,29,3,0.72f,0.74f,0.80f,a);
+    } else {                                                       // barricata
+        ui_quad(cx-14,cy-6,28,12,0.62f,0.44f,0.20f,a);
+        ui_quad(cx-14,cy-10,28,3,0.72f,0.54f,0.28f,a);
+    }
+}
+// pannello info: 1-2 stat leggibili per la voce selezionata (§3)
+static void prep_info_lines(const PlItem *it,char *l1,int n1,char *l2,int n2){
+    if(it->kind==PL_TURRET){
+        float rng=it->range>0?it->range:40.0f;
+        float per=it->fire_period>0?it->fire_period:(it->heavy?0.5f:0.12f);
+        snprintf(l1,n1,"%s - %d$",it->heavy?"TORRETTA PESANTE":"TORRETTA LEGGERA",it->cost);
+        snprintf(l2,n2,"GITTATA %.0f M - %.1f COLPI/S%s",(double)rng,1.0/per,
+                 it->heavy?" - SMEMBRA":"");
+    } else {
+        int semi=(it->opacity>0.0f && it->opacity<1.0f);
+        snprintf(l1,n1,"%s - %d$/M - %.0f HP PER MODULO",it->name,it->cost,(double)it->hp);
+        snprintf(l2,n2,semi?"TRASCINA UNA LINEA - LE TORRETTE SPARANO ATTRAVERSO"
+                           :"TRASCINA UNA LINEA COL MOUSE");
+    }
+}
+// click LMB dentro la barra: tab/card/undo/via. Torna 1 = consumato (mai mondo).
+static int prep_ui_click(float mx,float my,int SW,int SH,DefGame *g,SimP *s){
+    prep_ui_layout(SW,SH);
+    if(my<gPrepBarY) return 0;
+    Placement *p=gHost.plc;
+    for(int t=0;t<PREP_TABS;t++)
+        if(ui_hit(&gPrepTabR[t],mx,my)){ prep_tab_set(t,g); return 1; }
+    if(ui_hit(&gPrepUndoR,mx,my)){ if(pl_undo_pop(p,g,s)) gStructOn=1; return 1; }
+    if(ui_hit(&gPrepGoR,mx,my)){                    // = INVIO (APP_IN_CONFIRM)
+        au_play(SND_MENU_SELECT);
+        shell_do_act(app_input(&gApp,APP_IN_CONFIRM)); return 1; }
+    PrepTab *tb=&gPrepTabs[gPrepTab];
+    for(int c=0;c<tb->n;c++)
+        if(ui_hit(&gPrepCardR[c],mx,my)){           // card = seleziona E attiva
+            pl_select(p,tb->items[c]); p->active=1; return 1; }
+    return 1;                                       // sfondo barra: consumato
+}
+static void prep_bar_draw(int SW,int SH,DefGame *g,float mpx,float mpy){
+    prep_ui_layout(SW,SH);
+    Placement *p=gHost.plc;
+    const PlItem *sel=pl_selected(p);
+    float y0=gPrepBarY;
+    ui_quad(0,y0,(float)SW,PREP_BAR_H,0.05f,0.05f,0.09f,0.88f);
+    ui_quad(0,y0,(float)SW,2,0.35f,0.10f,0.08f,1);
+    for(int t=0;t<PREP_TABS;t++){                   // riga tab
+        const UiRect *r=&gPrepTabR[t];
+        int on=(t==gPrepTab), dead=(gPrepTabs[t].n==0);
+        ui_quad(r->x,r->y,r->w,r->h,on?0.45f:0.14f,on?0.10f:0.14f,on?0.08f:0.20f,0.9f);
+        float c=dead?0.35f:1.0f;
+        ui_text(r->x+10,r->y+4,2,gPrepTabs[t].label,c,c,c,1);
+        if(dead) ui_text(r->x+10,r->y+r->h+2,1,"PRESTO",0.5f,0.5f,0.4f,1);
+    }
+    { const UiRect *r=&gPrepUndoR;                  // undo (§6)
+      int can=(p->undo && p->undo->n>0); float c=can?1.0f:0.4f;
+      ui_quad(r->x,r->y,r->w,r->h,0.14f,0.14f,0.20f,0.9f);
+      ui_text(r->x+10,r->y+4,2,"ANNULLA",c,c,c,1); }
+    { char bt[48]; snprintf(bt,sizeof bt,"BUDGET %d $",def_budget(g));  // §3
+      int poor=(sel && def_budget(g)<sel->cost);
+      ui_text((float)SW-ui_text_w(3,bt)-12,y0+9,3,bt,
+              poor?0.95f:0.55f,poor?0.25f:0.95f,poor?0.20f:0.45f,1); }
+    PrepTab *tb=&gPrepTabs[gPrepTab];
+    for(int c=0;c<tb->n;c++){                       // card della tab attiva
+        const UiRect *r=&gPrepCardR[c];
+        const PlItem *it=&p->cat[tb->items[c]];
+        int on=(p->active && tb->items[c]==p->sel);
+        int aff=(def_budget(g)>=it->cost);
+        ui_quad(r->x,r->y,r->w,r->h,0.12f,0.12f,0.17f,0.92f);
+        if(on){ ui_quad(r->x,r->y,r->w,2,0.30f,0.95f,0.35f,1);
+                ui_quad(r->x,r->y+r->h-2,r->w,2,0.30f,0.95f,0.35f,1);
+                ui_quad(r->x,r->y,2,r->h,0.30f,0.95f,0.35f,1);
+                ui_quad(r->x+r->w-2,r->y,2,r->h,0.30f,0.95f,0.35f,1); }
+        prep_icon(it,r->x+r->w*0.5f,r->y+22,aff?1.0f:0.35f);
+        float tc=aff?0.95f:0.45f;
+        ui_text_c(r->x+r->w*0.5f,r->y+38,1.5f,it->name,tc,tc,tc,1);
+        char cs[24]; snprintf(cs,sizeof cs,it->kind==PL_BARRICADE?"%d$/M":"%d$",it->cost);
+        ui_text_c(r->x+r->w*0.5f,r->y+50,1.5f,cs,tc*0.9f,tc*0.85f,0.35f,1);
+    }
+    if(gLineOn){                                    // drag di linea: costo live
+        char li[64];
+        snprintf(li,sizeof li,"LINEA %.1f M - %d$%s",(double)gLineLen,gLineCost,
+                 gLineValid?"":(gHost.plc->reason==PL_NOFUNDS?" - BUDGET!":" - OCCUPATO"));
+        ui_text(gPrepCardR[0].x+2*(PREP_CARD_W+8),gPrepCardR[0].y+8,2,li,
+                gLineValid?0.30f:0.95f,gLineValid?0.95f:0.25f,0.25f,1);
+        ui_text(mpx+16,mpy-20,2,li,gLineValid?0.30f:0.95f,gLineValid?0.95f:0.25f,0.25f,1);
+    } else if(sel){                                 // pannello info (§3)
+        char l1[80],l2[96];
+        prep_info_lines(sel,l1,sizeof l1,l2,sizeof l2);
+        float ix=gPrepCardR[0].x+2*(PREP_CARD_W+8)+12;
+        ui_text(ix,gPrepCardR[0].y+8,2,l1,0.95f,0.85f,0.45f,1);
+        ui_text(ix,gPrepCardR[0].y+26,2,l2,0.80f,0.80f,0.80f,1);
+    }
+    { const UiRect *r=&gPrepGoR;                    // VIA ALL'ORDA (=INVIO)
+      ui_quad(r->x,r->y,r->w,r->h,0.50f,0.10f,0.07f,0.95f);
+      ui_text_c(r->x+r->w*0.5f,r->y+6,3,"VIA ALL'ORDA",1,0.92f,0.85f,1);
+      ui_text_c(r->x+r->w*0.5f,y0+100,1.5f,"INVIO",0.6f,0.6f,0.6f,1); }
+}
+
+static void shell_build_ui(int SW,int SH,DefGame *g,float mpx,float mpy){
     float W=(float)SW,H=(float)SH;
     AppState st=gApp.state;
     const AppLevel *L=app_cur_level(&gApp);
     if(st==APP_PREP||st==APP_ASSAULT){                  // barra di fase in alto
         char line[192];
         if(st==APP_PREP)
-            snprintf(line,sizeof line,"PREPARAZIONE - %s | BUDGET %d | "
-                     "P = PIAZZA DIFESE | INVIO = VIA ALL'ASSALTO",
-                     L?L->name:"?",def_budget(g));
+            snprintf(line,sizeof line,"PREPARAZIONE - %s | PIAZZA LE DIFESE, "
+                     "POI VIA ALL'ORDA",L?L->name:"?");
         else { float left=L?L->survive_s-gSurviveT:0.0f; if(left<0)left=0;
             snprintf(line,sizeof line,"ASSALTO - RESISTI ANCORA %d S | KILLS %d%s",
                      (int)(left+0.5f),def_kills(g),
@@ -1412,6 +1604,7 @@ static void shell_build_ui(int SW,int SH,DefGame *g){
                      ?" | IL NUCLEO E' SOTTO ATTACCO":""); }
         ui_quad(0,0,W,28,0,0,0,0.55f);
         ui_text(10,8,2,line,1,1,1,1);
+        if(st==APP_PREP) prep_bar_draw(SW,SH,g,mpx,mpy);   // barra PREP (§3)
         return;
     }
     ui_quad(0,0,W,H,0.02f,0.02f,0.04f,0.72f);           // oscura il mondo fermo
@@ -1744,7 +1937,16 @@ int main(int argc, char **argv){
     if(gCatN>0){ snprintf(ed.prop_key,sizeof ed.prop_key,"%s",gCatalog.defs[0].key); }
 
     // piazzamento a runtime (PLACEMENT_DESIGN.md): P attiva, mouse piazza in PLAY.
-    Placement plc; pl_init(&plc, PL_CAT, PL_NCAT);
+    // GAME_SHELL: catalogo v1 di gioco (PREP_UI_DESIGN §2) + undo di PREP (§6);
+    // la sandbox tiene il catalogo pieno (bin/auto) e nessuna barra.
+    Placement plc;
+#ifdef GAME_SHELL
+    pl_init(&plc, PL_CAT_GAME, PL_NCAT_GAME);
+    static PlUndo plUndo; pl_set_undo(&plc, &plUndo);
+    int plineOn=0; float plineAx=0.0f, plineAy=0.0f;   // drag di linea (§5)
+#else
+    pl_init(&plc, PL_CAT, PL_NCAT);
+#endif
     pl_set_blocked_cb(&plc, pl_blocked_host, NULL);
 
     // torrette (DINAMICO: una distruttibile sparisce al collasso) + tracer di
@@ -1976,6 +2178,7 @@ int main(int argc, char **argv){
     gHost.vl=vl; gHost.spctx=&spctx; gHost.dz=&dz;
     gHost.obVbo=obVbo; gHost.prVbo=prVbo; gHost.obNV=&obNV; gHost.prNV=&prNV;
     gHost.ground_on=groundOn; gHost.cam_x=&cx; gHost.cam_z=&cz; gHost.running=&running;
+    gHost.plc=&plc; prep_tabs_build(&plc);   // barra PREP: indice tab->voci (§7)
     gUiBuf=malloc((size_t)UI_MAX_V*9*sizeof(float));
     GLuint uiProg=vg_shader("assets/shaders/flat.vs","assets/shaders/ui.fs");
     GLint uVPui=glGetUniformLocation(uiProg,"uVP");
@@ -2010,6 +2213,21 @@ int main(int argc, char **argv){
                 float myf=(motion?e.motion.y:e.button.y)*(float)SH/(wph>0?wph:1);
                 if(motion){ mouse_px=mxf; mouse_py=myf; }
                 int alt = (SDL_GetModState()&SDL_KMOD_ALT)!=0;
+#ifdef GAME_SHELL
+                // barra PREP: il mouse dentro la barra è UI (tab/card/undo/via),
+                // MAI un gesto sul mondo (§4 — il bug classico del commit sotto
+                // il click di UI). Un drag di linea che finisce in barra muore.
+                if(!ed.active && gApp.state==APP_PREP && !drag_cam){
+                    prep_ui_layout(SW,SH);
+                    if(myf>=gPrepBarY){
+                        if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN &&
+                           e.button.button==SDL_BUTTON_LEFT)
+                            prep_ui_click(mxf,myf,SW,SH,g,s);
+                        if(e.type==SDL_EVENT_MOUSE_BUTTON_UP) plineOn=0;
+                        continue;
+                    }
+                }
+#endif
                 // camera col mouse? PLAY: LMB/RMB nudi; EDIT o placement: solo con Alt.
                 int cam_gesture = (!ed.active && !plc.active) || alt;
                 if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN && cam_gesture){
@@ -2026,6 +2244,25 @@ int main(int argc, char **argv){
                     // fase A: fuori PREP il piazzamento si chiude da solo
                     if(gMissionOn && !mission_placement_open(&gMission)){ plc.active=0; continue; }
                     float wx,wy; if(pick_y0(vp,mxf,myf,SW,SH,&wx,&wy)) pl_set_cursor(&plc,wx,wy);
+#ifdef GAME_SHELL
+                    // barriere a LINEA (§5): LMB = ancora, rilascio = commit
+                    // tutto-o-niente; RMB = annulla il drag (o esce dal ghost).
+                    const PlItem *lsel=pl_selected(&plc);
+                    if(lsel && lsel->kind==PL_BARRICADE){
+                        if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
+                            if(e.button.button==SDL_BUTTON_LEFT){
+                                plineOn=1; plineAx=plc.cx; plineAy=plc.cy; }
+                            else if(e.button.button==SDL_BUTTON_RIGHT){
+                                if(plineOn) plineOn=0; else plc.active=0; }
+                        } else if(e.type==SDL_EVENT_MOUSE_BUTTON_UP &&
+                                  e.button.button==SDL_BUTTON_LEFT && plineOn){
+                            plineOn=0;
+                            if(pl_line_commit(&plc,g,s,plineAx,plineAy,plc.cx,plc.cy))
+                                gStructOn=1;
+                        }
+                        continue;
+                    }
+#endif
                     if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
                         if(e.button.button==SDL_BUTTON_LEFT){ if(pl_commit(&plc,g,s)) gStructOn=1; }
                         else if(e.button.button==SDL_BUTTON_RIGHT){ plc.active=0; }
@@ -2165,8 +2402,20 @@ int main(int argc, char **argv){
                     plc.active=!plc.active;
                     if(plc.active && def_budget(g)<=0){ def_set_budget(g,99999); printf("placement ON (budget di prova)\n"); }
                     break;
+#ifdef GAME_SHELL
+                case SDLK_LEFTBRACKET:  if(plc.active) prep_cycle(-1); break;
+                case SDLK_RIGHTBRACKET: if(plc.active) prep_cycle(+1); break;
+                case SDLK_1: if(gApp.state==APP_PREP) prep_tab_set(0,g); break;
+                case SDLK_2: if(gApp.state==APP_PREP) prep_tab_set(1,g); break;
+                case SDLK_3: if(gApp.state==APP_PREP) prep_tab_set(2,g); break;
+                case SDLK_Z:            // Ctrl+Z = undo del piazzamento (§6)
+                    if((e.key.mod&SDL_KMOD_CTRL) && gApp.state==APP_PREP){
+                        if(pl_undo_pop(&plc,g,s)) gStructOn=1; }
+                    break;
+#else
                 case SDLK_LEFTBRACKET:  if(plc.active) pl_cycle(&plc,-1); break;
                 case SDLK_RIGHTBRACKET: if(plc.active) pl_cycle(&plc,+1); break;
+#endif
                 case SDLK_COMMA:  if(plc.active) pl_rotate(&plc,-1); break;
                 case SDLK_PERIOD: if(plc.active) pl_rotate(&plc,+1); break;
                 case SDLK_B:{   // piazza un cassonetto draggable sotto il cursore
@@ -2496,11 +2745,43 @@ int main(int argc, char **argv){
         // ghost di piazzamento (PLAY): disco verde se valido / rosso se no, al cursore.
         // Depth off → sempre visibile sopra l'orda. Riusa progFlat + il VBO overlay.
         if(plc.active && !ed.active){
-            pl_validate(&plc,g,s);                          // colore fresco ogni frame
             const PlItem *it=pl_selected(&plc);
-            float r = it ? fmaxf(0.5f, 0.5f*fmaxf(it->w,fmaxf(it->h,it->radius*2.0f))) : 0.6f;
-            float cr = plc.valid?0.20f:0.95f, cg = plc.valid?0.90f:0.18f, cb=0.18f;
-            int ov = ed_push_marker(edovl,0,plc.cx,plc.cy,r, cr,cg,cb);
+            int ov=0;
+#ifdef GAME_SHELL
+            gLineOn=0;
+            if(it && it->kind==PL_BARRICADE && plineOn){
+                // ghost di LINEA (§5): i moduli previsti + costo live (la barra
+                // lo disegna accanto al cursore leggendo gLine*).
+                PlLinePlan lp;
+                int okl=pl_line_validate(&plc,g,s,plineAx,plineAy,plc.cx,plc.cy,&lp);
+                float cr=okl?0.20f:0.95f, cg=okl?0.90f:0.18f;
+                float ca=cosf(lp.ang), sa=sinf(lp.ang);
+                for(int m=0;m<lp.nmod && ov+6<=EDOVL_MAXV;m++){
+                    float hx=0.5f*lp.mlen[m]-0.06f;         // gap: si leggono i moduli
+                    ov=ed_push_bar(edovl,ov,lp.mx[m]-ca*hx,lp.my[m]-sa*hx,
+                                   lp.mx[m]+ca*hx,lp.my[m]+sa*hx,it->h,cr,cg,0.18f);
+                }
+                if(!ov) ov=ed_push_marker(edovl,0,plc.cx,plc.cy,0.6f,cr,cg,0.18f);
+                gLineOn=1; gLineValid=okl; gLineCost=lp.cost; gLineLen=lp.len;
+            } else
+#endif
+            {
+                pl_validate(&plc,g,s);                      // colore fresco ogni frame
+                float r = it ? fmaxf(0.5f, 0.5f*fmaxf(it->w,fmaxf(it->h,it->radius*2.0f))) : 0.6f;
+                float cr = plc.valid?0.20f:0.95f, cg = plc.valid?0.90f:0.18f, cb=0.18f;
+                ov = ed_push_marker(edovl,0,plc.cx,plc.cy,r, cr,cg,cb);
+#ifdef GAME_SHELL
+                if(it && it->kind==PL_TURRET){              // cerchio di gittata (§8)
+                    float R=it->range>0.0f?it->range:40.0f;
+                    const int NSEG=64;
+                    for(int k=0;k<NSEG && ov+6<=EDOVL_MAXV;k++){
+                        float a0=(float)k*6.2831853f/NSEG, a1=(float)(k+1)*6.2831853f/NSEG;
+                        ov=ed_push_bar(edovl,ov,plc.cx+cosf(a0)*R,plc.cy+sinf(a0)*R,
+                                       plc.cx+cosf(a1)*R,plc.cy+sinf(a1)*R,0.3f,cr,cg,cb);
+                    }
+                }
+#endif
+            }
             if(ov){ glDisable(GL_DEPTH_TEST);
                 glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
                 glBindVertexArray(ovVao);glBindBuffer(GL_ARRAY_BUFFER,ovVbo);
@@ -2511,7 +2792,7 @@ int main(int argc, char **argv){
 #ifdef GAME_SHELL
         // overlay shell (title/menu/briefing/debrief + barra di fase): 2D in
         // pixel, sopra tutto, blend alpha (l'alpha viaggia in aNormal.x).
-        gUiV=0; shell_build_ui(SW,SH,g);
+        gUiV=0; shell_build_ui(SW,SH,g,mouse_px,mouse_py);
         if(gUiV>0){
             glDisable(GL_DEPTH_TEST); glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);

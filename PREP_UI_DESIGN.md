@@ -143,6 +143,15 @@ la scala di celle rasterizzate, la mesh è dritta lungo la linea → mismatch
 visivo/fisico fino a ~mezza cella (0.25 m) sui bordi. Standard nei giochi
 con nav a griglia; se a 32 px/m disturba, si ripiega su snap d'angolo a 45°.
 
+VERDETTO VISIVO (utente, 2026-07-05, dopo lo step 4): il gameplay va bene ma
+le barriere PIAZZATE si vedono a gradini ("linea senza anti-aliasing") — il
+render disegna i box per-cella di `build_struct_mesh`, non la linea. Fix da
+provare (prossima sessione, non blocca): render dei moduli come BOX RUOTATI
+lungo la linea (geometria dal PlLinePlan, come già fa il ghost con
+ed_push_bar), tenendo la rasterizzazione solo per collisione/nav — le celle
+scalettate restano fisica invisibile. Serve memoria host modulo→(centro,
+angolo, lunghezza) accanto all'id struttura (danno/crollo per modulo intatti).
+
 ## 6. Undo (deciso 2026-07-05)
 
 Piazzare per sbaglio non deve costare: **stack di undo, solo in PREP**.
