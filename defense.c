@@ -589,6 +589,35 @@ void def_set_fire_lure(DefGame *g, float weight, float radius, float linger_s) {
 
 int   def_struct_count(const DefGame *g) { return g->nstructs; }
 int   def_struct_cap(void) { return STRUCT_CAP; }
+
+/* ---- undo teardown (PREP_UI_DESIGN §6) ------------------------------------
+ * LIFO-only: ONLY the LAST structure/turret can be removed, so no live id is
+ * ever invalidated (nothing references ids >= count). Clean teardown for the
+ * PREP undo stack: cells freed WITHOUT debris, no core/loss logic. The caller
+ * batches simp_terrain_commit (one reroute per undo pop). Return 1 on
+ * success, 0 if the id is not the last or the entity is not removable
+ * (core, turret-backing structure, destructible-bound or luring turret). */
+int def_remove_structure(DefGame *g, int id) {
+    if (id < 0 || id != g->nstructs - 1) return 0;
+    DefStruct *st = &g->structs[id];
+    if (st->is_core || st->is_turret) return 0;
+    int gw = g->gw, n = gw * g->gh;
+    for (int c = 0; c < n; c++)
+        if (g->cell_struct[c] == (int16_t)id) {
+            simp_set_wall(g->s, c % gw, c / gw, false);  /* mirrors opacity too */
+            g->cell_struct[c] = -1;
+        }
+    g->nstructs--;
+    return 1;
+}
+
+int def_remove_turret(DefGame *g, int tid) {
+    if (tid < 0 || tid != g->nturrets - 1) return 0;
+    if (g->turret_struct[tid] >= 0) return 0;  /* bound: remove via its struct */
+    if (g->lure_on[tid]) return 0;             /* PREP-only API: never fired   */
+    g->nturrets--;
+    return 1;
+}
 int   def_cell_struct(const DefGame *g, int cx, int cy) {
     if (cx < 0 || cy < 0 || cx >= g->gw || cy >= g->gh) return -1;
     return g->cell_struct[cy * g->gw + cx];

@@ -1,6 +1,7 @@
 /* place.c — runtime player placement (PLACEMENT_DESIGN.md). See place.h. */
 #include "place.h"
 #include <math.h>
+#include <string.h>
 
 #define PL_MAX_CELLS 256   /* barricade footprint cap (huge: ~8×1 m is 16) */
 
@@ -51,6 +52,49 @@ void pl_init(Placement *p, const PlItem *catalog, int n) {
     p->active = 0; p->sel = 0; p->cx = p->cy = 0.0f; p->rot90 = 0;
     p->valid = 0; p->reason = PL_BADITEM;
     p->blocked = 0; p->blocked_user = 0;
+    p->undo = 0;
+}
+
+/* ---- PREP undo (place.h) ------------------------------------------------ */
+
+void pl_set_undo(Placement *p, PlUndo *u) {
+    p->undo = u;
+    if (u) u->n = 0;
+}
+
+void pl_undo_clear(Placement *p) { if (p->undo) p->undo->n = 0; }
+
+static void undo_push(Placement *p, int nstructs, int nturrets, int cost) {
+    PlUndo *u = p->undo;
+    if (!u) return;
+    if (u->n == PL_UNDO_MAX) {                   /* drop the OLDEST record */
+        memmove(u->rec, u->rec + 1, (PL_UNDO_MAX - 1) * sizeof u->rec[0]);
+        u->n--;
+    }
+    u->rec[u->n].nstructs = nstructs;
+    u->rec[u->n].nturrets = nturrets;
+    u->rec[u->n].cost = cost;
+    u->n++;
+}
+
+int pl_undo_pop(Placement *p, DefGame *g, SimP *s) {
+    PlUndo *u = p->undo;
+    if (!u || u->n <= 0) return 0;
+    PlUndoRec r = u->rec[u->n - 1];
+    /* remove-LAST can only fail if someone else mutated defense after our
+     * record (LIFO broken, e.g. assault started without clearing): drop the
+     * whole stack rather than refund entities we did not remove. */
+    for (int k = 0; k < r.nturrets; k++)
+        if (!def_remove_turret(g, def_turret_count(g) - 1)) { u->n = 0; return 0; }
+    int walls = 0;
+    for (int k = 0; k < r.nstructs; k++) {
+        if (!def_remove_structure(g, def_struct_count(g) - 1)) { u->n = 0; return 0; }
+        walls = 1;
+    }
+    if (walls) simp_terrain_commit(s);           /* one reroute per pop */
+    def_set_budget(g, def_budget(g) + r.cost);   /* full refund */
+    u->n--;
+    return 1;
 }
 
 void pl_set_blocked_cb(Placement *p, PlBlockedFn fn, void *user) {
@@ -269,6 +313,7 @@ int pl_line_commit(Placement *p, DefGame *g, SimP *s,
     }
     simp_terrain_commit(s);                      /* one reroute for the line */
     def_spend(g, pl.cost);
+    undo_push(p, pl.nmod, 0, pl.cost);           /* one record = whole line */
     return 1;
 }
 
@@ -284,6 +329,11 @@ int pl_commit(Placement *p, DefGame *g, SimP *s) {
         case PL_CAR:       ok = commit_car(s, it, p->cx, p->cy, p->rot90); break;
         default: break;
     }
-    if (ok) def_spend(g, it->cost);             /* deduct only on success */
+    if (ok) {
+        def_spend(g, it->cost);                 /* deduct only on success */
+        if      (it->kind == PL_BARRICADE) undo_push(p, 1, 0, it->cost);
+        else if (it->kind == PL_TURRET)    undo_push(p, 0, 1, it->cost);
+        /* BIN/CAR: no draggable-removal primitive — not recorded (place.h) */
+    }
     return ok;
 }

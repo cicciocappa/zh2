@@ -96,6 +96,13 @@ void  def_struct_set_debris(DefGame *g, int id, float mass);
 
 int   def_struct_count(const DefGame *g);
 int   def_struct_cap(void);   /* table size — line placement pre-checks room */
+
+/* Undo teardown (PREP_UI_DESIGN §6): LIFO-only removal — accepts ONLY the
+ * LAST id, so no live id is ever invalidated. Cells freed cleanly (no debris,
+ * no core/loss logic); caller batches simp_terrain_commit. Returns 1, or 0 if
+ * not last / not removable (core, turret-backing struct, bound/luring turret). */
+int   def_remove_structure(DefGame *g, int id);
+int   def_remove_turret(DefGame *g, int tid);
 /* Direct HP damage (explosions — EXPLOSION_DESIGN §8 — and tests). Collapse
  * behaves exactly like the siege path (cells freed, reroute, debris, loss on
  * core). No-op on invalid/collapsed ids. */

@@ -19,6 +19,9 @@
  *                       placed, nothing spent; budget gate on the total.
  *  12) LINE ANGLE     — 45° line: walls raised along the diagonal, agents
  *                       kept out, deterministic (same line ⇒ same cells).
+ *  13) UNDO           — LIFO pops with full refund: N place/undo rounds leave
+ *                       budget, walls, structures, turrets and opacity
+ *                       bit-identical; pop order is newest-first; empty = 0.
  */
 #define _POSIX_C_SOURCE 199309L
 #include "place.h"
@@ -486,6 +489,67 @@ static void test_line_angle(void) {
     CHECK(a != 0UL && a == b, "angled line must be deterministic (%lu vs %lu)", a, b);
 }
 
+/* ---- case 13: undo --------------------------------------------------------- */
+static unsigned long world_hash(SimP *s, DefGame *g) {
+    unsigned long h = 1469598103934665603UL;
+    #define MIX(v) do{ unsigned long _x=(unsigned long)(v); h^=_x; h*=1099511628211UL; }while(0)
+    for (int cy = 0; cy < GH; cy++)
+        for (int cx = 0; cx < GW; cx++)
+            if (simp_is_wall(s, cx, cy)) { MIX(cx); MIX(cy); }
+    MIX(def_budget(g)); MIX(def_struct_count(g)); MIX(def_turret_count(g));
+    /* opacity probe across the fence corridor (undo must restore transmit) */
+    MIX((long)(simp_ray_transmit(s, 25.0f, 30.0f, 1.0f, 0.0f, 10.0f) * 10000.0f));
+    #undef MIX
+    return h;
+}
+
+static void test_undo(void) {
+    printf("[13] undo (LIFO + refund)\n");
+    SimP *s = simp_create(GW, GH, CELL, MAXA);
+    simp_terrain_commit(s);
+    DefGame *g = def_create(s, MAXA);
+    def_set_budget(g, 1000);
+    Placement p; pl_init(&p, CAT, NCAT);
+    PlUndo u; pl_set_undo(&p, &u);
+
+    unsigned long h0 = world_hash(s, g);
+
+    for (int round = 0; round < 3; round++) {
+        /* three placements: turret, fence (point), 11 m line */
+        pl_select(&p, I_TUR);   pl_set_cursor(&p, 60.0f, 20.0f);
+        CHECK(pl_commit(&p, g, s), "undo r%d: turret should place", round);
+        pl_select(&p, I_FENCE); p.rot90 = 1; pl_set_cursor(&p, 30.0f, 30.0f);
+        CHECK(pl_commit(&p, g, s), "undo r%d: fence should place", round);
+        pl_select(&p, I_LINE);
+        CHECK(pl_line_commit(&p, g, s, 20.0f, 45.0f, 31.0f, 45.0f), "undo r%d: line should place", round);
+        CHECK(u.n == 3, "undo r%d: 3 records expected (got %d)", round, u.n);
+        CHECK(def_budget(g) == 1000 - 100 - 80 - 132, "undo r%d: budget after spends (%d)", round, def_budget(g));
+
+        /* LIFO: first pop removes the LINE (its 5 structures), turret stays */
+        int st_before = def_struct_count(g);
+        CHECK(pl_undo_pop(&p, g, s), "undo r%d: pop 1 (line)", round);
+        CHECK(st_before - def_struct_count(g) == 5, "undo r%d: line pop should drop 5 structs", round);
+        CHECK(def_turret_count(g) == 1, "undo r%d: turret must survive line pop", round);
+
+        CHECK(pl_undo_pop(&p, g, s), "undo r%d: pop 2 (fence)", round);
+        CHECK(pl_undo_pop(&p, g, s), "undo r%d: pop 3 (turret)", round);
+        CHECK(def_turret_count(g) == 0, "undo r%d: turret pop should remove it", round);
+        CHECK(!pl_undo_pop(&p, g, s), "undo r%d: empty stack must pop 0", round);
+
+        unsigned long h = world_hash(s, g);
+        CHECK(h == h0, "undo r%d: world not restored (hash %lu vs %lu)", round, h, h0);
+    }
+
+    /* clear = point of no return: pops refused, spends kept */
+    pl_select(&p, I_TUR); pl_set_cursor(&p, 60.0f, 20.0f);
+    CHECK(pl_commit(&p, g, s), "post-clear turret should place");
+    pl_undo_clear(&p);
+    CHECK(!pl_undo_pop(&p, g, s), "cleared stack must pop 0");
+    CHECK(def_turret_count(g) == 1 && def_budget(g) == 900, "clear must keep the placement");
+
+    def_destroy(g); simp_destroy(s);
+}
+
 int main(void) {
     test_budget();
     test_space();
@@ -499,6 +563,7 @@ int main(void) {
     test_line_fill();
     test_line_veto();
     test_line_angle();
+    test_undo();
     if (fails == 0) printf("test_place: ALL PASS\n");
     else            printf("test_place: %d FAIL\n", fails);
     return fails ? 1 : 0;

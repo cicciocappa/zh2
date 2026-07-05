@@ -55,6 +55,23 @@ typedef struct {
  * NULL = nothing blocked by statics. vat_horde binds this to ter_blocked. */
 typedef int (*PlBlockedFn)(void *user, float wx, float wy);
 
+/* ---- PREP undo (PREP_UI_DESIGN §6) ----------------------------------------
+ * Optional LIFO stack of this-session placements. Attach one with
+ * pl_set_undo(): successful pl_commit / pl_line_commit push a record; a full
+ * stack drops the OLDEST record (undo depth, not a placement cap).
+ * pl_undo_pop removes the newest placement: full refund, clean teardown
+ * (defense's remove-LAST primitives — valid while placement is the only
+ * mutator, i.e. PREP), one nav recommit. Draggables (BIN/CAR, sandbox-only
+ * kinds) are NOT recorded. Clear the stack when the assault starts
+ * (committing to battle = the point of no return). */
+enum { PL_UNDO_MAX = 128 };
+typedef struct {
+    int nstructs;                    /* structures this placement created    */
+    int nturrets;                    /* turrets this placement created       */
+    int cost;                        /* refunded in full on pop              */
+} PlUndoRec;
+typedef struct { PlUndoRec rec[PL_UNDO_MAX]; int n; } PlUndo;
+
 typedef struct {
     const PlItem *cat; int ncat;     /* catalog (borrowed, not owned)        */
     int    active;                   /* placement mode on/off                */
@@ -64,7 +81,12 @@ typedef struct {
     int    valid;                    /* commit allowed here? (pl_validate)   */
     int    reason;                   /* PlReason of the last validate        */
     PlBlockedFn blocked; void *blocked_user;
+    PlUndo *undo;                    /* optional (NULL = no recording)       */
 } Placement;
+
+void pl_set_undo(Placement *p, PlUndo *u);      /* attach/detach; resets it  */
+int  pl_undo_pop(Placement *p, DefGame *g, SimP *s);   /* 1 = one undone     */
+void pl_undo_clear(Placement *p);               /* assault begun: keep spent */
 
 void          pl_init(Placement *p, const PlItem *catalog, int n);
 void          pl_set_blocked_cb(Placement *p, PlBlockedFn fn, void *user);
