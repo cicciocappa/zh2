@@ -23,13 +23,16 @@
 extern "C" {
 #endif
 
-typedef enum { PL_BARRICADE, PL_TURRET, PL_BIN, PL_CAR, /* PL_TRAP… */ PL_NKINDS } PlKind;
+typedef enum { PL_BARRICADE, PL_TURRET, PL_BIN, PL_CAR, PL_TRAP, PL_NKINDS } PlKind;
+/* PL_TRAP: reserved (PREP_UI_DESIGN §2) — commits are a no-op until def_blast
+ * (EXPLOSION_DESIGN) lands; no v1 catalog entry uses it. */
 
 /* Result of pl_validate, drives the ghost colour + HUD message. */
 typedef enum { PL_OK, PL_NOFUNDS, PL_BLOCKED, PL_OVERLAP, PL_BADITEM } PlReason;
 
-/* One catalog entry (data-driven). Combat/HP params beyond these are filled at
- * commit time by the kind's handler (a "standard" turret etc.). */
+/* One catalog entry (data-driven, PREP_UI_DESIGN §2): one new item = one row.
+ * The trailing combat params use 0 = "standard default" so positional
+ * initializers that predate them stay valid (the sandbox catalog). */
 typedef struct {
     PlKind      kind;
     const char *name;     /* "Barricata", "Torretta"…                        */
@@ -38,6 +41,14 @@ typedef struct {
     float       radius;   /* disc radius for bin/car free-space probe        */
     float       hp;       /* barricade HP                                    */
     float       mass;     /* draggable mass (bin/car) / barricade debris mass */
+    /* turret combat params (0 = standard: range 40, light 0.12s/40HP,
+     * heavy 0.5s/gib). heavy uses defense's slow gibbing shot. */
+    int         heavy;
+    float       range, fire_period, damage;
+    /* barricade cell opacity (axis C): 0 or >=1 = full solid (default);
+     * in (0,1) = see-through cover, turrets shoot across (cancellata 0.3).
+     * Collapse restores it automatically (simp_set_wall mirrors opacity). */
+    float       opacity;
 } PlItem;
 
 /* Host veto: return 1 if (wx,wy) sits on an immovable static (palazzo/roccia).
@@ -59,6 +70,8 @@ void          pl_init(Placement *p, const PlItem *catalog, int n);
 void          pl_set_blocked_cb(Placement *p, PlBlockedFn fn, void *user);
 void          pl_set_cursor(Placement *p, float wx, float wy);
 void          pl_cycle(Placement *p, int dir);   /* change selected item     */
+void          pl_select(Placement *p, int idx);  /* direct pick (UI tabs);
+                                                    out-of-range = ignored   */
 void          pl_rotate(Placement *p, int dir);  /* rot90 += dir (wraps)     */
 const PlItem *pl_selected(const Placement *p);
 

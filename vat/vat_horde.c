@@ -440,11 +440,11 @@ static int ter_blocked(float x, float y){ return gTerOn && terrain_hole(&gTer, x
 // --- piazzamento a runtime (PLACEMENT_DESIGN.md): catalogo + veto static ---
 static int pl_blocked_host(void *u, float x, float y){ (void)u; return ter_blocked(x,y); }
 static const PlItem PL_CAT[] = {
-    /* kind        name          cost   w     h    radius  hp     mass */
-    { PL_BARRICADE, "Barricata",   50,  4.0f, 1.0f, 0.0f, 300.0f, 30.0f },  /* mass>0 = detriti al crollo */
-    { PL_TURRET,    "Torretta",   100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f },
-    { PL_BIN,       "Cassonetto",  20,  0.0f, 0.0f, 0.6f,   0.0f, 12.0f },
-    { PL_CAR,       "Auto",        60,  3.0f, 0.0f, 0.6f,   0.0f, 20.0f },
+    /* kind        name          cost   w     h    radius  hp     mass   combat: 0 = default (place.h) */
+    { PL_BARRICADE, "Barricata",   50,  4.0f, 1.0f, 0.0f, 300.0f, 30.0f, 0, 0,0,0, 0 },  /* mass>0 = detriti al crollo */
+    { PL_TURRET,    "Torretta",   100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 0, 0,0,0, 0 },
+    { PL_BIN,       "Cassonetto",  20,  0.0f, 0.0f, 0.6f,   0.0f, 12.0f, 0, 0,0,0, 0 },
+    { PL_CAR,       "Auto",        60,  3.0f, 0.0f, 0.6f,   0.0f, 20.0f, 0, 0,0,0, 0 },
 };
 #define PL_NCAT ((int)(sizeof(PL_CAT)/sizeof(PL_CAT[0])))
 

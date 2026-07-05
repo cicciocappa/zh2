@@ -65,6 +65,10 @@ void pl_cycle(Placement *p, int dir) {
     if (p->sel < 0) p->sel += p->ncat;
 }
 
+void pl_select(Placement *p, int idx) {
+    if (idx >= 0 && idx < p->ncat) p->sel = idx;
+}
+
 void pl_rotate(Placement *p, int dir) { p->rot90 = ((p->rot90 + dir) % 4 + 4) % 4; }
 
 const PlItem *pl_selected(const Placement *p) {
@@ -108,14 +112,19 @@ int pl_validate(Placement *p, DefGame *g, SimP *s) {
 
 /* ---- commit ------------------------------------------------------------- */
 
-/* Standard light turret built at the cursor. Combat params are fixed here
- * (upgrades = future / economy M5b); the catalog carries only cost. */
-static int commit_turret(DefGame *g, float cx, float cy) {
+/* Turret built at the cursor, combat params from the catalog entry
+ * (PREP_UI_DESIGN §2). 0 = standard default, so bare rows keep behaving
+ * like the old fixed light turret. */
+static int commit_turret(DefGame *g, const PlItem *it, float cx, float cy) {
     DefTurret t = {0};
     t.x = cx; t.y = cy;
     t.arc_min = -3.14159265f; t.arc_max = 3.14159265f;   /* full sweep */
-    t.sweep_dir = 1; t.sweep_speed = 2.5f; t.range = 40.0f;
-    t.fire_period = 0.12f; t.damage = 40.0f; t.heavy = 0; t.piercing = 0;
+    t.sweep_dir = 1; t.sweep_speed = 2.5f;
+    t.heavy = it->heavy; t.piercing = 0;
+    t.range       = it->range       > 0.0f ? it->range       : 40.0f;
+    t.fire_period = it->fire_period > 0.0f ? it->fire_period : (it->heavy ? 0.5f : 0.12f);
+    t.damage      = it->damage      > 0.0f ? it->damage
+                                           : (it->heavy ? 0.0f : 40.0f);  /* heavy: gibs, dmg ignored */
     return def_add_turret(g, &t) >= 0;
 }
 
@@ -126,7 +135,14 @@ static int commit_barricade(DefGame *g, SimP *s, const PlItem *it,
     if (n <= 0) return 0;
     int sid = def_add_structure(g, it->hp, 0);
     if (sid < 0) return 0;
-    for (int k = 0; k < n; k++) def_struct_cell(g, sid, gx[k], gy[k]);
+    int semi = (it->opacity > 0.0f && it->opacity < 1.0f);   /* cancellata */
+    for (int k = 0; k < n; k++) {
+        def_struct_cell(g, sid, gx[k], gy[k]);
+        /* axis C override AFTER set_wall (prop_world pattern): see-through
+         * cover, turrets shoot across; collapse's set_wall(false) mirrors
+         * opacity back to 0 on its own. */
+        if (semi) simp_set_opacity(s, gx[k], gy[k], it->opacity);
+    }
     if (it->mass > 0.0f) def_struct_set_debris(g, sid, it->mass);  /* hybrid */
     simp_terrain_commit(s);                                        /* reroute */
     return 1;
@@ -148,7 +164,7 @@ int pl_commit(Placement *p, DefGame *g, SimP *s) {
     int ok = 0;
     switch (it->kind) {
         case PL_BARRICADE: ok = commit_barricade(g, s, it, p->cx, p->cy, p->rot90); break;
-        case PL_TURRET:    ok = commit_turret(g, p->cx, p->cy); break;
+        case PL_TURRET:    ok = commit_turret(g, it, p->cx, p->cy); break;
         case PL_BIN:       ok = simp_drag_add(s, p->cx, p->cy, it->radius, it->mass) >= 0; break;
         case PL_CAR:       ok = commit_car(s, it, p->cx, p->cy, p->rot90); break;
         default: break;

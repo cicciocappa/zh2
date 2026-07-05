@@ -8,6 +8,11 @@
  *                       gap (drain > 0) and never centers inside a wall.
  *   5) ROTATION       — rot90 transposes the footprint (wide ↔ tall).
  *   6) DETERMINISM    — same script ⇒ same world (checksum), zero NaN.
+ *   7) SELECT         — pl_select direct pick, out-of-range ignored.
+ *   8) DATA-DRIVEN    — catalog combat params reach the turret (heavy flag,
+ *                       period, range); bare rows keep the old defaults.
+ *   9) CANCELLATA     — opacity entry: cells solid but transmit in (0,1);
+ *                       full barricade blocks (0); collapse restores 1.
  */
 #define _POSIX_C_SOURCE 199309L
 #include "place.h"
@@ -22,14 +27,19 @@
 #define DT (1.0f / 60.0f)
 #define MAXA 4000
 
-/* catalog (mirrors a minimal in-game palette) */
-enum { I_BARR, I_TUR, I_BIN, I_CAR };
+/* catalog (mirrors a minimal in-game palette). The first four rows leave the
+ * combat fields at 0 = "standard default" — case 8 regresses that contract. */
+enum { I_BARR, I_TUR, I_BIN, I_CAR, I_HEAVY, I_FENCE };
 static const PlItem CAT[] = {
-    /* kind        name          cost   w     h    radius  hp     mass */
-    { PL_BARRICADE, "Barricata",   50,  4.0f, 1.0f, 0.0f, 300.0f,  0.0f },
-    { PL_TURRET,    "Torretta",   100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f },
-    { PL_BIN,       "Cassonetto",  20,  0.0f, 0.0f, 0.6f,   0.0f, 12.0f },
-    { PL_CAR,       "Auto",        60,  3.0f, 0.0f, 0.6f,   0.0f, 20.0f },
+    /* kind        name          cost   w     h    radius  hp     mass   combat: 0 = default */
+    { PL_BARRICADE, "Barricata",   50,  4.0f, 1.0f, 0.0f, 300.0f,  0.0f, 0, 0,0,0, 0 },
+    { PL_TURRET,    "Torretta",   100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 0, 0,0,0, 0 },
+    { PL_BIN,       "Cassonetto",  20,  0.0f, 0.0f, 0.6f,   0.0f, 12.0f, 0, 0,0,0, 0 },
+    { PL_CAR,       "Auto",        60,  3.0f, 0.0f, 0.6f,   0.0f, 20.0f, 0, 0,0,0, 0 },
+    { .kind = PL_TURRET, .name = "Pesante", .cost = 250, .radius = 0.5f,
+      .heavy = 1, .range = 55.0f },                      /* period/dmg default */
+    { .kind = PL_BARRICADE, .name = "Cancellata", .cost = 80,
+      .w = 4.0f, .h = 1.0f, .hp = 200.0f, .opacity = 0.3f },
 };
 #define NCAT ((int)(sizeof(CAT)/sizeof(CAT[0])))
 
@@ -256,6 +266,85 @@ static void test_determinism(void) {
     CHECK(a == b, "checksum mismatch %lu vs %lu", a, b);
 }
 
+/* ---- case 7: direct selection ------------------------------------------- */
+static void test_select(void) {
+    printf("[7] pl_select\n");
+    Placement p; pl_init(&p, CAT, NCAT);
+    pl_select(&p, I_CAR);
+    CHECK(pl_selected(&p) == &CAT[I_CAR], "select should pick the car row");
+    pl_select(&p, NCAT + 3);                     /* out of range: ignored */
+    pl_select(&p, -1);
+    CHECK(pl_selected(&p) == &CAT[I_CAR], "out-of-range select must be ignored");
+}
+
+/* ---- case 8: catalog combat params reach the turret ---------------------- */
+static void test_turret_params(void) {
+    printf("[8] data-driven turret\n");
+    SimP *s = simp_create(GW, GH, CELL, MAXA);
+    simp_terrain_commit(s);
+    DefGame *g = def_create(s, MAXA);
+    def_set_budget(g, 1000);
+    Placement p; pl_init(&p, CAT, NCAT);
+
+    pl_select(&p, I_TUR);                        /* bare row: old defaults */
+    pl_set_cursor(&p, 20.0f, 20.0f);
+    CHECK(pl_commit(&p, g, s), "light turret should place");
+    pl_select(&p, I_HEAVY);
+    pl_set_cursor(&p, 40.0f, 20.0f);
+    CHECK(pl_commit(&p, g, s), "heavy turret should place");
+
+    const DefTurret *lt = def_turret(g, 0), *ht = def_turret(g, 1);
+    CHECK(lt && !lt->heavy, "turret 0 should be light");
+    CHECK(lt && fabsf(lt->range - 40.0f) < 1e-4f && fabsf(lt->fire_period - 0.12f) < 1e-4f
+             && fabsf(lt->damage - 40.0f) < 1e-4f,
+          "light defaults wrong (range %.1f period %.2f dmg %.1f)",
+          lt ? (double)lt->range : 0, lt ? (double)lt->fire_period : 0, lt ? (double)lt->damage : 0);
+    CHECK(ht && ht->heavy, "turret 1 should be heavy");
+    CHECK(ht && fabsf(ht->range - 55.0f) < 1e-4f && fabsf(ht->fire_period - 0.5f) < 1e-4f
+             && fabsf(ht->damage - 0.0f) < 1e-4f,
+          "heavy params wrong (range %.1f period %.2f dmg %.1f)",
+          ht ? (double)ht->range : 0, ht ? (double)ht->fire_period : 0, ht ? (double)ht->damage : 0);
+    CHECK(def_budget(g) == 1000 - 100 - 250, "budget after both turrets (%d)", def_budget(g));
+
+    def_destroy(g); simp_destroy(s);
+}
+
+/* ---- case 9: cancellata — see-through cover ------------------------------ */
+static void test_fence(void) {
+    printf("[9] cancellata (opacity)\n");
+    SimP *s = simp_create(GW, GH, CELL, MAXA);
+    simp_terrain_commit(s);
+    DefGame *g = def_create(s, MAXA);
+    def_set_budget(g, 1000);
+    Placement p; pl_init(&p, CAT, NCAT); p.rot90 = 1;   /* vertical, ray along x */
+
+    /* fence at x=30 m, full barricade at x=50 m, same y */
+    pl_select(&p, I_FENCE); pl_set_cursor(&p, 30.0f, 30.0f);
+    CHECK(pl_commit(&p, g, s), "fence should place");
+    pl_select(&p, I_BARR);  pl_set_cursor(&p, 50.0f, 30.0f);
+    CHECK(pl_commit(&p, g, s), "full barricade should place");
+
+    /* both are SOLID for the crowd */
+    CHECK(simp_is_wall(s, 60, 60), "fence cell should be a wall (solid)");
+    CHECK(simp_is_wall(s, 100, 60), "barricade cell should be a wall");
+
+    /* rays across each, well clear of the other (origin+direction+maxdist) */
+    float tf = simp_ray_transmit(s, 25.0f, 30.0f, 1.0f, 0.0f, 10.0f);
+    float tb = simp_ray_transmit(s, 45.0f, 30.0f, 1.0f, 0.0f, 10.0f);
+    CHECK(tf > 0.0f && tf < 1.0f, "fence transmit should be in (0,1), got %.3f", (double)tf);
+    CHECK(tb < 0.001f, "full barricade transmit should be ~0, got %.3f", (double)tb);
+
+    /* collapse the fence: cells free again AND transparent again */
+    def_struct_damage(g, 0, 10000.0f);           /* fence was structure 0 */
+    CHECK(def_struct_collapsed(g, 0), "fence should collapse under damage");
+    simp_terrain_commit(s);
+    CHECK(!simp_is_wall(s, 60, 60), "fence cell should be free after collapse");
+    float tf2 = simp_ray_transmit(s, 25.0f, 30.0f, 1.0f, 0.0f, 10.0f);
+    CHECK(tf2 > 0.999f, "transmit should be 1 after collapse, got %.3f", (double)tf2);
+
+    def_destroy(g); simp_destroy(s);
+}
+
 int main(void) {
     test_budget();
     test_space();
@@ -263,6 +352,9 @@ int main(void) {
     test_barricade();
     test_rotation();
     test_determinism();
+    test_select();
+    test_turret_params();
+    test_fence();
     if (fails == 0) printf("test_place: ALL PASS\n");
     else            printf("test_place: %d FAIL\n", fails);
     return fails ? 1 : 0;
