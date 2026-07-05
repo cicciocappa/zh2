@@ -157,6 +157,121 @@ static int commit_car(SimP *s, const PlItem *it, float cx, float cy, int rot90) 
     return 1;
 }
 
+/* ---- line placement (PREP_UI_DESIGN §5) --------------------------------- */
+
+/* Cells whose CENTER falls inside a rotated rect (center cx,cy, half extents
+ * hu along the line × hv across, angle ca/sa). Same center-sampling semantics
+ * as scene_raster_cells, self-contained (no scene.h dep). The along-axis test
+ * is HALF-OPEN ([-hu, hu)) so adjacent modules never claim the same cell.
+ * NOTE: barrier thickness must be ≥ 2 cells (h = 1.0 m at 0.5 cells) so the
+ * rasterized staircase of a slanted line has no diagonal-only pinch points. */
+static int pl_rect_cells(const SimP *s, float cx, float cy, float hu, float hv,
+                         float ca, float sa, int *gx, int *gy, int maxn) {
+    float cs = simp_cell_size(s);
+    int gw = simp_grid_w(s), gh = simp_grid_h(s);
+    float r = sqrtf(hu * hu + hv * hv);          /* bbox of the rotated rect */
+    int x0 = (int)floorf((cx - r) / cs), x1 = (int)floorf((cx + r) / cs);
+    int y0 = (int)floorf((cy - r) / cs), y1 = (int)floorf((cy + r) / cs);
+    if (x0 < 0) x0 = 0;
+    if (x1 >= gw) x1 = gw - 1;
+    if (y0 < 0) y0 = 0;
+    if (y1 >= gh) y1 = gh - 1;
+    int n = 0;
+    for (int j = y0; j <= y1; j++)
+        for (int i = x0; i <= x1; i++) {
+            float px = (i + 0.5f) * cs - cx, py = (j + 0.5f) * cs - cy;
+            float u = ca * px + sa * py, v = -sa * px + ca * py;
+            if (u >= -hu && u < hu && v >= -hv && v < hv) {
+                if (n >= maxn) return n;
+                gx[n] = i; gy[n] = j; n++;
+            }
+        }
+    return n;
+}
+
+/* Snap the segment length to 0.5 m and fill it with 2.5/1.0/0.5 m modules.
+ * Fills geometry + cost; returns nmod (0 = degenerate/too long). */
+static int pl_line_plan(const PlItem *it, float x0, float y0, float x1, float y1,
+                        PlLinePlan *pl) {
+    float dx = x1 - x0, dy = y1 - y0;
+    float raw = sqrtf(dx * dx + dy * dy);
+    float len = 0.5f * lroundf(raw / 0.5f);      /* 0.5 m granularity */
+    pl->nmod = 0; pl->cost = 0; pl->len = len; pl->ang = atan2f(dy, dx);
+    if (len < 0.5f || raw < 1e-6f) return 0;
+    float ux = dx / raw, uy = dy / raw, at = 0.0f;
+    static const float MODS[3] = { 2.5f, 1.0f, 0.5f };
+    while (len - at > 0.25f) {                   /* residual ≥ one 0.5 module */
+        float rem = len - at, m = 0.0f;
+        for (int k = 0; k < 3; k++) if (rem >= MODS[k] - 0.01f) { m = MODS[k]; break; }
+        if (m == 0.0f || pl->nmod >= PL_LINE_MAX_MODULES) return 0;   /* too long */
+        int i = pl->nmod++;
+        pl->mx[i] = x0 + ux * (at + 0.5f * m);
+        pl->my[i] = y0 + uy * (at + 0.5f * m);
+        pl->mlen[i] = m;
+        pl->cost += (int)lroundf(m * (float)it->cost);   /* cost is PER METER */
+        at += m;
+    }
+    return pl->nmod;
+}
+
+int pl_line_validate(Placement *p, DefGame *g, SimP *s,
+                     float x0, float y0, float x1, float y1, PlLinePlan *out) {
+    PlLinePlan pl;
+    const PlItem *it = pl_selected(p);
+    p->valid = 0;
+    if (!it || it->kind != PL_BARRICADE || !pl_line_plan(it, x0, y0, x1, y1, &pl)) {
+        p->reason = PL_BADITEM; if (out) { out->nmod = 0; out->cost = 0; }
+        return 0;
+    }
+    if (out) *out = pl;
+    if (def_budget(g) < pl.cost) { p->reason = PL_NOFUNDS; return 0; }
+    if (def_struct_count(g) + pl.nmod > def_struct_cap()) {   /* all-or-nothing */
+        p->reason = PL_BLOCKED; return 0;
+    }
+    float cs = simp_cell_size(s);
+    float ca = cosf(pl.ang), sa = sinf(pl.ang), hv = 0.5f * it->h;
+    for (int m = 0; m < pl.nmod; m++) {
+        int gx[PL_MAX_CELLS], gy[PL_MAX_CELLS];
+        int n = pl_rect_cells(s, pl.mx[m], pl.my[m], 0.5f * pl.mlen[m], hv,
+                              ca, sa, gx, gy, PL_MAX_CELLS);
+        if (n <= 0) { p->reason = PL_BLOCKED; return 0; }
+        for (int k = 0; k < n; k++) {
+            float wx = (gx[k] + 0.5f) * cs, wy = (gy[k] + 0.5f) * cs;
+            if (p->blocked && p->blocked(p->blocked_user, wx, wy)) {
+                p->reason = PL_BLOCKED; return 0;
+            }
+            if (!simp_free_at(s, wx, wy, cs * 0.45f)) {       /* agents/walls */
+                p->reason = PL_OVERLAP; return 0;
+            }
+        }
+    }
+    p->valid = 1; p->reason = PL_OK; return 1;
+}
+
+int pl_line_commit(Placement *p, DefGame *g, SimP *s,
+                   float x0, float y0, float x1, float y1) {
+    PlLinePlan pl;
+    if (!pl_line_validate(p, g, s, x0, y0, x1, y1, &pl)) return 0;
+    const PlItem *it = pl_selected(p);           /* barricade kind: validated */
+    float ca = cosf(pl.ang), sa = sinf(pl.ang), hv = 0.5f * it->h;
+    int semi = (it->opacity > 0.0f && it->opacity < 1.0f);
+    for (int m = 0; m < pl.nmod; m++) {
+        float hp = it->hp * (pl.mlen[m] / 2.5f); /* per-module, length-scaled */
+        int sid = def_add_structure(g, hp, 0);   /* room pre-checked */
+        int gx[PL_MAX_CELLS], gy[PL_MAX_CELLS];
+        int n = pl_rect_cells(s, pl.mx[m], pl.my[m], 0.5f * pl.mlen[m], hv,
+                              ca, sa, gx, gy, PL_MAX_CELLS);
+        for (int k = 0; k < n; k++) {
+            def_struct_cell(g, sid, gx[k], gy[k]);
+            if (semi) simp_set_opacity(s, gx[k], gy[k], it->opacity);
+        }
+        if (it->mass > 0.0f) def_struct_set_debris(g, sid, it->mass);
+    }
+    simp_terrain_commit(s);                      /* one reroute for the line */
+    def_spend(g, pl.cost);
+    return 1;
+}
+
 int pl_commit(Placement *p, DefGame *g, SimP *s) {
     if (!pl_validate(p, g, s)) return 0;        /* refuses on nofunds/blocked/overlap */
     const PlItem *it = pl_selected(p);          /* non-NULL: validate passed */

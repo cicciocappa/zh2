@@ -13,12 +13,19 @@
  *                       period, range); bare rows keep the old defaults.
  *   9) CANCELLATA     — opacity entry: cells solid but transmit in (0,1);
  *                       full barricade blocks (0); collapse restores 1.
+ *  10) LINE FILL      — 11 m line = 4×2.5 + 1×1 modules, exact cost (per m),
+ *                       one structure per module, snap to 0.5 m.
+ *  11) LINE VETO      — all-or-nothing: an obstacle mid-line = nothing
+ *                       placed, nothing spent; budget gate on the total.
+ *  12) LINE ANGLE     — 45° line: walls raised along the diagonal, agents
+ *                       kept out, deterministic (same line ⇒ same cells).
  */
 #define _POSIX_C_SOURCE 199309L
 #include "place.h"
 #include "defense.h"
 #include "sim_particles.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
 
 #define GW 160
@@ -40,8 +47,11 @@ static const PlItem CAT[] = {
       .heavy = 1, .range = 55.0f },                      /* period/dmg default */
     { .kind = PL_BARRICADE, .name = "Cancellata", .cost = 80,
       .w = 4.0f, .h = 1.0f, .hp = 200.0f, .opacity = 0.3f },
+    { .kind = PL_BARRICADE, .name = "Muro-linea", .cost = 12,   /* PER METER */
+      .w = 2.5f, .h = 1.0f, .hp = 300.0f },
 };
 #define NCAT ((int)(sizeof(CAT)/sizeof(CAT[0])))
+#define I_LINE 6
 
 static int fails = 0;
 #define CHECK(c, ...) do{ if(!(c)){ fails++; printf("  FAIL: "); printf(__VA_ARGS__); printf("\n"); } }while(0)
@@ -345,6 +355,137 @@ static void test_fence(void) {
     def_destroy(g); simp_destroy(s);
 }
 
+/* ---- case 10: line fill --------------------------------------------------- */
+static void test_line_fill(void) {
+    printf("[10] line fill (modules + cost)\n");
+    SimP *s = simp_create(GW, GH, CELL, MAXA);
+    simp_terrain_commit(s);
+    DefGame *g = def_create(s, MAXA);
+    def_set_budget(g, 1000);
+    Placement p; pl_init(&p, CAT, NCAT); pl_select(&p, I_LINE);
+
+    /* horizontal 11 m line: 4×2.5 + 1×1, cost 4·30 + 12 = 132 */
+    PlLinePlan pl;
+    CHECK(pl_line_validate(&p, g, s, 20.0f, 30.0f, 31.0f, 30.0f, &pl), "11 m line should validate");
+    CHECK(pl.nmod == 5, "11 m should fill 5 modules (got %d)", pl.nmod);
+    int n25 = 0, n10 = 0, n05 = 0;
+    for (int m = 0; m < pl.nmod; m++) {
+        if      (fabsf(pl.mlen[m] - 2.5f) < 1e-4f) n25++;
+        else if (fabsf(pl.mlen[m] - 1.0f) < 1e-4f) n10++;
+        else if (fabsf(pl.mlen[m] - 0.5f) < 1e-4f) n05++;
+    }
+    CHECK(n25 == 4 && n10 == 1 && n05 == 0, "expected 4×2.5+1×1 (got %d/%d/%d)", n25, n10, n05);
+    CHECK(pl.cost == 132, "cost should be 132 (got %d)", pl.cost);
+
+    int st0 = def_struct_count(g);
+    CHECK(pl_line_commit(&p, g, s, 20.0f, 30.0f, 31.0f, 30.0f), "line should commit");
+    CHECK(def_struct_count(g) - st0 == 5, "5 structures expected (got %d)", def_struct_count(g) - st0);
+    CHECK(def_budget(g) == 1000 - 132, "budget should drop by 132 (got %d)", def_budget(g));
+
+    /* walls raised along the line: 22 cells long × 2 thick at (40..61, 59..60) */
+    int wal = 0;
+    for (int cx = 40; cx < 62; cx++)
+        for (int cy = 59; cy <= 60; cy++) if (simp_is_wall(s, cx, cy)) wal++;
+    CHECK(wal == 44, "expected 44 wall cells (22×2), got %d", wal);
+
+    /* snap: a 10.7 m drag behaves as 10.5 (4×2.5 + 0.5) */
+    CHECK(pl_line_validate(&p, g, s, 20.0f, 45.0f, 30.7f, 45.0f, &pl), "10.7 m line should validate");
+    CHECK(fabsf(pl.len - 10.5f) < 1e-4f, "10.7 should snap to 10.5 (got %.2f)", (double)pl.len);
+    CHECK(pl.nmod == 5 && fabsf(pl.mlen[4] - 0.5f) < 1e-4f, "snapped fill should end with a 0.5 stub");
+
+    /* degenerate: too short */
+    CHECK(!pl_line_validate(&p, g, s, 20.0f, 50.0f, 20.1f, 50.0f, &pl), "0.1 m line must refuse");
+    CHECK(p.reason == PL_BADITEM, "degenerate line reason should be PL_BADITEM (got %d)", p.reason);
+
+    def_destroy(g); simp_destroy(s);
+}
+
+/* ---- case 11: line veto (all-or-nothing) ---------------------------------- */
+static void test_line_veto(void) {
+    printf("[11] line all-or-nothing\n");
+    SimP *s = simp_create(GW, GH, CELL, MAXA);
+    simp_terrain_commit(s);
+    DefGame *g = def_create(s, MAXA);
+    def_set_budget(g, 1000);
+    Placement p; pl_init(&p, CAT, NCAT); pl_select(&p, I_LINE);
+
+    /* an agent parked mid-line vetoes the WHOLE line */
+    simp_spawn(s, 25.0f, 30.0f);
+    int b0 = def_budget(g), st0 = def_struct_count(g);
+    CHECK(!pl_line_commit(&p, g, s, 20.0f, 30.0f, 31.0f, 30.0f), "line across agent must refuse");
+    CHECK(p.reason == PL_OVERLAP, "reason should be PL_OVERLAP (got %d)", p.reason);
+    CHECK(def_budget(g) == b0 && def_struct_count(g) == st0, "nothing placed, nothing spent");
+    int wal = 0;
+    for (int cx = 0; cx < GW; cx++)
+        for (int cy = 0; cy < GH; cy++) if (simp_is_wall(s, cx, cy)) wal++;
+    CHECK(wal == 0, "no wall cell may exist after refusal (got %d)", wal);
+
+    /* budget gate on the TOTAL: 11 m costs 132, 100 in the pot = refuse */
+    def_set_budget(g, 100);
+    CHECK(!pl_line_commit(&p, g, s, 20.0f, 50.0f, 31.0f, 50.0f), "unaffordable line must refuse");
+    CHECK(p.reason == PL_NOFUNDS, "reason should be PL_NOFUNDS (got %d)", p.reason);
+    CHECK(def_budget(g) == 100, "budget untouched on refusal");
+
+    def_destroy(g); simp_destroy(s);
+}
+
+/* ---- case 12: angled line -------------------------------------------------- */
+static unsigned long line_cells_hash(void) {
+    SimP *s = simp_create(GW, GH, CELL, MAXA);
+    simp_terrain_commit(s);
+    DefGame *g = def_create(s, MAXA);
+    def_set_budget(g, 100000);
+    Placement p; pl_init(&p, CAT, NCAT); pl_select(&p, I_LINE);
+    /* 45° diagonal, ~10.6 m raw → snaps to 10.5 */
+    int ok = pl_line_commit(&p, g, s, 20.0f, 20.0f, 27.5f, 27.5f);
+    unsigned long h = ok ? 1469598103934665603UL : 0UL;
+    if (ok)
+        for (int cy = 0; cy < GH; cy++)
+            for (int cx = 0; cx < GW; cx++)
+                if (simp_is_wall(s, cx, cy)) { h ^= (unsigned long)(cy * GW + cx); h *= 1099511628211UL; }
+    def_destroy(g); simp_destroy(s);
+    return h;
+}
+
+static void test_line_angle(void) {
+    printf("[12] angled line\n");
+    SimP *s = simp_create(GW, GH, CELL, MAXA);
+    simp_terrain_commit(s);
+    DefGame *g = def_create(s, MAXA);
+    def_set_budget(g, 100000);
+    Placement p; pl_init(&p, CAT, NCAT); pl_select(&p, I_LINE);
+
+    CHECK(pl_line_commit(&p, g, s, 20.0f, 20.0f, 27.5f, 27.5f), "45° line should commit");
+    int wal = 0, offdiag = 0;
+    for (int cx = 0; cx < GW; cx++)
+        for (int cy = 0; cy < GH; cy++)
+            if (simp_is_wall(s, cx, cy)) {
+                wal++;
+                if (abs(cx - cy) > 4) offdiag++;   /* staircase hugs y=x */
+            }
+    CHECK(wal > 20, "diagonal should raise a run of wall cells (got %d)", wal);
+    CHECK(offdiag == 0, "all cells must hug the diagonal (%d stray)", offdiag);
+
+    /* crowd pushed at the wall never centers inside it */
+    for (float yy = 21.0f; yy <= 26.0f; yy += 0.65f)
+        for (float xx = 15.0f; xx <= 19.0f; xx += 0.65f) simp_spawn(s, xx, yy);
+    for (int cy = 0; cy < GH; cy++) simp_set_goal(s, GW - 2, cy, true);
+    simp_terrain_commit(s);
+    for (int step = 0; step < 600; step++) simp_step(s, DT);
+    const float *px = simp_px(s), *py = simp_py(s);
+    int inside = 0;
+    for (int i = 0; i < simp_count(s); i++) {
+        int cx = (int)(px[i] / CELL), cy = (int)(py[i] / CELL);
+        if (cx >= 0 && cx < GW && cy >= 0 && cy < GH && simp_is_wall(s, cx, cy)) inside++;
+    }
+    CHECK(inside == 0, "%d agents centered inside the angled wall (must be 0)", inside);
+    CHECK(any_nan(s) == 0, "NaN after angled-line run");
+    def_destroy(g); simp_destroy(s);
+
+    unsigned long a = line_cells_hash(), b = line_cells_hash();
+    CHECK(a != 0UL && a == b, "angled line must be deterministic (%lu vs %lu)", a, b);
+}
+
 int main(void) {
     test_budget();
     test_space();
@@ -355,6 +496,9 @@ int main(void) {
     test_select();
     test_turret_params();
     test_fence();
+    test_line_fill();
+    test_line_veto();
+    test_line_angle();
     if (fails == 0) printf("test_place: ALL PASS\n");
     else            printf("test_place: %d FAIL\n", fails);
     return fails ? 1 : 0;

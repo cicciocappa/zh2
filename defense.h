@@ -95,6 +95,7 @@ void  def_struct_cell(DefGame *g, int id, int cx, int cy);
 void  def_struct_set_debris(DefGame *g, int id, float mass);
 
 int   def_struct_count(const DefGame *g);
+int   def_struct_cap(void);   /* table size — line placement pre-checks room */
 /* Direct HP damage (explosions — EXPLOSION_DESIGN §8 — and tests). Collapse
  * behaves exactly like the siege path (cells freed, reroute, debris, loss on
  * core). No-op on invalid/collapsed ids. */

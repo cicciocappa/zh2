@@ -588,6 +588,7 @@ void def_set_fire_lure(DefGame *g, float weight, float radius, float linger_s) {
 }
 
 int   def_struct_count(const DefGame *g) { return g->nstructs; }
+int   def_struct_cap(void) { return STRUCT_CAP; }
 int   def_cell_struct(const DefGame *g, int cx, int cy) {
     if (cx < 0 || cy < 0 || cx >= g->gw || cy >= g->gh) return -1;
     return g->cell_struct[cy * g->gw + cx];

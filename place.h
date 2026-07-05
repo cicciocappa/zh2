@@ -80,6 +80,38 @@ const PlItem *pl_selected(const Placement *p);
  * active. */
 int  pl_validate(Placement *p, DefGame *g, SimP *s);
 
+/* ---- barriers drawn as a LINE (PREP_UI_DESIGN §5) -------------------------
+ *
+ * The player drags a world-space segment; the line snaps to 0.5 m length
+ * granularity (the nav cell — chosen so a residual gap is narrower than the
+ * agent disc), keeps its FREE angle, and fills greedily with modules of
+ * 2.5 / 1.0 / 0.5 m (e.g. 11 m = 4×2.5 + 1×1). Each module is its own
+ * def_add_structure (the horde opens a LOCAL breach), thickness = it->h.
+ *
+ * Catalog contract for line placement: it->cost is PER METER (module cost =
+ * lroundf(len·cost)); it->hp is per 2.5 m module, shorter modules scale
+ * proportionally. Same opacity/debris semantics as pl_commit.
+ *
+ * pl_line_validate fills the plan (modules, snapped geometry, total cost) and
+ * p->valid/p->reason WITHOUT mutating; pl_line_commit re-validates and places
+ * ALL-OR-NOTHING (any vetoed cell, missing budget or missing structure slots
+ * = nothing placed, nothing spent). Selected item must be a PL_BARRICADE. */
+enum { PL_LINE_MAX_MODULES = 32 };   /* 80 m of wall per gesture: plenty */
+typedef struct {
+    int   nmod;
+    float mx[PL_LINE_MAX_MODULES];   /* module centers (world m)           */
+    float my[PL_LINE_MAX_MODULES];
+    float mlen[PL_LINE_MAX_MODULES]; /* module lengths (2.5 / 1.0 / 0.5)   */
+    float ang;                       /* line angle (rad, from +x)          */
+    float len;                       /* snapped total length (m)           */
+    int   cost;                      /* total budget units                 */
+} PlLinePlan;
+
+int  pl_line_validate(Placement *p, DefGame *g, SimP *s,
+                      float x0, float y0, float x1, float y1, PlLinePlan *out);
+int  pl_line_commit(Placement *p, DefGame *g, SimP *s,
+                    float x0, float y0, float x1, float y1);
+
 /* Place the selected item: re-runs pl_validate (cheap, no mutation) and refuses
  * if not affordable/valid here, else deducts budget (def_spend) and materializes
  * (simp_drag_add / def_add_turret / def_add_structure+cells+commit). Spends ONLY
