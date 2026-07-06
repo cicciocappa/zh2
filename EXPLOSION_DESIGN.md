@@ -8,9 +8,17 @@
 > mass/pack/height) ma NON il campo `danger` (blood-fear): non esiste una
 > primitiva core per azzerare `danger` in un raggio e il design vieta nuove
 > API core → il sangue resta (e decade da solo), coerente con la fiction. Fase
-> 2 DA FARE (visiva, in `vat_horde`): `host_blast` (archetipi prop §4, FX §6,
-> scorch §7), pool decal, drain `simp_landed`→`def_damage_agent` (§3.4),
-> migrazione E/RMB/`VAT_HORDE_BLAST`.
+> 2a FATTA (2026-07-06, verificata a occhio dall'utente): `host_blast` in
+> `vat_horde` = `def_blast` + FX §6 (flash/fireball/smoke) + burst dei prop
+> decor non-solidi (`destruct_force`) + drain `simp_landed`→`def_damage_agent`
+> (§3.4, danno-caduta costante `FALL_DMG`); E/RMB/`VAT_HORDE_BLAST` migrati.
+> LEZIONE FX: nel 3/4 top-down gli FX a terra sono OCCLUSI da orda (~1.8 m) e
+> muri (fino ~6 m) → i preset esplosione nascono in quota e SALGONO (colonna),
+> altrimenti "non si vede niente". Fase 2b DA FARE: scorch §7 (decal-cratere
+> persistente + annerimento facciate edifici), incendi dei prop `burn` (fuoco+
+> fumo+`danger`). RICHIESTE UTENTE (2026-07-06) per più avanti: (i) particelle
+> esplosione a SPRITE (texture) invece dei billboard flat; (ii) LANCIO di
+> qualche debris 3D dall'esplosione (mesh-gib style).
 >
 > Decisioni §10 sciolte dall'utente il 2026-07-04. Nato dall'arrivo dei prop solidi
 > (ENTITY_DESIGN §6+§8.5 applicati, `prop_world.c`): ora che il mondo è

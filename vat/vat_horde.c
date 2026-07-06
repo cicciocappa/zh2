@@ -22,7 +22,8 @@
 //   F2=salva la .scn caricata.
 // Headless:  VAT_HORDE_SHOT="<frames>" ./vat_horde  -> simula N step, screenshot
 //            vat_horde_shot.bmp, esce. VAT_HORDE_CAM="cx,cz,hh,az,el".
-//            VAT_HORDE_BLAST="frame,x,y[,str,up]" -> esplosione+lancio a quel frame.
+//            VAT_HORDE_BLAST="frame,x,y[,str,up]" -> host_blast a quel frame
+//            (danno+impulso+strutture+cadaveri+FX, non più solo il lancio).
 //            VAT_HORDE_BARRICADE="x,y,len[,mass]" / VAT_HORDE_CAR="x,y[,len][,mass]".
 //            VAT_HORDE_LURE="w,r,linger" = richiamo da fuoco (default -0.8,8,2.5; w>=0 off).
 #include <SDL3/SDL.h>
@@ -217,6 +218,49 @@ static const FxEmitterDef GLASS_DEBRIS_DEF = {
                       {0.95f,0.98f,1.0f,1.0f},{0.75f,0.90f,1.0f,0.90f} },
     .color_variant_count=4, .sprite_first=-1, .sprite_last=-1,
     .wind_scale=0.15f, .ground_stop=true, .blend=FX_BLEND_ADD, .rate=20.0f,
+};
+
+// esplosione (EXPLOSION_DESIGN.md §6): tre burst sovrapposti al punto di scoppio.
+// FLASH = lampo brevissimo additivo bianco-giallo che si allarga; FIREBALL =
+// palla arancio→rosso scuro con drag alto (alpha); SMOKE = colonna grigia lenta
+// che sale, vita lunga, presa dal vento. Data-only come gli altri preset.
+// NB: nel 3/4 top-down l'orda (~1.8 m) e i muri (fino a ~6 m) occludono gli FX a
+// terra → l'esplosione va resa ALTA, una colonna che sale e si legge sopra la
+// folla. Perciò spawn in quota + forte spinta verso l'alto + scale generose.
+static const FxEmitterDef EXPL_FLASH_DEF = {
+    .count=18, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.30f, .spawn_box_z=0.30f,
+    .spawn_offset_y_min=0.30f, .spawn_offset_y_max=1.6f,
+    .speed_xy_min=2.0f, .speed_xy_max=7.0f, .speed_y_min=2.0f, .speed_y_max=6.0f,
+    .gravity=0.0f, .drag=4.0f, .lifetime_min=0.08f, .lifetime_max=0.20f,
+    .start_scale_min=1.0f, .start_scale_max=2.0f, .end_scale_min=0.3f, .end_scale_max=0.6f,
+    .start_color={1.0f,0.98f,0.80f,1.0f}, .end_color={1.0f,0.60f,0.20f,0.0f},
+    .color_variant_count=0, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.0f, .ground_stop=false, .blend=FX_BLEND_ADD, .rate=20.0f,
+};
+static const FxEmitterDef EXPL_FIREBALL_DEF = {
+    .count=34, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.45f, .spawn_box_z=0.45f,
+    .spawn_offset_y_min=0.20f, .spawn_offset_y_max=2.2f,
+    .speed_xy_min=1.5f, .speed_xy_max=5.0f, .speed_y_min=3.0f, .speed_y_max=7.5f,
+    .gravity=-1.0f, .drag=1.4f, .lifetime_min=0.35f, .lifetime_max=0.95f,
+    .start_scale_min=0.9f, .start_scale_max=1.8f, .end_scale_min=0.4f, .end_scale_max=0.9f,
+    .start_color={1.0f,0.70f,0.25f,1.0f}, .end_color={0.35f,0.06f,0.02f,0.0f},
+    .color_variants={ {1.0f,0.80f,0.35f,1.0f},{1.0f,0.50f,0.12f,1.0f},{0.85f,0.30f,0.06f,1.0f} },
+    .color_variant_count=3, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.1f, .ground_stop=false, .blend=FX_BLEND_ADD, .rate=20.0f,
+};
+static const FxEmitterDef EXPL_SMOKE_DEF = {
+    .count=26, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.40f, .spawn_box_z=0.40f,
+    .spawn_offset_y_min=0.80f, .spawn_offset_y_max=3.0f,
+    .speed_xy_min=0.5f, .speed_xy_max=2.2f, .speed_y_min=1.8f, .speed_y_max=4.0f,
+    .gravity=-0.6f, .drag=1.1f, .lifetime_min=1.6f, .lifetime_max=3.2f,
+    .start_scale_min=1.0f, .start_scale_max=2.0f, .end_scale_min=2.5f, .end_scale_max=4.2f,
+    .start_color={0.30f,0.28f,0.26f,0.85f}, .end_color={0.15f,0.14f,0.13f,0.0f},
+    .color_variants={ {0.34f,0.32f,0.30f,0.8f},{0.24f,0.23f,0.22f,0.85f},{0.40f,0.37f,0.34f,0.7f} },
+    .color_variant_count=3, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.5f, .ground_stop=false, .blend=FX_BLEND_ALPHA, .rate=20.0f,
 };
 
 // scoppio di un prop distruttibile -> burst FX nel verso di spinta (cono ~35°).
@@ -800,6 +844,49 @@ static int prop_box_lean(float *buf, int c, float cx, float cz, float ox, float 
 // SCENE_MAX_PROP), stato di distruzione opzionale (NULL = tutti intatti, es. in
 // EDIT). Ritorna il conteggio vertici. Niente malloc: durante un topple viene
 // richiamata a ogni step della sim.
+// default granata/RMB (EXPLOSION_DESIGN §10.4: R=8, D0=180); danno da caduta
+// costante v1 (§3.4: il buffer landed dà solo handle, non la v d'impatto → una
+// costante ragionevole, si tara a occhio nel sandbox).
+#define BLAST_R    8.0f
+#define BLAST_DMG  180.0f
+#define FALL_DMG   25.0f
+
+// Esplosione lato host (EXPLOSION_DESIGN.md §3): la verità di gioco (def_blast:
+// agenti/strutture/cadaveri, con gli eventi DEF_EV_* che accendono gib+sangue)
+// più la fiction — archetipi prop (§4) e FX (§6). Ritorna nonzero se un prop è
+// cambiato (il chiamante ri-uploada la mesh prop). Scorch/decal + incendi (burn)
+// = prossima passata. I prop SOLID (bus/edifici/cancellate) li gestisce già
+// def_blast via il pool struttura (o sono muri permanenti): qui NON si toccano;
+// il decor NON-solid (tavolini/panchine/bidoni…) scoppia se D(d) supera resist.
+static int host_blast(DefGame *g, SimP *s, const Scene *sc, const PropCatalog *cat,
+                      Destruct *dz, FxParticles *fx,
+                      float x, float y, float r, float dmg, float strength, float up) {
+    def_blast(g, x, y, r, dmg, strength, up);
+    int changed = 0;
+    DestructCtx dc = { fx };
+    for (int i = 0; i < sc->n_prop; i++) {
+        const PropDef *pd = prop_catalog_find(cat, sc->prop[i].key);
+        if (pd && pd->solid) continue;                  // muri/strutture: def_blast
+        if (destruct_state(dz, i) == DESTRUCT_GONE) continue;
+        float ddx = sc->prop[i].x - x, ddy = sc->prop[i].y - y;
+        float d = sqrtf(ddx * ddx + ddy * ddy);
+        if (d > r) continue;
+        float D = dmg * (1.0f - d / r);
+        if (pd && D <= pd->resist) continue;            // resiste (es. idrante)
+        destruct_force(dz, sc, i, atan2f(ddy, ddx), on_prop_burst, &dc);  // via dal centro
+        changed = 1;
+    }
+    // FX §6: lampo + fireball al suolo, colonna di fumo poco sopra.
+    float zg = ter_z(x, y);
+    float of[3] = { x, zg + 0.4f, y }, os[3] = { x, zg + 0.9f, y };
+    fx_emit(fx, of, &EXPL_FLASH_DEF,    0.0f, -1.0f);
+    fx_emit(fx, of, &EXPL_FIREBALL_DEF, 0.0f, -1.0f);
+    fx_emit(fx, os, &EXPL_SMOKE_DEF,    0.0f, -1.0f);
+    au_play(SND_BOOM);
+    (void)s;
+    return changed;
+}
+
 static int build_prop_mesh(const Scene *sc, const PropCatalog *cat,
                            const Destruct *dz, const DefGame *g, float *buf) {
     int c = 0; static int warned = 0;
@@ -2535,10 +2622,15 @@ int main(int argc, char **argv){
         sim_run = sim_run && (gApp.state==APP_PREP || gApp.state==APP_ASSAULT);
 #endif
         if(sim_run){
-            if(blast_pending){ simp_apply_impulse_ex(s,blast_x,blast_y,8.0f,blast_str,blast_up);
-                blast_pending=0; printf("blast @ (%.1f,%.1f) str %.1f up %.2f\n",
-                    (double)blast_x,(double)blast_y,(double)blast_str,(double)blast_up);
-                au_play(SND_BOOM);
+            if(blast_pending){
+                // host_blast = def_blast (danno/impulso/strutture/cadaveri, +eventi
+                // gib/sangue) + FX §6 + burst dei prop decor. Il re-upload della
+                // mesh prop serve perché destruct_force non lo intercetta da solo.
+                if(host_blast(g,s,&sc,&gCatalog,&dz,&fx,blast_x,blast_y,BLAST_R,BLAST_DMG,blast_str,blast_up))
+                    prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g);
+                blast_pending=0; printf("blast @ (%.1f,%.1f) R %.1f D %.0f str %.1f up %.2f\n",
+                    (double)blast_x,(double)blast_y,(double)BLAST_R,(double)BLAST_DMG,
+                    (double)blast_str,(double)blast_up);
             }
             acc_t+=frame_t;
             while(acc_t>=FIXED_DT){
@@ -2565,6 +2657,12 @@ int main(int argc, char **argv){
                 simp_step(s,FIXED_DT);
                 Uint64 t1=SDL_GetPerformanceCounter();
                 def_update(g,FIXED_DT);
+                // danno da caduta (EXPLOSION_DESIGN §3.4): gli agenti atterrati in
+                // questo step (lanciati da un blast/impulso) prendono danno costante
+                // → ferite/gib+sangue via i soliti eventi. Chiude il buco M3.2
+                // (simp_landed non era mai consumato dall'host).
+                { int nl=simp_landed_count(s); const SimPHandle *lh=simp_landed(s);
+                  for(int k=0;k<nl;k++) def_damage_agent(g,lh[k],FALL_DMG); }
                 // rinculo torrette + vampa alla bocca + streak del proiettile:
                 // per chi ha sparato in questo step. build_turret_mesh legge il
                 // rinculo; il tracer parte dalla bocca del cannone verso l'impatto.
