@@ -65,6 +65,8 @@ test_anim
 game
 # explosions (EXPLOSION_DESIGN.md)
 test_blast
+# traps (GAME_PLAN fase D)
+test_traps
 progress.txt
 # audio single-header (lo scarica l'utente)
 vat/miniaudio.h
