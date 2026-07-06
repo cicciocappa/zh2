@@ -28,7 +28,12 @@ test_hybrid
 test_turret_siege
 test_car
 test_destruct
+test_cover
+test_lure
+test_mission
+test_prop_world
 bench_sim
+considerazioni.txt
 *.o
 frames/
 scene_saved.txt
