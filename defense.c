@@ -85,6 +85,7 @@ struct DefGame {
     float   *lure_delta[TURRET_CAP];
     int      lure_n[TURRET_CAP];
     int  *qbuf;         /* cap: acquire buffer (query_circle) */
+    SimPHandle *hbuf;   /* cap: blast handle snapshot (kills reorder indices) */
     int   raybuf[MAXPIERCE];
     float rayt[MAXPIERCE];
     SimPHandle rayh[MAXPIERCE];
@@ -117,6 +118,7 @@ DefGame *def_create(SimP *s, int cap) {
     g->wound = (uint8_t *)calloc((size_t)cap, 1);
     g->hheat = (float *)calloc((size_t)cap, sizeof(float));
     g->qbuf  = (int *)malloc((size_t)cap * sizeof(int));
+    g->hbuf  = (SimPHandle *)malloc((size_t)cap * sizeof(SimPHandle));
     g->gw = simp_grid_w(s); g->gh = simp_grid_h(s);
     size_t ncell = (size_t)g->gw * (size_t)g->gh;
     g->cell_struct = (int16_t *)malloc(ncell * sizeof(int16_t));
@@ -133,6 +135,7 @@ void def_destroy(DefGame *g) {
     if (!g) return;
     for (int i = 0; i < TURRET_CAP; i++) { free(g->lure_cell[i]); free(g->lure_delta[i]); }
     free(g->hp); free(g->body); free(g->wound); free(g->hheat); free(g->qbuf);
+    free(g->hbuf);
     free(g->cell_struct); free(g->atk_timer);
     free(g);
 }
@@ -208,6 +211,32 @@ static void wound_roll(DefGame *g, int i, int slot) {
     if (w == DW_CRAWLING) simp_set_vpref(g->s, i, V_CRAWL);
 }
 
+/* Light (non-heavy) damage of `dmg` HP to the live agent at index i / slot.
+ * Shared by turret shots (dmg = damage*transmit) and explosions/fall damage
+ * (direct HP). Handles death (corpse + danger + DEATH event), the one-shot
+ * wound roll and the HIT/WOUND render events. No-op on dmg <= 0. */
+static void hurt_light(DefGame *g, int i, int slot, int dmg) {
+    if (dmg <= 0) return;                 /* cover soaked it: no wound/flinch */
+    g->hp[slot] -= dmg;
+    if (g->hp[slot] <= 0) { die_light(g, i, slot); return; }
+    int fresh = (g->wound[slot] == DW_NONE);
+    if (fresh) wound_roll(g, i, slot);
+    DefWound w = (DefWound)g->wound[slot];
+    DefBody  body = (DefBody)g->body[slot];
+    /* gore d'IMPATTO, una volta, al momento della ferita fresca. */
+    if (fresh && g->ev_cb) {
+        DefEvent ge = (w == DW_CRAWLING)   ? DEF_EV_WOUND_LEGS
+                    : (w == DW_MAIMED_ARM) ? DEF_EV_WOUND_ARM
+                                           : DEF_EV_WOUND_BLEED;
+        g->ev_cb(g->ev_user, slot, i, body, ge);
+    }
+    /* HIT flinch + stun SOLO sul sanguinamento (vedi apply_damage per il perché
+     * una mutilazione appena inflitta non stunna). */
+    int mutilated_now = fresh && (w == DW_MAIMED_ARM || w == DW_CRAWLING);
+    if (g->ev_cb && !mutilated_now)
+        g->ev_cb(g->ev_user, slot, i, body, DEF_EV_HIT);
+}
+
 /* Apply one shot's worth of damage to a live handle. Resolved from handle so
  * earlier kills in the same (piercing) shot don't invalidate it. transmit in
  * (0,1] scales the shot through semi-transparent cover (ENTITY_DESIGN axis C):
@@ -230,32 +259,9 @@ static void apply_damage(DefGame *g, SimPHandle h, const DefTurret *t,
         }
         gib(g, i);                             /* normal, or tank's last hit */
     } else {
-        int dmg = (int)(t->damage * transmit + 0.5f);
-        if (dmg <= 0) return;              /* cover soaked it: no wound/flinch */
-        g->hp[slot] -= dmg;
-        if (g->hp[slot] <= 0) { die_light(g, i, slot); return; }
-        int fresh = (g->wound[slot] == DW_NONE);
-        if (fresh) wound_roll(g, i, slot);
-        DefWound w = (DefWound)g->wound[slot];
-        DefBody  body = (DefBody)g->body[slot];
-        /* gore d'IMPATTO, una volta, al momento della ferita fresca: schizzi
-         * sempre, + l'arto/gli arti volanti sulle mutilazioni (host). */
-        if (fresh && g->ev_cb) {
-            DefEvent ge = (w == DW_CRAWLING)   ? DEF_EV_WOUND_LEGS
-                        : (w == DW_MAIMED_ARM) ? DEF_EV_WOUND_ARM
-                                               : DEF_EV_WOUND_BLEED;
-            g->ev_cb(g->ev_user, slot, i, body, ge);
-        }
-        /* HIT flinch + stun SOLO sul sanguinamento (o ri-colpo su uno gia'
-         * ferito: "se e' gia' insanguinato, solo l'animazione hit"). Una
-         * MUTILAZIONE appena inflitta (braccio/gambe) NON stunna: il suo
-         * feedback e' lo swap di modello (monco/crawler) + gli arti/gib che
-         * volano (host); uno stun qui congelerebbe il nuovo body a piedi fermi
-         * (la walk del crawler e' guidata dalla distanza -> resterebbe al
-         * frame 0). */
-        int mutilated_now = fresh && (w == DW_MAIMED_ARM || w == DW_CRAWLING);
-        if (g->ev_cb && !mutilated_now)
-            g->ev_cb(g->ev_user, slot, i, body, DEF_EV_HIT);
+        /* the wound-not-stun subtlety lives in hurt_light (shared with blasts):
+         * a maimed limb swaps the model + throws gore instead of flinching. */
+        hurt_light(g, i, slot, (int)(t->damage * transmit + 0.5f));
     }
 }
 
@@ -637,6 +643,78 @@ void def_struct_damage(DefGame *g, int id, float dmg) {
     g->structs[id].hp -= dmg;
     if (g->structs[id].hp <= 0.0f) collapse_structure(g, id);
 }
+/* Direct light damage to a live agent (fall damage, future scripted hazards).
+ * Handle-resolved so it survives reordering between the step and the call. */
+void def_damage_agent(DefGame *g, SimPHandle h, float dmg) {
+    if (dmg <= 0.0f) return;
+    int i = simp_index_of(g->s, h);
+    if (i < 0) return;
+    hurt_light(g, i, simp_slot_of(g->s, i), (int)(dmg + 0.5f));
+}
+
+/* Explosion primitive (EXPLOSION_DESIGN.md §3): ONE geometry drives both damage
+ * and physics via the same linear falloff D(d) = dmg*(1 - d/r). Order:
+ *   1. agents  — falloff damage (dead -> corpses a later blast can sweep), then
+ *      a radial impulse + vertical kick on the survivors;
+ *   2. structs — D(d_min) HP to every structure with a cell in range (walls,
+ *      barricades, turrets, siegeable props: one path); collapse -> reroute;
+ *   3. corpses — vaporised, nav pile fields zeroed.
+ * Deterministic (no RNG beyond the existing per-slot wound/corpse hashes). The
+ * host layers the fiction (FX, scorch, prop archetypes) on top. */
+void def_blast(DefGame *g, float x, float y, float r, float dmg,
+               float strength, float up_ratio) {
+    SimP *s = g->s;
+    if (r <= 0.0f) return;
+    const float *px = simp_px(s), *py = simp_py(s);
+
+    /* 1. agents — snapshot handles first: killing an agent swap-pops another
+     *    into its index, so raw indices from the query go stale mid-loop. */
+    int n = simp_query_circle(s, x, y, r, g->qbuf, g->cap, 0);
+    for (int k = 0; k < n; k++) g->hbuf[k] = simp_handle_of(s, g->qbuf[k]);
+    for (int k = 0; k < n; k++) {
+        int i = simp_index_of(s, g->hbuf[k]);
+        if (i < 0) continue;                       /* killed earlier this blast */
+        float dx = px[i] - x, dy = py[i] - y;
+        float d = sqrtf(dx * dx + dy * dy);
+        float dd = dmg * (1.0f - d / r);
+        if (dd <= 0.0f) continue;
+        hurt_light(g, i, simp_slot_of(s, i), (int)(dd + 0.5f));
+    }
+    if (strength > 0.0f)
+        simp_apply_impulse_ex(s, x, y, r, strength, up_ratio);
+
+    /* 2. structures — collect the min blast distance per structure BEFORE
+     *    applying any damage (a collapse frees cells / recommits the nav, which
+     *    would mutate cell_struct mid-scan). Cell-center distance approximates
+     *    d_min; touched via a sentinel of -1. */
+    float cs = simp_cell_size(s);
+    float mind[STRUCT_CAP];
+    for (int j = 0; j < g->nstructs; j++) mind[j] = -1.0f;
+    int cx0 = (int)((x - r) / cs), cy0 = (int)((y - r) / cs);
+    int cx1 = (int)((x + r) / cs), cy1 = (int)((y + r) / cs);
+    if (cx0 < 0) cx0 = 0;
+    if (cy0 < 0) cy0 = 0;
+    if (cx1 >= g->gw) cx1 = g->gw - 1;
+    if (cy1 >= g->gh) cy1 = g->gh - 1;
+    for (int cy = cy0; cy <= cy1; cy++)
+        for (int cx = cx0; cx <= cx1; cx++) {
+            int sid = g->cell_struct[cy * g->gw + cx];
+            if (sid < 0 || g->structs[sid].collapsed) continue;
+            float ddx = (cx + 0.5f) * cs - x, ddy = (cy + 0.5f) * cs - y;
+            float d = sqrtf(ddx * ddx + ddy * ddy);
+            if (d > r) continue;
+            if (mind[sid] < 0.0f || d < mind[sid]) mind[sid] = d;
+        }
+    for (int j = 0; j < g->nstructs; j++)
+        if (mind[j] >= 0.0f) {
+            float dd = dmg * (1.0f - mind[j] / r);
+            if (dd > 0.0f) def_struct_damage(g, j, dd);
+        }
+
+    /* 3. corpses — fire/blast vaporises the pile (physical discs + nav fields). */
+    simp_corpse_clear(s, x, y, r);
+}
+
 int def_lost(const DefGame *g) { return g->lost; }
 
 void def_update(DefGame *g, float dt) {

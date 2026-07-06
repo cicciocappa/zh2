@@ -37,7 +37,8 @@ all: test_particles test_impulse test_dormant test_stun test_handles test_query 
      test_types test_density_route test_jam test_blood_fear test_scene test_siege test_turret \
      test_defense test_base test_director test_terrain test_pick test_editor \
      test_breakthrough test_props test_vat_layer test_turret_siege test_drag test_hybrid test_car \
-     test_destruct test_place test_app test_anim test_cover test_prop_world test_mission test_lure
+     test_destruct test_place test_app test_anim test_cover test_prop_world test_mission test_lure \
+     test_blast
 
 # audio backend (GAME_APP_DESIGN.md): se l'utente ha scaricato miniaudio.h in
 # vat/, il target `game` suona; altrimenti backend nullo (muto), zero errori.
@@ -156,6 +157,10 @@ test_mission: test_mission.c mission.c mission.h scene.c sim_particles.c defense
 test_lure: test_lure.c sim_particles.c defense.c defense.h
 	$(CC) $(CFLAGS) -o $@ test_lure.c sim_particles.c defense.c $(LDLIBS)
 
+# esplosioni: primitiva def_blast (agenti/strutture/cadaveri) + danno caduta
+test_blast: test_blast.c sim_particles.c defense.c defense.h sim_particles.h
+	$(CC) $(CFLAGS) -o $@ test_blast.c sim_particles.c defense.c $(LDLIBS)
+
 # VAT render-layer animation bookkeeping (headless, no GL): hit one-shot + death pool
 test_vat_layer: test_vat_layer.c vat/vat_layer.c sim_particles.c vat/vat_layer.h sim_particles.h
 	$(CC) $(CFLAGS) -I. -o $@ test_vat_layer.c vat/vat_layer.c sim_particles.c $(LDLIBS)
@@ -250,6 +255,7 @@ test: all
 	./test_prop_world
 	./test_mission
 	./test_lure
+	./test_blast
 	./test_cover
 	./test_vat_layer
 	./test_drag
@@ -262,7 +268,7 @@ clean:
 	rm -rf test_particles test_impulse test_dormant test_handles test_query \
 	       test_corpses test_corpse_pile test_types test_density_route test_jam test_blood_fear test_scene \
 	       test_siege test_turret test_defense test_base test_director test_terrain bench_sim test_pick test_editor test_breakthrough test_props test_vat_layer test_drag test_hybrid test_car test_destruct test_place \
-	       test_app test_anim test_cover test_prop_world test_mission test_lure game \
+	       test_app test_anim test_cover test_prop_world test_mission test_lure test_blast game \
 	       sandbox sprite_view vat_view vat_horde frames *.exe vat/*.o
 
 .PHONY: all test clean

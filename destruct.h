@@ -50,6 +50,15 @@ void destruct_init(Destruct *d, const Scene *sc, const PropCatalog *cat);
 int destruct_update(Destruct *d, const SimP *s, const Scene *sc, float dt,
                     DestructBurstFn on_burst, void *ud);
 
+/* Programmatic burst (EXPLOSION_DESIGN.md §4/§8): shatter prop i NOW, skipping
+ * any topple (a blast wave doesn't tip it over slowly). Works on INERT props
+ * too — decor caught in a blast bursts generically (empty debris style => the
+ * host picks a default preset). No-op if already GONE or i out of range. dir =
+ * debris fly heading (rad, e.g. away from the blast center). Fires on_burst once
+ * and leaves the prop GONE. */
+void destruct_force(Destruct *d, const Scene *sc, int i, float dir,
+                    DestructBurstFn on_burst, void *ud);
+
 /* Render helpers (host reads per frame). */
 int   destruct_state(const Destruct *d, int i);
 float destruct_topple_t(const Destruct *d, int i);   /* 0..1 tilt progress    */

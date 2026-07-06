@@ -21,10 +21,10 @@
  * "-" = today's inert decor (retro-compatible; the destructible trio accepts
  * "-" placeholders so later columns can be reached):
  *
- *     # key  mesh scale label [trig debris topple] [solid H [WxD]] [hp mult] [opac] [mass]
- *     fence  -    1.0   Fence  -    -      -        solid 1.8 2x0.5   350 0.6   0.3    -
- *     bus    -    3.0   Bus    -    -      -        solid 2.6 11x2.5  inf -     1.0    inf
- *     wreck  -    1.4   Wreck  -    -      -        -                 -   -     0.5    120
+ *     # key  mesh scale label [trig debris topple] [solid H [WxD]] [hp mult] [opac] [mass] [resist burn]
+ *     fence  -    1.0   Fence  -    -      -        solid 1.8 2x0.5   350 0.6   0.3    -    -   -
+ *     bus    -    3.0   Bus    -    -      -        solid 2.6 11x2.5  inf -     1.0    inf  -   6
+ *     wreck  -    1.4   Wreck  -    -      -        -                 -   -     0.5    120  -   -
  *
  * `solid H` = the prop's footprint is raised as nav wall (height H meters,
  * render extrusion + flyer clearance); the optional `WxD` token right after H
@@ -33,9 +33,10 @@
  * omitted = one nav cell. `hp mult` = siegeable structure with
  * that HP pool ("inf" = indestructible) and wall-cost tier multiplier;
  * `opac` = bullet opacity 0..1 (axis C, simp_set_opacity); `mass` = draggable
- * mass in walker units ("inf" or "-" with solid = not draggable). The host
- * applies these at instantiation via prop_world_apply (prop_world.h); the
- * catalog only stores them.
+ * mass in walker units ("inf" or "-" with solid = not draggable). `resist` =
+ * blast damage threshold (EXPLOSION_DESIGN §5) and `burn` = seconds of fire on
+ * ignition. The host applies these at instantiation via prop_world_apply
+ * (prop_world.h); the catalog only stores them.
  */
 #ifndef PROPS_H
 #define PROPS_H
@@ -66,6 +67,11 @@ typedef struct {
     float opacity;               /* bullet opacity 0..1 (axis C)               */
     float mass;                  /* draggable mass, walker units (axis D);
                                     0 = not draggable, INFINITY = immovable    */
+    /* explosion response (EXPLOSION_DESIGN.md §5); zeros = default. */
+    float resist;                /* blast damage threshold: D(d) <= resist =>
+                                    ignore the blast (0 = light decor always
+                                    bursts). Ignored for hp props (pool decides) */
+    float burn;                  /* seconds of fire on ignition (0 = doesn't burn) */
 } PropDef;
 
 typedef struct {

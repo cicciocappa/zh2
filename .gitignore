@@ -63,6 +63,8 @@ test_place
 test_app
 test_anim
 game
+# explosions (EXPLOSION_DESIGN.md)
+test_blast
 progress.txt
 # audio single-header (lo scarica l'utente)
 vat/miniaudio.h

@@ -67,6 +67,17 @@ int destruct_update(Destruct *d, const SimP *s, const Scene *sc, float dt,
     return changed;
 }
 
+void destruct_force(Destruct *d, const Scene *sc, int i, float dir,
+                    DestructBurstFn on_burst, void *ud) {
+    if (i < 0 || i >= d->n) return;
+    if (d->state[i] == DESTRUCT_GONE) return;   /* already shattered */
+    const PropDef *pd = d->def[i];              /* may be NULL / inert */
+    d->dir[i]   = dir;
+    d->state[i] = DESTRUCT_GONE;                /* no topple: the wave is instant */
+    if (on_burst)
+        on_burst(i, pd ? pd->debris : "", sc->prop[i].x, sc->prop[i].y, dir, ud);
+}
+
 int destruct_state(const Destruct *d, int i) {
     return (i >= 0 && i < d->n) ? d->state[i] : DESTRUCT_GONE;
 }

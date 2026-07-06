@@ -96,6 +96,20 @@ int prop_catalog_load(const char *path, PropCatalog *c) {
         if (tok) {                                      /* axis D: drag mass */
             if (strcmp(tok, "inf") == 0) d->mass = INFINITY;
             else if (strcmp(tok, "-") != 0) d->mass = (float)atof(tok);
+            tok = strtok_r(NULL, " \t", &save);
+        }
+        if (tok) {                                      /* §5: resist threshold */
+            if (strcmp(tok, "-") != 0) {
+                d->resist = (float)atof(tok);
+                if (d->resist < 0.0f) d->resist = 0.0f;
+            }
+            tok = strtok_r(NULL, " \t", &save);
+        }
+        if (tok) {                                      /* §5: burn seconds */
+            if (strcmp(tok, "-") != 0) {
+                d->burn = (float)atof(tok);
+                if (d->burn < 0.0f) d->burn = 0.0f;
+            }
         }
         c->n++;
     }

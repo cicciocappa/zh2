@@ -107,6 +107,17 @@ int   def_remove_turret(DefGame *g, int tid);
  * behaves exactly like the siege path (cells freed, reroute, debris, loss on
  * core). No-op on invalid/collapsed ids. */
 void  def_struct_damage(DefGame *g, int id, float dmg);
+
+/* ---- explosions (EXPLOSION_DESIGN.md §3/§8) ----
+ * def_blast: one event (x,y,radius r, damage dmg, impulse strength/up_ratio)
+ * that damages agents (linear falloff, dead -> corpses), pushes/lofts the
+ * survivors, damages every structure with a cell in range (D at the nearest
+ * cell -> collapse+reroute), and vaporises corpses in range. Friendly fire is
+ * full (barricades/turrets/props in range take damage too). Deterministic.
+ * def_damage_agent: direct light HP to one live agent (fall damage, hazards). */
+void  def_blast(DefGame *g, float x, float y, float r, float dmg,
+                float strength, float up_ratio);
+void  def_damage_agent(DefGame *g, SimPHandle h, float dmg);
 /* Structure id owning nav cell (cx,cy), or -1 (none / freed on collapse). Lets
  * the renderer rebuild the live structure mesh (collapsed cells disappear). */
 int   def_cell_struct(const DefGame *g, int cx, int cy);

@@ -1,7 +1,18 @@
 # Esplosioni × mondo — design tecnico
 
-> **STATO: DECISO (2026-07-04, decisioni §10 sciolte dall'utente in
-> giornata; implementazione da fare).** Nato dall'arrivo dei prop solidi
+> **STATO: CORE FATTO (2026-07-06), fiction host da fare.** Fase 1 (parte
+> deterministica, `test_blast` PASS): `def_blast` + `def_damage_agent` in
+> defense.c (§3.1–3.3 + danno diretto agenti), `destruct_force` in destruct.c
+> (§4/§5 burst programmatico), colonne catalogo `resist`/`burn` in props
+> (§5). NOTA: `def_blast` vaporizza la PILA di cadaveri (`simp_corpse_clear`:
+> mass/pack/height) ma NON il campo `danger` (blood-fear): non esiste una
+> primitiva core per azzerare `danger` in un raggio e il design vieta nuove
+> API core → il sangue resta (e decade da solo), coerente con la fiction. Fase
+> 2 DA FARE (visiva, in `vat_horde`): `host_blast` (archetipi prop §4, FX §6,
+> scorch §7), pool decal, drain `simp_landed`→`def_damage_agent` (§3.4),
+> migrazione E/RMB/`VAT_HORDE_BLAST`.
+>
+> Decisioni §10 sciolte dall'utente il 2026-07-04. Nato dall'arrivo dei prop solidi
 > (ENTITY_DESIGN §6+§8.5 applicati, `prop_world.c`): ora che il mondo è
 > popolato di oggetti, serve fissare come reagiscono a un'esplosione. Questo
 > doc definisce la **primitiva di blast condivisa** che useranno l'`E`/RMB del
