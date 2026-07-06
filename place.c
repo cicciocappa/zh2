@@ -53,7 +53,10 @@ void pl_init(Placement *p, const PlItem *catalog, int n) {
     p->valid = 0; p->reason = PL_BADITEM;
     p->blocked = 0; p->blocked_user = 0;
     p->undo = 0;
+    p->traps = 0;
 }
+
+void pl_set_traps(Placement *p, Traps *t) { p->traps = t; }
 
 /* ---- PREP undo (place.h) ------------------------------------------------ */
 
@@ -64,7 +67,7 @@ void pl_set_undo(Placement *p, PlUndo *u) {
 
 void pl_undo_clear(Placement *p) { if (p->undo) p->undo->n = 0; }
 
-static void undo_push(Placement *p, int nstructs, int nturrets, int cost) {
+static void undo_push(Placement *p, int nstructs, int nturrets, int ntraps, int cost) {
     PlUndo *u = p->undo;
     if (!u) return;
     if (u->n == PL_UNDO_MAX) {                   /* drop the OLDEST record */
@@ -73,6 +76,7 @@ static void undo_push(Placement *p, int nstructs, int nturrets, int cost) {
     }
     u->rec[u->n].nstructs = nstructs;
     u->rec[u->n].nturrets = nturrets;
+    u->rec[u->n].ntraps = ntraps;
     u->rec[u->n].cost = cost;
     u->n++;
 }
@@ -84,6 +88,8 @@ int pl_undo_pop(Placement *p, DefGame *g, SimP *s) {
     /* remove-LAST can only fail if someone else mutated defense after our
      * record (LIFO broken, e.g. assault started without clearing): drop the
      * whole stack rather than refund entities we did not remove. */
+    for (int k = 0; k < r.ntraps; k++)
+        if (p->traps && !traps_remove_last(p->traps)) { u->n = 0; return 0; }
     for (int k = 0; k < r.nturrets; k++)
         if (!def_remove_turret(g, def_turret_count(g) - 1)) { u->n = 0; return 0; }
     int walls = 0;
@@ -146,7 +152,7 @@ int pl_validate(Placement *p, DefGame *g, SimP *s) {
     } else if (it->kind == PL_CAR) {
         float ax, ay, bx, by; pl_car_discs(it, p->cx, p->cy, p->rot90, &ax, &ay, &bx, &by);
         free = simp_free_at(s, ax, ay, it->radius) && simp_free_at(s, bx, by, it->radius);
-    } else { /* PL_TURRET (point) / PL_BIN (disc) */
+    } else { /* PL_TURRET (point) / PL_BIN (disc) / PL_TRAP (mine, small disc) */
         free = simp_free_at(s, p->cx, p->cy, it->radius);
     }
     if (!free) { p->valid = 0; p->reason = PL_OVERLAP; return 0; }
@@ -190,6 +196,24 @@ static int commit_barricade(DefGame *g, SimP *s, const PlItem *it,
     if (it->mass > 0.0f) def_struct_set_debris(g, sid, it->mass);  /* hybrid */
     simp_terrain_commit(s);                                        /* reroute */
     return 1;
+}
+
+/* Register a MINE into the attached Traps table (GAME_PLAN fase D). Trap params
+ * come from the trailing PlItem fields; 0 = a sensible commit-side default so a
+ * bare catalog row still yields a working mine. No-op (returns 0) with no table
+ * attached — sandbox/tests that carry no traps. */
+static int commit_trap(Traps *tr, const PlItem *it, float cx, float cy) {
+    if (!tr) return 0;
+    TrapDef d = {0};
+    d.kind      = TRAP_MINE;
+    d.x = cx; d.y = cy;
+    d.trig_r    = it->trig_r    > 0.0f ? it->trig_r    : 1.2f;
+    d.blast_r   = it->blast_r   > 0.0f ? it->blast_r   : 6.0f;
+    d.dmg       = it->blast_dmg > 0.0f ? it->blast_dmg : 150.0f;
+    d.strength  = it->strength  > 0.0f ? it->strength  : 22.0f;
+    d.up        = it->up_ratio  > 0.0f ? it->up_ratio  : 0.6f;
+    d.arm_delay = it->arm_delay;                       /* 0 = armed immediately */
+    return traps_add(tr, &d) >= 0;
 }
 
 static int commit_car(SimP *s, const PlItem *it, float cx, float cy, int rot90) {
@@ -313,7 +337,7 @@ int pl_line_commit(Placement *p, DefGame *g, SimP *s,
     }
     simp_terrain_commit(s);                      /* one reroute for the line */
     def_spend(g, pl.cost);
-    undo_push(p, pl.nmod, 0, pl.cost);           /* one record = whole line */
+    undo_push(p, pl.nmod, 0, 0, pl.cost);        /* one record = whole line */
     return 1;
 }
 
@@ -327,12 +351,14 @@ int pl_commit(Placement *p, DefGame *g, SimP *s) {
         case PL_TURRET:    ok = commit_turret(g, it, p->cx, p->cy); break;
         case PL_BIN:       ok = simp_drag_add(s, p->cx, p->cy, it->radius, it->mass) >= 0; break;
         case PL_CAR:       ok = commit_car(s, it, p->cx, p->cy, p->rot90); break;
+        case PL_TRAP:      ok = commit_trap(p->traps, it, p->cx, p->cy); break;
         default: break;
     }
     if (ok) {
         def_spend(g, it->cost);                 /* deduct only on success */
-        if      (it->kind == PL_BARRICADE) undo_push(p, 1, 0, it->cost);
-        else if (it->kind == PL_TURRET)    undo_push(p, 0, 1, it->cost);
+        if      (it->kind == PL_BARRICADE) undo_push(p, 1, 0, 0, it->cost);
+        else if (it->kind == PL_TURRET)    undo_push(p, 0, 1, 0, it->cost);
+        else if (it->kind == PL_TRAP)      undo_push(p, 0, 0, 1, it->cost);
         /* BIN/CAR: no draggable-removal primitive — not recorded (place.h) */
     }
     return ok;

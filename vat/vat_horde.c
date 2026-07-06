@@ -484,11 +484,11 @@ static int ter_blocked(float x, float y){ return gTerOn && terrain_hole(&gTer, x
 // --- piazzamento a runtime (PLACEMENT_DESIGN.md): catalogo + veto static ---
 static int pl_blocked_host(void *u, float x, float y){ (void)u; return ter_blocked(x,y); }
 static const PlItem PL_CAT[] = {
-    /* kind        name          cost   w     h    radius  hp     mass   combat: 0 = default (place.h) */
-    { PL_BARRICADE, "Barricata",   50,  4.0f, 1.0f, 0.0f, 300.0f, 30.0f, 0, 0,0,0, 0 },  /* mass>0 = detriti al crollo */
-    { PL_TURRET,    "Torretta",   100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 0, 0,0,0, 0 },
-    { PL_BIN,       "Cassonetto",  20,  0.0f, 0.0f, 0.6f,   0.0f, 12.0f, 0, 0,0,0, 0 },
-    { PL_CAR,       "Auto",        60,  3.0f, 0.0f, 0.6f,   0.0f, 20.0f, 0, 0,0,0, 0 },
+    /* kind        name          cost   w     h    radius  hp     mass   combat: 0 = default | trap: 0 */
+    { PL_BARRICADE, "Barricata",   50,  4.0f, 1.0f, 0.0f, 300.0f, 30.0f, 0, 0,0,0, 0, 0,0,0,0,0,0 },  /* mass>0 = detriti al crollo */
+    { PL_TURRET,    "Torretta",   100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 0, 0,0,0, 0, 0,0,0,0,0,0 },
+    { PL_BIN,       "Cassonetto",  20,  0.0f, 0.0f, 0.6f,   0.0f, 12.0f, 0, 0,0,0, 0, 0,0,0,0,0,0 },
+    { PL_CAR,       "Auto",        60,  3.0f, 0.0f, 0.6f,   0.0f, 20.0f, 0, 0,0,0, 0, 0,0,0,0,0,0 },
 };
 #define PL_NCAT ((int)(sizeof(PL_CAT)/sizeof(PL_CAT[0])))
 
@@ -499,11 +499,14 @@ static const PlItem PL_CAT[] = {
 // cancellata è il cover semi-trasparente dell'asse C: opacità 0.3, le torrette
 // sparano attraverso (test_cover). Parametri combat a 0 = default di place.c.
 static const PlItem PL_CAT_GAME[] = {
-    /* kind        name          cost   w     h    radius  hp     mass   heavy range per dmg  opac */
-    { PL_TURRET,    "Leggera",    100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 0,    0,0,0,         0     },
-    { PL_TURRET,    "Pesante",    250,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 1,    0,0,0,         0     },
-    { PL_BARRICADE, "Barricata",   12,  2.5f, 1.0f, 0.0f, 300.0f, 30.0f, 0,    0,0,0,         0     },
-    { PL_BARRICADE, "Cancellata",  20,  2.5f, 1.0f, 0.0f, 200.0f, 15.0f, 0,    0,0,0,         0.3f  },
+    /* kind        name          cost   w     h    radius  hp     mass   heavy range per dmg  opac  trap: trig blastR dmg str up arm */
+    { PL_TURRET,    "Leggera",    100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 0,    0,0,0,         0,    0,0,0,0,0,0 },
+    { PL_TURRET,    "Pesante",    250,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 1,    0,0,0,         0,    0,0,0,0,0,0 },
+    { PL_BARRICADE, "Barricata",   12,  2.5f, 1.0f, 0.0f, 300.0f, 30.0f, 0,    0,0,0,         0,    0,0,0,0,0,0 },
+    { PL_BARRICADE, "Cancellata",  20,  2.5f, 1.0f, 0.0f, 200.0f, 15.0f, 0,    0,0,0,         0.3f, 0,0,0,0,0,0 },
+    /* MINA (GAME_PLAN fase D): one-shot a pressione. trigger 1.2 m, blast R 6 /
+     * dmg 150, loft 22/0.6, arm 1 s (non ti esplode in mano al piazzamento). */
+    { PL_TRAP,      "Mina",        40,  0.0f, 0.0f, 0.3f,   0.0f,  0.0f, 0,    0,0,0,         0,    1.2f,6.0f,150.0f,22.0f,0.6f,1.0f },
 };
 #define PL_NCAT_GAME ((int)(sizeof(PL_CAT_GAME)/sizeof(PL_CAT_GAME[0])))
 
@@ -558,63 +561,79 @@ static PropWorld gPropW;
 typedef struct { float *v; int nv; } PropModel;    // nv verts * 9 float
 static PropModel gPropM[PROP_MAX_DEFS];
 #define PROP_GLB_MAX_VERTS 6000
+// Carica un glb come triangle soup 9-float (pos+nrm+rgb): colore =
+// baseColorFactor del materiale, transform mondo dei nodi applicato, posizioni
+// scalate; tutti i nodi con mesh concatenati. 1 = ok (out->v malloc'd, va
+// free'd dal chiamante), 0 = assente/troppo grande -> il chiamante usa un
+// placeholder. Condiviso da prop e mina.
+static int load_glb_soup(const char *path, const char *label, float scale, PropModel *out){
+    out->v=NULL; out->nv=0;
+    cgltf_options opt={0}; cgltf_data *data=NULL;
+    if(cgltf_parse_file(&opt,path,&data)!=cgltf_result_success){
+        fprintf(stderr,"%s: %s assente/illeggibile -> placeholder\n",label,path); return 0; }
+    if(cgltf_load_buffers(&opt,data,path)!=cgltf_result_success){
+        fprintf(stderr,"%s: buffers fail -> placeholder\n",label);
+        cgltf_free(data); return 0; }
+    size_t tot=0;
+    for(size_t n=0;n<data->nodes_count;n++){ cgltf_node *nd=&data->nodes[n];
+        if(!nd->mesh) continue;
+        for(size_t p=0;p<nd->mesh->primitives_count;p++){
+            cgltf_primitive *pr=&nd->mesh->primitives[p];
+            if(pr->type!=cgltf_primitive_type_triangles||!pr->indices) continue;
+            tot+=pr->indices->count; } }
+    if(!tot || tot>PROP_GLB_MAX_VERTS){
+        if(tot) fprintf(stderr,"%s: %d vert > cap %d -> placeholder\n",
+                        label,(int)tot,PROP_GLB_MAX_VERTS);
+        cgltf_free(data); return 0; }
+    float *v=malloc(tot*9*sizeof(float)); size_t c=0;
+    for(size_t n=0;n<data->nodes_count;n++){ cgltf_node *nd=&data->nodes[n];
+        if(!nd->mesh) continue;
+        float M[16]; cgltf_node_transform_world(nd,M);
+        for(size_t p=0;p<nd->mesh->primitives_count;p++){
+            cgltf_primitive *pr=&nd->mesh->primitives[p];
+            if(pr->type!=cgltf_primitive_type_triangles||!pr->indices) continue;
+            cgltf_accessor *pos=NULL,*nrm=NULL;
+            for(size_t a=0;a<pr->attributes_count;a++){ cgltf_attribute *at=&pr->attributes[a];
+                if(at->type==cgltf_attribute_type_position) pos=at->data;
+                else if(at->type==cgltf_attribute_type_normal) nrm=at->data; }
+            if(!pos) continue;
+            float col[3]={0.65f,0.65f,0.65f};
+            if(pr->material && pr->material->has_pbr_metallic_roughness){
+                const cgltf_float *bc=pr->material->pbr_metallic_roughness.base_color_factor;
+                col[0]=bc[0]; col[1]=bc[1]; col[2]=bc[2]; }
+            for(size_t k=0;k<pr->indices->count;k++){
+                cgltf_size ix=cgltf_accessor_read_index(pr->indices,k);
+                float P[3]={0,0,0}, N[3]={0,1,0};
+                cgltf_accessor_read_float(pos,ix,P,3);
+                if(nrm) cgltf_accessor_read_float(nrm,ix,N,3);
+                float *o=v+c*9;
+                o[0]=(M[0]*P[0]+M[4]*P[1]+M[8]*P[2]+M[12])*scale;
+                o[1]=(M[1]*P[0]+M[5]*P[1]+M[9]*P[2]+M[13])*scale;
+                o[2]=(M[2]*P[0]+M[6]*P[1]+M[10]*P[2]+M[14])*scale;
+                o[3]=M[0]*N[0]+M[4]*N[1]+M[8]*N[2];
+                o[4]=M[1]*N[0]+M[5]*N[1]+M[9]*N[2];
+                o[5]=M[2]*N[0]+M[6]*N[1]+M[10]*N[2];
+                o[6]=col[0]; o[7]=col[1]; o[8]=col[2];
+                c++; } } }
+    cgltf_free(data);
+    out->v=v; out->nv=(int)c; return 1;
+}
 static void load_prop_models(const PropCatalog *cat){
     int loaded=0, with_mesh=0;
     for(int i=0;i<cat->n;i++){
         const PropDef *d=&cat->defs[i]; gPropM[i].v=NULL; gPropM[i].nv=0;
         if(!d->mesh[0]) continue;
         with_mesh++;
-        cgltf_options opt={0}; cgltf_data *data=NULL;
-        if(cgltf_parse_file(&opt,d->mesh,&data)!=cgltf_result_success){
-            fprintf(stderr,"prop '%s': %s assente/illeggibile -> placeholder\n",d->key,d->mesh); continue; }
-        if(cgltf_load_buffers(&opt,data,d->mesh)!=cgltf_result_success){
-            fprintf(stderr,"prop '%s': buffers fail -> placeholder\n",d->key);
-            cgltf_free(data); continue; }
-        size_t tot=0;
-        for(size_t n=0;n<data->nodes_count;n++){ cgltf_node *nd=&data->nodes[n];
-            if(!nd->mesh) continue;
-            for(size_t p=0;p<nd->mesh->primitives_count;p++){
-                cgltf_primitive *pr=&nd->mesh->primitives[p];
-                if(pr->type!=cgltf_primitive_type_triangles||!pr->indices) continue;
-                tot+=pr->indices->count; } }
-        if(!tot || tot>PROP_GLB_MAX_VERTS){
-            if(tot) fprintf(stderr,"prop '%s': %d vert > cap %d -> placeholder\n",
-                            d->key,(int)tot,PROP_GLB_MAX_VERTS);
-            cgltf_free(data); continue; }
-        float *v=malloc(tot*9*sizeof(float)); size_t c=0;
-        for(size_t n=0;n<data->nodes_count;n++){ cgltf_node *nd=&data->nodes[n];
-            if(!nd->mesh) continue;
-            float M[16]; cgltf_node_transform_world(nd,M);
-            for(size_t p=0;p<nd->mesh->primitives_count;p++){
-                cgltf_primitive *pr=&nd->mesh->primitives[p];
-                if(pr->type!=cgltf_primitive_type_triangles||!pr->indices) continue;
-                cgltf_accessor *pos=NULL,*nrm=NULL;
-                for(size_t a=0;a<pr->attributes_count;a++){ cgltf_attribute *at=&pr->attributes[a];
-                    if(at->type==cgltf_attribute_type_position) pos=at->data;
-                    else if(at->type==cgltf_attribute_type_normal) nrm=at->data; }
-                if(!pos) continue;
-                float col[3]={0.65f,0.65f,0.65f};
-                if(pr->material && pr->material->has_pbr_metallic_roughness){
-                    const cgltf_float *bc=pr->material->pbr_metallic_roughness.base_color_factor;
-                    col[0]=bc[0]; col[1]=bc[1]; col[2]=bc[2]; }
-                for(size_t k=0;k<pr->indices->count;k++){
-                    cgltf_size ix=cgltf_accessor_read_index(pr->indices,k);
-                    float P[3]={0,0,0}, N[3]={0,1,0};
-                    cgltf_accessor_read_float(pos,ix,P,3);
-                    if(nrm) cgltf_accessor_read_float(nrm,ix,N,3);
-                    float *o=v+c*9;
-                    o[0]=(M[0]*P[0]+M[4]*P[1]+M[8]*P[2]+M[12])*d->scale;
-                    o[1]=(M[1]*P[0]+M[5]*P[1]+M[9]*P[2]+M[13])*d->scale;
-                    o[2]=(M[2]*P[0]+M[6]*P[1]+M[10]*P[2]+M[14])*d->scale;
-                    o[3]=M[0]*N[0]+M[4]*N[1]+M[8]*N[2];
-                    o[4]=M[1]*N[0]+M[5]*N[1]+M[9]*N[2];
-                    o[5]=M[2]*N[0]+M[6]*N[1]+M[10]*N[2];
-                    o[6]=col[0]; o[7]=col[1]; o[8]=col[2];
-                    c++; } } }
-        gPropM[i].v=v; gPropM[i].nv=(int)c; loaded++;
+        char lbl[80]; snprintf(lbl,sizeof lbl,"prop '%s'",d->key);
+        if(load_glb_soup(d->mesh,lbl,d->scale,&gPropM[i])) loaded++;
     }
     if(with_mesh) printf("prop mesh: %d/%d glb caricati\n",loaded,with_mesh);
 }
+
+// modello della mina (assets/models/landmine.glb): triangle soup condivisa, un
+// solo modello statico stampato a terra per ogni trappola viva (build_mine_mesh).
+static PropModel gMineM;
+static float gMineScale=1.0f;
 
 typedef struct { GLuint vao, vbo, ebo, tex; int nidx, hasTex; } Ground;
 
@@ -887,6 +906,20 @@ static int host_blast(DefGame *g, SimP *s, const Scene *sc, const PropCatalog *c
     return changed;
 }
 
+// Ponte trappola->esplosione (GAME_PLAN fase D): traps_update chiama questo quando
+// una mina scatta; lo mappiamo su host_blast (la mina riusa la primitiva
+// d'esplosione — friendly fire incluso). prop_changed segnala che una mesh prop
+// va ri-uploadata. Il core traps non conosce né def_blast né gli FX.
+typedef struct { DefGame *g; SimP *s; const Scene *sc; const PropCatalog *cat;
+                 Destruct *dz; FxParticles *fx; int prop_changed; } TrapBlastCtx;
+static void on_trap_blast(void *user, int id, float x, float y,
+                          float r, float dmg, float strength, float up){
+    (void)id;
+    TrapBlastCtx *c=user;
+    if(host_blast(c->g,c->s,c->sc,c->cat,c->dz,c->fx,x,y,r,dmg,strength,up))
+        c->prop_changed=1;
+}
+
 static int build_prop_mesh(const Scene *sc, const PropCatalog *cat,
                            const Destruct *dz, const DefGame *g, float *buf) {
     int c = 0; static int warned = 0;
@@ -1068,6 +1101,30 @@ static int build_turret_mesh(DefGame *g, float *buf, int maxV){
         QT(x1,zb,z0, x0,zb,z0, x0,h,z0, x1,h,z0, 0,0,-1);   // -Z
 #undef VT
 #undef QT
+    }
+    return c;
+}
+
+// mine piazzate (GAME_PLAN fase D): il modello landmine stampato a terra per
+// ogni trappola VIVA (le consumate spariscono, come le torrette distrutte). Senza
+// glb un box scuro fa da placeholder. maxV = cap del buffer in verts.
+static int build_mine_mesh(const Traps *tr, float *buf, int maxV){
+    int c=0, n=traps_count(tr);
+    for(int id=0; id<n; id++){
+        if(!traps_alive(tr,id)) continue;
+        const TrapDef *d=traps_get(tr,id); if(!d) continue;
+        float z=ter_z(d->x,d->y);
+        if(gMineM.nv>0){
+            if(c+gMineM.nv>maxV) break;
+            for(int k=0;k<gMineM.nv;k++){ const float *sv=gMineM.v+k*9; float *o=buf+(size_t)(c+k)*9;
+                o[0]=d->x+sv[0]; o[1]=z+sv[1]; o[2]=d->y+sv[2];   // no yaw: disco a terra
+                o[3]=sv[3]; o[4]=sv[4]; o[5]=sv[5];
+                o[6]=sv[6]; o[7]=sv[7]; o[8]=sv[8]; }
+            c+=gMineM.nv;
+        } else {
+            if(c+36>maxV) break;                                  // placeholder: dischetto piatto scuro
+            c=prop_box(buf,c, d->x,d->y, 0.0f,0.0f, z, 0.30f,0.30f,0.10f, 1.0f,0.0f, 0.14f,0.14f,0.12f);
+        }
     }
     return c;
 }
@@ -1471,7 +1528,7 @@ typedef struct {
     VatLayer *vl; SpawnCtx *spctx; Destruct *dz;
     GLuint obVbo, prVbo; int *obNV, *prNV; int ground_on;
     float *cam_x, *cam_z; int *running;
-    Placement *plc;
+    Placement *plc; Traps *traps;
 } ShellHost;
 static ShellHost gHost;
 
@@ -1498,6 +1555,7 @@ static void shell_load_level(void){
     anim_init(&gAnim); gSurviveT=0.0f;
     if(gHost.plc){ pl_undo_clear(gHost.plc);   // mondo nuovo: record stantii via
                    gHost.plc->active=0; }
+    if(gHost.traps) traps_init(gHost.traps);   // mondo nuovo: via le mine del livello prima
     plmod_clear();                             // registro moduli render idem
     printf("livello %d (%s): %s pronto\n",gApp.cur+1,L->name,L->scene);
     app_level_ready(&gApp);
@@ -1646,6 +1704,9 @@ static void prep_icon(const PlItem *it,float cx,float cy,float dim){
         float r=it->heavy?0.85f:0.55f, g=it->heavy?0.45f:0.75f, b=it->heavy?0.20f:0.90f;
         ui_quad(cx-9,cy-7,18,14,r*0.5f,g*0.5f,b*0.5f,a);          // base
         ui_quad(cx-2,cy-15,4,10,r,g,b,a);                          // canna
+    } else if(it->kind==PL_TRAP){                                  // mina
+        ui_quad(cx-11,cy-3,22,10,0.28f,0.30f,0.28f,a);            // corpo basso
+        ui_quad(cx-3,cy-9,6,6,0.90f,0.72f,0.15f,a);              // pomello a pressione
     } else if(it->opacity>0.0f && it->opacity<1.0f){               // cancellata
         for(int k=0;k<5;k++) ui_quad(cx-13+k*6,cy-11,3,22,0.72f,0.74f,0.80f,a);
         ui_quad(cx-14,cy-12,29,3,0.72f,0.74f,0.80f,a);
@@ -1662,6 +1723,10 @@ static void prep_info_lines(const PlItem *it,char *l1,int n1,char *l2,int n2){
         snprintf(l1,n1,"%s - %d$",it->heavy?"TORRETTA PESANTE":"TORRETTA LEGGERA",it->cost);
         snprintf(l2,n2,"GITTATA %.0f M - %.1f COLPI/S%s",(double)rng,1.0/per,
                  it->heavy?" - SMEMBRA":"");
+    } else if(it->kind==PL_TRAP){
+        snprintf(l1,n1,"MINA - %d$",it->cost);
+        snprintf(l2,n2,"ESPLODE AL CONTATTO - RAGGIO %.0f M",
+                 (double)(it->blast_r>0?it->blast_r:6.0f));
     } else {
         int semi=(it->opacity>0.0f && it->opacity<1.0f);
         snprintf(l1,n1,"%s - %d$/M - %.0f HP PER MODULO",it->name,it->cost,(double)it->hp);
@@ -2108,6 +2173,9 @@ int main(int argc, char **argv){
     pl_init(&plc, PL_CAT, PL_NCAT);
 #endif
     pl_set_blocked_cb(&plc, pl_blocked_host, NULL);
+    // trappole (GAME_PLAN fase D): la tabella mine, alimentata dal commit PL_TRAP
+    // e drenata da traps_update nel loop (mappata su host_blast).
+    Traps traps; traps_init(&traps); pl_set_traps(&plc, &traps);
 
     // torrette (DINAMICO: una distruttibile sparisce al collasso) + tracer di
     // fuoco, stesso flat shader. Buffer riusato ogni frame da build_turret_mesh.
@@ -2128,6 +2196,21 @@ int main(int argc, char **argv){
     GLuint turVao,turVbo; glGenVertexArrays(1,&turVao);glBindVertexArray(turVao);
     glGenBuffers(1,&turVbo);glBindBuffer(GL_ARRAY_BUFFER,turVbo);
     glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)turMaxV*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
+    glBindVertexArray(0);
+    // mine (GAME_PLAN fase D): un modello landmine.glb stampato a terra per ogni
+    // trappola viva, stesso flat shader. Buffer riusato ogni frame da build_mine_mesh.
+    { const char *ms=getenv("VAT_HORDE_MINE_SCALE"); if(ms) gMineScale=atof(ms); }
+    int mineOk=load_glb_soup("assets/models/landmine.glb","mina",gMineScale,&gMineM);
+    printf("mina 3D: %s (scala %.2f)\n", mineOk?"ok":"placeholder", (double)gMineScale);
+    int mineVpe = gMineM.nv>0 ? gMineM.nv : 36;        // glb, o box placeholder
+    int mineMaxV = TRAPS_MAX*mineVpe;
+    float *mineBuf=malloc((size_t)mineMaxV*9*sizeof(float));
+    GLuint mineVao,mineVbo; glGenVertexArrays(1,&mineVao);glBindVertexArray(mineVao);
+    glGenBuffers(1,&mineVbo);glBindBuffer(GL_ARRAY_BUFFER,mineVbo);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)mineMaxV*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
     glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
     glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
     glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
@@ -2338,7 +2421,7 @@ int main(int argc, char **argv){
     gHost.vl=vl; gHost.spctx=&spctx; gHost.dz=&dz;
     gHost.obVbo=obVbo; gHost.prVbo=prVbo; gHost.obNV=&obNV; gHost.prNV=&prNV;
     gHost.ground_on=groundOn; gHost.cam_x=&cx; gHost.cam_z=&cz; gHost.running=&running;
-    gHost.plc=&plc; prep_tabs_build(&plc);   // barra PREP: indice tab->voci (§7)
+    gHost.plc=&plc; gHost.traps=&traps; prep_tabs_build(&plc);   // barra PREP: indice tab->voci (§7)
     gUiBuf=malloc((size_t)UI_MAX_V*9*sizeof(float));
     GLuint uiProg=vg_shader("assets/shaders/flat.vs","assets/shaders/ui.fs");
     GLint uVPui=glGetUniformLocation(uiProg,"uVP");
@@ -2657,6 +2740,12 @@ int main(int argc, char **argv){
                 simp_step(s,FIXED_DT);
                 Uint64 t1=SDL_GetPerformanceCounter();
                 def_update(g,FIXED_DT);
+                // mine (GAME_PLAN fase D): dopo lo step (griglia fresca) le trappole
+                // ARMATE scattano sul primo agente vicino -> host_blast (def_blast +
+                // FX, friendly fire incluso). Catene risolte in ordine di id nel core.
+                { TrapBlastCtx tbc={g,s,&sc,&gCatalog,&dz,&fx,0};
+                  traps_update(&traps,s,FIXED_DT,on_trap_blast,&tbc);
+                  if(tbc.prop_changed) prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g); }
                 // danno da caduta (EXPLOSION_DESIGN §3.4): gli agenti atterrati in
                 // questo step (lanciati da un blast/impulso) prendono danno costante
                 // → ferite/gib+sangue via i soliti eventi. Chiude il buco M3.2
@@ -2777,6 +2866,11 @@ int main(int argc, char **argv){
           if(turNV){ glBindVertexArray(turVao);glBindBuffer(GL_ARRAY_BUFFER,turVbo);
               glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)turNV*9*sizeof(float),turBuf);
               glDrawArrays(GL_TRIANGLES,0,turNV); } }
+        // mine piazzate (GAME_PLAN fase D): landmine a terra per ogni trappola viva
+        { int mNV=build_mine_mesh(&traps,mineBuf,mineMaxV);
+          if(mNV){ glBindVertexArray(mineVao);glBindBuffer(GL_ARRAY_BUFFER,mineVbo);
+              glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)mNV*9*sizeof(float),mineBuf);
+              glDrawArrays(GL_TRIANGLES,0,mNV); } }
         // streak dei proiettili: comet additivo dalla bocca all'impatto (pool
         // avanzato nel loop a passo fisso). Additive, depth-test ma senza write.
         { int tv=build_tracer_mesh(trBuf);

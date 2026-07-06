@@ -232,6 +232,12 @@ FX fiamme/acido, HUD ammo per torretta.
 
 **Obiettivo**: mine, trappole elettriche ricaricabili, fossati.
 
+**Stato**: la MINA è FATTA e cablata nell'host (2026-07-06) — core `traps.c`
+(one-shot a prossimità → `TrapBlastFn`), piazzamento in PREP via `place.c`
+(`PL_TRAP` → `traps_add`, undo), `traps_update` mappata su `host_blast`,
+render `landmine.glb`. Vedi PREP_UI_DESIGN §10.7. ZAP (ricaricabile) e MOAT
+(fossato, richiede `simp_set_speed_scale`) restano da fare.
+
 **Costruire** (modulo game-side nuovo `traps.h/.c`, gemello di
 `destruct.c`: possiede lo stato runtime, legge il core via query):
 - `TrapDef { kind: MINE|ZAP|MOAT; cost, trigger_radius, damage, blast_r,

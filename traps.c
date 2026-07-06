@@ -22,6 +22,18 @@ int traps_alive(const Traps *t, int id) {
     return (id >= 0 && id < t->n) ? t->live[id] : 0;
 }
 
+const TrapDef *traps_get(const Traps *t, int id) {
+    return (id >= 0 && id < t->n) ? &t->def[id] : 0;
+}
+
+int traps_remove_last(Traps *t) {
+    if (t->n <= 0) return 0;
+    int id = --t->n;
+    int was_live = t->live[id];
+    t->live[id] = 0;
+    return was_live;   /* 0 = last trap already fired: LIFO broken, not a real undo */
+}
+
 void traps_update(Traps *t, const SimP *s, float dt,
                   TrapBlastFn on_blast, void *user) {
     int buf[TRAP_PROBE];

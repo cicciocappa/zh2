@@ -218,6 +218,14 @@ indipendente dalla barra: si può fare prima o dopo.
 5. Ghost gittata torrette + ghost di linea.
 6. Entità `drag` di scena (§9).
 7. Mina: quando EXPLOSION_DESIGN consegna `def_blast` (tab si popola da sola).
+   **FATTO (2026-07-06)**: riga `PL_TRAP` "Mina" nel catalogo GAME (la tab
+   TRAPPOLE si accende da sola, niente più "PRESTO"); `PlItem` esteso coi
+   parametri mina (trig_r/blast_r/dmg/strength/up/arm_delay), `Placement`
+   riceve un `Traps*` (`pl_set_traps`, NULL = commit no-op), `pl_commit`
+   `PL_TRAP` = `traps_add`, undo esteso con `ntraps`. Host: `traps_update`
+   nel loop mappata su `host_blast`, render di `landmine.glb` a terra per
+   ogni mina viva (`build_mine_mesh`, box di fallback), icona/info barra,
+   reset a cambio livello. Verifica: `test_place` caso 14 + `test_traps`.
 
 ## 11. Questioni aperte
 

@@ -18,14 +18,17 @@
 
 #include "defense.h"
 #include "sim_particles.h"
+#include "traps.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef enum { PL_BARRICADE, PL_TURRET, PL_BIN, PL_CAR, PL_TRAP, PL_NKINDS } PlKind;
-/* PL_TRAP: reserved (PREP_UI_DESIGN §2) — commits are a no-op until def_blast
- * (EXPLOSION_DESIGN) lands; no v1 catalog entry uses it. */
+/* PL_TRAP (PREP_UI_DESIGN §2 / GAME_PLAN fase D): the MINE. Commit registers a
+ * TrapDef into the Traps table attached via pl_set_traps (NULL = no-op, e.g.
+ * sandbox/tests without traps). The trap params live in the trailing PlItem
+ * fields (trig_r/blast_r/blast_dmg/strength/up_ratio/arm_delay). */
 
 /* Result of pl_validate, drives the ghost colour + HUD message. */
 typedef enum { PL_OK, PL_NOFUNDS, PL_BLOCKED, PL_OVERLAP, PL_BADITEM } PlReason;
@@ -49,6 +52,14 @@ typedef struct {
      * in (0,1) = see-through cover, turrets shoot across (cancellata 0.3).
      * Collapse restores it automatically (simp_set_wall mirrors opacity). */
     float       opacity;
+    /* trap (PL_TRAP) params — see traps.h TrapDef. 0 = commit-side default, so
+     * rows that predate these fields (sandbox catalog) stay valid. */
+    float       trig_r;      /* proximity trigger radius (m)                  */
+    float       blast_r;     /* explosion radius (m)                          */
+    float       blast_dmg;   /* explosion peak damage                         */
+    float       strength;    /* blast impulse strength                        */
+    float       up_ratio;    /* blast impulse loft                            */
+    float       arm_delay;   /* s before the mine can fire                    */
 } PlItem;
 
 /* Host veto: return 1 if (wx,wy) sits on an immovable static (palazzo/roccia).
@@ -68,6 +79,7 @@ enum { PL_UNDO_MAX = 128 };
 typedef struct {
     int nstructs;                    /* structures this placement created    */
     int nturrets;                    /* turrets this placement created       */
+    int ntraps;                      /* traps (mines) this placement created */
     int cost;                        /* refunded in full on pop              */
 } PlUndoRec;
 typedef struct { PlUndoRec rec[PL_UNDO_MAX]; int n; } PlUndo;
@@ -82,8 +94,10 @@ typedef struct {
     int    reason;                   /* PlReason of the last validate        */
     PlBlockedFn blocked; void *blocked_user;
     PlUndo *undo;                    /* optional (NULL = no recording)       */
+    Traps  *traps;                   /* PL_TRAP target (NULL = trap commit no-op) */
 } Placement;
 
+void pl_set_traps(Placement *p, Traps *t);      /* attach the mine table     */
 void pl_set_undo(Placement *p, PlUndo *u);      /* attach/detach; resets it  */
 int  pl_undo_pop(Placement *p, DefGame *g, SimP *s);   /* 1 = one undone     */
 void pl_undo_clear(Placement *p);               /* assault begun: keep spent */

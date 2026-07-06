@@ -22,6 +22,9 @@
  *  13) UNDO           — LIFO pops with full refund: N place/undo rounds leave
  *                       budget, walls, structures, turrets and opacity
  *                       bit-identical; pop order is newest-first; empty = 0.
+ *  14) MINE (PL_TRAP) — commit registers a trap (no-op with no table); params
+ *                       reach the TrapDef; an agent on it detonates on_blast;
+ *                       undo removes it with a full refund.
  */
 #define _POSIX_C_SOURCE 199309L
 #include "place.h"
@@ -41,20 +44,24 @@
  * combat fields at 0 = "standard default" — case 8 regresses that contract. */
 enum { I_BARR, I_TUR, I_BIN, I_CAR, I_HEAVY, I_FENCE };
 static const PlItem CAT[] = {
-    /* kind        name          cost   w     h    radius  hp     mass   combat: 0 = default */
-    { PL_BARRICADE, "Barricata",   50,  4.0f, 1.0f, 0.0f, 300.0f,  0.0f, 0, 0,0,0, 0 },
-    { PL_TURRET,    "Torretta",   100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 0, 0,0,0, 0 },
-    { PL_BIN,       "Cassonetto",  20,  0.0f, 0.0f, 0.6f,   0.0f, 12.0f, 0, 0,0,0, 0 },
-    { PL_CAR,       "Auto",        60,  3.0f, 0.0f, 0.6f,   0.0f, 20.0f, 0, 0,0,0, 0 },
+    /* kind        name          cost   w     h    radius  hp     mass   combat: 0 = default | trap: 0 */
+    { PL_BARRICADE, "Barricata",   50,  4.0f, 1.0f, 0.0f, 300.0f,  0.0f, 0, 0,0,0, 0, 0,0,0,0,0,0 },
+    { PL_TURRET,    "Torretta",   100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 0, 0,0,0, 0, 0,0,0,0,0,0 },
+    { PL_BIN,       "Cassonetto",  20,  0.0f, 0.0f, 0.6f,   0.0f, 12.0f, 0, 0,0,0, 0, 0,0,0,0,0,0 },
+    { PL_CAR,       "Auto",        60,  3.0f, 0.0f, 0.6f,   0.0f, 20.0f, 0, 0,0,0, 0, 0,0,0,0,0,0 },
     { .kind = PL_TURRET, .name = "Pesante", .cost = 250, .radius = 0.5f,
       .heavy = 1, .range = 55.0f },                      /* period/dmg default */
     { .kind = PL_BARRICADE, .name = "Cancellata", .cost = 80,
       .w = 4.0f, .h = 1.0f, .hp = 200.0f, .opacity = 0.3f },
     { .kind = PL_BARRICADE, .name = "Muro-linea", .cost = 12,   /* PER METER */
       .w = 2.5f, .h = 1.0f, .hp = 300.0f },
+    { .kind = PL_TRAP, .name = "Mina", .cost = 40, .radius = 0.3f,   /* case 14 */
+      .trig_r = 1.2f, .blast_r = 6.0f, .blast_dmg = 150.0f,
+      .strength = 22.0f, .up_ratio = 0.6f, .arm_delay = 0.0f },
 };
 #define NCAT ((int)(sizeof(CAT)/sizeof(CAT[0])))
 #define I_LINE 6
+#define I_MINE 7
 
 static int fails = 0;
 #define CHECK(c, ...) do{ if(!(c)){ fails++; printf("  FAIL: "); printf(__VA_ARGS__); printf("\n"); } }while(0)
@@ -550,6 +557,66 @@ static void test_undo(void) {
     def_destroy(g); simp_destroy(s);
 }
 
+/* ---- case 14: mine (PL_TRAP) ---------------------------------------------- */
+struct blast_rec { int fired, id; float x, y, r, dmg, str, up; };
+static void rec_blast(void *user, int id, float x, float y,
+                      float r, float dmg, float str, float up) {
+    struct blast_rec *b = user;
+    b->fired++; b->id = id; b->x = x; b->y = y;
+    b->r = r; b->dmg = dmg; b->str = str; b->up = up;
+}
+
+static void test_mine(void) {
+    printf("[14] mine (PL_TRAP)\n");
+    SimP *s = simp_create(GW, GH, CELL, MAXA);
+    simp_terrain_commit(s);
+    DefGame *g = def_create(s, MAXA);
+    def_set_budget(g, 1000);
+
+    /* no table attached: PL_TRAP commit is a no-op, nothing spent */
+    Placement p0; pl_init(&p0, CAT, NCAT); pl_select(&p0, I_MINE);
+    pl_set_cursor(&p0, 20.0f, 20.0f);
+    CHECK(!pl_commit(&p0, g, s), "mine commit with no Traps table must fail");
+    CHECK(def_budget(g) == 1000, "no-op mine must not spend (got %d)", def_budget(g));
+
+    /* attach the table: commit registers a trap, spends the cost */
+    Traps tr; traps_init(&tr);
+    Placement p; pl_init(&p, CAT, NCAT); pl_set_traps(&p, &tr);
+    PlUndo u; pl_set_undo(&p, &u);
+    pl_select(&p, I_MINE); pl_set_cursor(&p, 40.0f, 30.0f);
+    CHECK(pl_validate(&p, g, s), "mine on free ground should validate");
+    CHECK(pl_commit(&p, g, s), "mine should place with a table attached");
+    CHECK(traps_count(&tr) == 1 && traps_alive(&tr, 0), "one live trap expected (got %d)", traps_count(&tr));
+    CHECK(def_budget(g) == 1000 - 40, "mine should cost 40 (budget %d)", def_budget(g));
+    CHECK(u.n == 1, "one undo record expected (got %d)", u.n);
+
+    /* undo removes the trap and refunds fully */
+    CHECK(pl_undo_pop(&p, g, s), "mine undo should pop");
+    CHECK(!traps_alive(&tr, 0), "trap must be dead after undo");
+    CHECK(def_budget(g) == 1000, "undo must refund the mine (got %d)", def_budget(g));
+
+    /* re-place, then trigger it with an agent: on_blast fires with our params */
+    CHECK(pl_commit(&p, g, s), "mine re-place should work");
+    int tid = traps_count(&tr) - 1;
+    struct blast_rec b = {0};
+    simp_step(s, DT);
+    traps_update(&tr, s, DT, rec_blast, &b);      /* no agent yet: silent */
+    CHECK(b.fired == 0, "armed mine must not fire with no agent near");
+    CHECK(traps_alive(&tr, tid), "mine still live before any agent");
+
+    simp_spawn(s, 40.0f, 30.0f);                  /* right on the mine */
+    simp_step(s, DT);
+    traps_update(&tr, s, DT, rec_blast, &b);
+    CHECK(b.fired == 1, "agent on the mine should detonate it (fired=%d)", b.fired);
+    CHECK(!traps_alive(&tr, tid), "mine must be consumed after firing");
+    CHECK(fabsf(b.r - 6.0f) < 1e-4f && fabsf(b.dmg - 150.0f) < 1e-4f
+             && fabsf(b.str - 22.0f) < 1e-4f && fabsf(b.up - 0.6f) < 1e-4f,
+          "blast params should match the catalog (r %.1f dmg %.1f str %.1f up %.2f)",
+          (double)b.r, (double)b.dmg, (double)b.str, (double)b.up);
+
+    def_destroy(g); simp_destroy(s);
+}
+
 int main(void) {
     test_budget();
     test_space();
@@ -564,6 +631,7 @@ int main(void) {
     test_line_veto();
     test_line_angle();
     test_undo();
+    test_mine();
     if (fails == 0) printf("test_place: ALL PASS\n");
     else            printf("test_place: %d FAIL\n", fails);
     return fails ? 1 : 0;

@@ -60,6 +60,16 @@ int  traps_add(Traps *t, const TrapDef *def);
 int  traps_count(const Traps *t);
 /* 1 while the trap is still live (not yet detonated), 0 once consumed/invalid. */
 int  traps_alive(const Traps *t, int id);
+/* The trap's placement/params (position, radii…) for rendering/inspection.
+ * Borrowed, valid until the next traps_add; NULL if the id is out of range. */
+const TrapDef *traps_get(const Traps *t, int id);
+
+/* Remove the most recently added trap (PREP undo, place.c): pops the last id off
+ * the table. Returns 1 if it removed a still-LIVE trap (a clean PREP undo), 0 if
+ * the table is empty or the last trap was already consumed (LIFO broken — the
+ * caller must not treat it as undone). Valid only while placement is the sole
+ * mutator (PREP), like defense's remove-LAST primitives. */
+int  traps_remove_last(Traps *t);
 
 /* Advance one step: tick arm timers, then for each live ARMED mine detonate if a
  * live agent is within trig_r (fires on_blast, consumes the mine). Deterministic
