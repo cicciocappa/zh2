@@ -263,6 +263,23 @@ static const FxEmitterDef EXPL_SMOKE_DEF = {
     .wind_scale=0.5f, .ground_stop=false, .blend=FX_BLEND_ALPHA, .rate=20.0f,
 };
 
+// impatto a terra dello zombie che cade ma NON muore (M3.2): puff breve e basso
+// di polvere + detriti che si sprigiona radialmente dai piedi. Serve a mascherare
+// lo stacco volo->camminata (side note utente 2026-07-07). Grani beige-grigi che
+// schizzano quasi orizzontali (poco speed_y), si allargano e si posano in fretta.
+static const FxEmitterDef LAND_DUST_DEF = {
+    .count=14, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.18f, .spawn_box_z=0.18f,
+    .spawn_offset_y_min=0.0f, .spawn_offset_y_max=0.20f,
+    .speed_xy_min=1.2f, .speed_xy_max=3.2f, .speed_y_min=0.4f, .speed_y_max=1.6f,
+    .gravity=6.0f, .drag=1.6f, .lifetime_min=0.28f, .lifetime_max=0.65f,
+    .start_scale_min=0.12f, .start_scale_max=0.26f, .end_scale_min=0.35f, .end_scale_max=0.6f,
+    .start_color={0.62f,0.56f,0.46f,0.75f}, .end_color={0.48f,0.44f,0.38f,0.0f},
+    .color_variants={ {0.66f,0.60f,0.50f,0.7f},{0.55f,0.50f,0.42f,0.75f},{0.58f,0.53f,0.45f,0.65f} },
+    .color_variant_count=3, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.3f, .ground_stop=true, .blend=FX_BLEND_ALPHA, .rate=20.0f,
+};
+
 // scoppio di un prop distruttibile -> burst FX nel verso di spinta (cono ~35°).
 typedef struct { FxParticles *fx; } DestructCtx;
 static void on_prop_burst(int idx, const char *debris, float x, float y, float dir, void *ud){
@@ -2927,7 +2944,14 @@ int main(int argc, char **argv){
                       int i=simp_index_of(s,lh[k]); if(i<0) continue;
                       int slot=simp_slot_of(s,i);
                       if(hp[slot]<=fd) def_gib_agent(g,lh[k]);   // caduta letale -> smembra
-                      else            def_damage_agent(g,lh[k],FALL_DMG);
+                      else {
+                          def_damage_agent(g,lh[k],FALL_DMG);
+                          // sopravvissuto: puff di polvere ai piedi per mascherare
+                          // lo stacco volo->camminata.
+                          float lx=simp_px(s)[i], ly=simp_py(s)[i];
+                          float lo[3]={lx, ter_z(lx,ly)+0.05f, ly};
+                          fx_emit(&fx,lo,&LAND_DUST_DEF,0.0f,-1.0f);
+                      }
                   } }
                 // rinculo torrette + vampa alla bocca + streak del proiettile:
                 // per chi ha sparato in questo step. build_turret_mesh legge il
