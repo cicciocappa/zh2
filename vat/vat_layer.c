@@ -715,18 +715,21 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
 
         /* avanza fase (distanza per locomozione, tempo per il resto) — stride/durata
            dal meta del BODY di questo agente (variano per taglia: il bambino ha
-           stride diverso dall'adulto). IN VOLO la fase e' CONGELATA: il corpo
-           balistico tumbla su piu' assi, l'anim degli arti a velocita' altissima
-           dava fastidio (side note utente) -> l'unico movimento e' il tumble. */
-        if(!(fl[i]&SIMP_FLYING)){
+           stride diverso dall'adulto). IN VOLO la fase avanza a TEMPO (durata
+           nativa della clip): il corpo balistico non ha una velocita' orizzontale
+           che mappa alla falcata, e il freeze degli arti col solo tumble era
+           brutto (side note utente) -> il ciclo gira a tempo mentre il corpo
+           tumbla, come un arto che sgambetta in aria. */
+        {
+        int flying=(fl[i]&SIMP_FLYING)!=0;
         const VatMeta *M=&vl->m[vl->var[slot]];
         float dist=sp*dt;
         const VatClip *ca=&M->clip[vl->clipA[slot]];
-        vl->phaseA[slot]+= ca->stride>0.1f ? dist/ca->stride : dt/(ca->duration>0?ca->duration:1.0f);
+        vl->phaseA[slot]+= (!flying && ca->stride>0.1f) ? dist/ca->stride : dt/(ca->duration>0?ca->duration:1.0f);
         vl->phaseA[slot]-=floorf(vl->phaseA[slot]);
         if(vl->blending[slot]){
             const VatClip *cb=&M->clip[vl->clipB[slot]];
-            vl->phaseB[slot]+= cb->stride>0.1f ? dist/cb->stride : dt/(cb->duration>0?cb->duration:1.0f);
+            vl->phaseB[slot]+= (!flying && cb->stride>0.1f) ? dist/cb->stride : dt/(cb->duration>0?cb->duration:1.0f);
             vl->phaseB[slot]-=floorf(vl->phaseB[slot]);
             vl->blendF[slot]+=dt/BLEND_DUR;
             if(vl->blendF[slot]>=1.0f){ vl->state[slot]=vl->target[slot];
