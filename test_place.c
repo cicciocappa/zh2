@@ -617,6 +617,39 @@ static void test_mine(void) {
     def_destroy(g); simp_destroy(s);
 }
 
+/* ---- case 15: line auto-shorten (occupied ENDS trim instead of veto) ------- */
+static void test_line_autoshorten(void) {
+    printf("[15] line auto-shorten\n");
+    SimP *s = simp_create(GW, GH, CELL, MAXA);
+    simp_terrain_commit(s);
+    DefGame *g = def_create(s, MAXA);
+    def_set_budget(g, 1000);
+    Placement p; pl_init(&p, CAT, NCAT); pl_select(&p, I_LINE);
+
+    /* baseline: a clear 11 m line keeps all 5 modules (no spurious trimming) */
+    PlLinePlan pl;
+    CHECK(pl_line_validate(&p, g, s, 20.0f, 30.0f, 31.0f, 30.0f, &pl), "clear line validates");
+    CHECK(pl.nmod == 5, "clear line keeps all 5 modules (got %d)", pl.nmod);
+
+    /* agent parked at the FAR END: the end slides back until clear, the line
+     * still validates SHORTER instead of vetoing the whole gesture */
+    simp_spawn(s, 30.7f, 30.0f);
+    simp_step(s, DT);                              /* bin the agent for simp_free_at */
+    CHECK(pl_line_validate(&p, g, s, 20.0f, 30.0f, 31.0f, 30.0f, &pl), "end-blocked line still validates");
+    CHECK(pl.nmod >= 1 && pl.nmod < 5, "end-blocked line should be shorter (got %d)", pl.nmod);
+    CHECK(p.reason == PL_OK, "shortened line reason should be PL_OK (got %d)", p.reason);
+
+    /* commit: the blocking agent's cell must stay open, the free near end walls up */
+    int st0 = def_struct_count(g);
+    CHECK(pl_line_commit(&p, g, s, 20.0f, 30.0f, 31.0f, 30.0f), "shortened line commits");
+    CHECK(def_struct_count(g) - st0 == pl.nmod, "committed module count matches the plan (got %d)",
+          def_struct_count(g) - st0);
+    CHECK(!simp_is_wall(s, 61, 60), "the blocking agent's cell (30.7,30) stays open");
+    CHECK(simp_is_wall(s, 40, 60), "the free near end (20,30) raises a wall");
+
+    def_destroy(g); simp_destroy(s);
+}
+
 int main(void) {
     test_budget();
     test_space();
@@ -632,6 +665,7 @@ int main(void) {
     test_line_angle();
     test_undo();
     test_mine();
+    test_line_autoshorten();
     if (fails == 0) printf("test_place: ALL PASS\n");
     else            printf("test_place: %d FAIL\n", fails);
     return fails ? 1 : 0;

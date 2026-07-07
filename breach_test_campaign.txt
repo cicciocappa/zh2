@@ -1,0 +1,9 @@
+# breach_test_campaign — un solo livello, la fixture del breach per-modulo
+# (GUIDA_COMPLETAMENTO §3.1). Uso: make game && ./game breach_test_campaign.txt
+level assets/scenes/breach_test.scn
+name  Test Breccia
+survive 180
+core 1500
+brief Pianta una LINEA di barricate attraverso la gola stretta durante
+brief la preparazione, poi lancia l'assalto e guarda un SINGOLO modulo
+brief cadere: il varco locale deve aprirsi e l'orda imbucarci.

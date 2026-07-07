@@ -1367,9 +1367,11 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     float TR_R = 0.22f*mn;
     def_set_budget(g, getenv("VAT_HORDE_BUDGET")?atoi(getenv("VAT_HORDE_BUDGET")):1000);
     int placed=0;
-    // a "designed" scene (walls and/or turrets authored) owns its turrets: place
+    // a "designed" scene (walls, turrets, or a declared mission) owns its turrets: place
     // ONLY the scene's (possibly zero). A legacy scene gets the demo auto-ring.
-    int designed = (sc->n_wall>0 || sc->n_turret>0);
+    // a mission scene is authored: it owns its turrets (the `turret` lines, or
+    // none) and must NOT get the legacy demo ring, which would carpet the LZ.
+    int designed = (sc->n_wall>0 || sc->n_turret>0 || sc->mission.kind != SCENE_MISSION_NONE);
     // destructible turrets: a turret becomes a 1-cell solid the horde sieges to
     // reach the goal beyond -> exposed turrets in a breached ring get assaulted
     // and silenced (def_turret_make_destructible). HP from env, 0 = indestructible.
@@ -2169,6 +2171,7 @@ int main(int argc, char **argv){
     pl_init(&plc, PL_CAT_GAME, PL_NCAT_GAME);
     static PlUndo plUndo; pl_set_undo(&plc, &plUndo);
     int plineOn=0; float plineAx=0.0f, plineAy=0.0f;   // drag di linea (§5)
+    int plineChain=0;   // polilinea: SHIFT al rilascio -> vertici concatenati (click-to-place)
 #else
     pl_init(&plc, PL_CAT, PL_NCAT);
 #endif
@@ -2485,28 +2488,48 @@ int main(int argc, char **argv){
                 // --- placement runtime (PLAY, mouse nudo): cursore + LMB commit ---
                 if(plc.active && !ed.active){
                     // fase A: fuori PREP il piazzamento si chiude da solo
-                    if(gMissionOn && !mission_placement_open(&gMission)){ plc.active=0; continue; }
+                    if(gMissionOn && !mission_placement_open(&gMission)){
+                        plc.active=0; plineOn=0; plineChain=0; continue; }
                     float wx,wy; if(pick_y0(vp,mxf,myf,SW,SH,&wx,&wy)) pl_set_cursor(&plc,wx,wy);
 #ifdef GAME_SHELL
                     // barriere a LINEA (§5): LMB = ancora, rilascio = commit
                     // tutto-o-niente; RMB = annulla il drag (o esce dal ghost).
                     const PlItem *lsel=pl_selected(&plc);
                     if(lsel && lsel->kind==PL_BARRICADE){
+                        int shift=(SDL_GetModState()&SDL_KMOD_SHIFT)!=0;
                         if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
                             if(e.button.button==SDL_BUTTON_LEFT){
-                                plineOn=1; plineAx=plc.cx; plineAy=plc.cy; }
-                            else if(e.button.button==SDL_BUTTON_RIGHT){
-                                if(plineOn) plineOn=0; else plc.active=0; }
+                                if(plineChain){
+                                    // polilinea: questo click deposita il vertice
+                                    // successivo -> chiude il segmento in sospeso
+                                    // dall'ancora corrente. L'ancora del prossimo
+                                    // segmento e' QUESTO estremo (spigolo condiviso;
+                                    // l'auto-accorciamento in validate tiene il
+                                    // giunto senza sovrapposizioni).
+                                    PlLinePlan lp;
+                                    int okv=pl_line_validate(&plc,g,s,plineAx,plineAy,
+                                                             plc.cx,plc.cy,&lp);
+                                    if(okv && pl_line_commit(&plc,g,s,plineAx,plineAy,
+                                                             plc.cx,plc.cy)){
+                                        gStructOn=1; plmod_record(g,&lp,lsel->h);
+                                        plineAx=plc.cx; plineAy=plc.cy; }
+                                    if(!shift){ plineChain=0; plineOn=0; }  // SHIFT su = fine
+                                } else {
+                                    plineOn=1; plineAx=plc.cx; plineAy=plc.cy; }  // inizio drag
+                            } else if(e.button.button==SDL_BUTTON_RIGHT){
+                                if(plineOn||plineChain){ plineOn=0; plineChain=0; }
+                                else plc.active=0; }
                         } else if(e.type==SDL_EVENT_MOUSE_BUTTON_UP &&
-                                  e.button.button==SDL_BUTTON_LEFT && plineOn){
-                            plineOn=0;
+                                  e.button.button==SDL_BUTTON_LEFT && plineOn && !plineChain){
+                            // fine del drag iniziale
                             PlLinePlan lp;   // piano per il registro render (§5)
                             int okv=pl_line_validate(&plc,g,s,plineAx,plineAy,
                                                      plc.cx,plc.cy,&lp);
-                            if(pl_line_commit(&plc,g,s,plineAx,plineAy,plc.cx,plc.cy)){
-                                gStructOn=1;
-                                if(okv) plmod_record(g,&lp,lsel->h);
-                            }
+                            int done=pl_line_commit(&plc,g,s,plineAx,plineAy,plc.cx,plc.cy);
+                            if(done){ gStructOn=1; if(okv) plmod_record(g,&lp,lsel->h); }
+                            if(shift && done){    // SHIFT giu' = entra in polilinea
+                                plineChain=1; plineOn=1; plineAx=plc.cx; plineAy=plc.cy;
+                            } else plineOn=0;
                         }
                         continue;
                     }

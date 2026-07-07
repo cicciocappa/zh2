@@ -282,6 +282,28 @@ static int pl_line_plan(const PlItem *it, float x0, float y0, float x1, float y1
     return pl->nmod;
 }
 
+/* Occupancy of one planned module: PL_OK = free, else PL_BLOCKED (host static
+ * veto or off-grid) / PL_OVERLAP (agents/walls). */
+static int pl_module_status(const Placement *p, SimP *s, const PlLinePlan *pl,
+                            int m, float ca, float sa, float hv, float cs) {
+    int gx[PL_MAX_CELLS], gy[PL_MAX_CELLS];
+    int n = pl_rect_cells(s, pl->mx[m], pl->my[m], 0.5f * pl->mlen[m], hv,
+                          ca, sa, gx, gy, PL_MAX_CELLS);
+    if (n <= 0) return PL_BLOCKED;
+    for (int k = 0; k < n; k++) {
+        float wx = (gx[k] + 0.5f) * cs, wy = (gy[k] + 0.5f) * cs;
+        if (p->blocked && p->blocked(p->blocked_user, wx, wy)) return PL_BLOCKED;
+        if (!simp_free_at(s, wx, wy, cs * 0.45f)) return PL_OVERLAP;   /* agents/walls */
+    }
+    return PL_OK;
+}
+
+/* Validate a wall LINE, AUTO-SHORTENING occupied ENDS instead of vetoing the
+ * whole gesture: a shared vertex (chained polyline) or a bumped endpoint slides
+ * the near/far point inward along the segment (0.5 m steps, the plan grain) until
+ * the end module clears, then the line is re-planned shorter. A genuine obstacle
+ * left in the MIDDLE still refuses (PL_OVERLAP/PL_BLOCKED). `out` gets the final
+ * shortened plan on success, or the full attempted plan on refusal (red ghost). */
 int pl_line_validate(Placement *p, DefGame *g, SimP *s,
                      float x0, float y0, float x1, float y1, PlLinePlan *out) {
     PlLinePlan pl;
@@ -291,29 +313,38 @@ int pl_line_validate(Placement *p, DefGame *g, SimP *s,
         p->reason = PL_BADITEM; if (out) { out->nmod = 0; out->cost = 0; }
         return 0;
     }
-    if (out) *out = pl;
-    if (def_budget(g) < pl.cost) { p->reason = PL_NOFUNDS; return 0; }
-    if (def_struct_count(g) + pl.nmod > def_struct_cap()) {   /* all-or-nothing */
-        p->reason = PL_BLOCKED; return 0;
-    }
-    float cs = simp_cell_size(s);
-    float ca = cosf(pl.ang), sa = sinf(pl.ang), hv = 0.5f * it->h;
-    for (int m = 0; m < pl.nmod; m++) {
-        int gx[PL_MAX_CELLS], gy[PL_MAX_CELLS];
-        int n = pl_rect_cells(s, pl.mx[m], pl.my[m], 0.5f * pl.mlen[m], hv,
-                              ca, sa, gx, gy, PL_MAX_CELLS);
-        if (n <= 0) { p->reason = PL_BLOCKED; return 0; }
-        for (int k = 0; k < n; k++) {
-            float wx = (gx[k] + 0.5f) * cs, wy = (gy[k] + 0.5f) * cs;
-            if (p->blocked && p->blocked(p->blocked_user, wx, wy)) {
-                p->reason = PL_BLOCKED; return 0;
-            }
-            if (!simp_free_at(s, wx, wy, cs * 0.45f)) {       /* agents/walls */
-                p->reason = PL_OVERLAP; return 0;
-            }
+    if (out) *out = pl;                        /* default: full plan (refusal ghost) */
+    float cs = simp_cell_size(s), hv = 0.5f * it->h;
+    float dx = x1 - x0, dy = y1 - y0, raw = sqrtf(dx * dx + dy * dy);
+    float ux = dx / raw, uy = dy / raw;        /* raw >= 0.5 here (plan succeeded) */
+    const float STEP = 0.5f;
+    int reason = PL_OVERLAP;                   /* if the ends never clear */
+    /* nudge the two endpoints inward until their modules are free (bounded: the
+     * segment self-degenerates once it shrinks below one module). */
+    for (int iter = 0; iter < 2 * PL_LINE_MAX_MODULES + 4; iter++) {
+        if (!pl_line_plan(it, x0, y0, x1, y1, &pl)) { reason = PL_OVERLAP; break; }
+        float ca = cosf(pl.ang), sa = sinf(pl.ang);
+        if (pl_module_status(p, s, &pl, 0, ca, sa, hv, cs) != PL_OK) {
+            x0 += ux * STEP; y0 += uy * STEP; continue;              /* slide start in */
         }
+        if (pl_module_status(p, s, &pl, pl.nmod - 1, ca, sa, hv, cs) != PL_OK) {
+            x1 -= ux * STEP; y1 -= uy * STEP; continue;              /* pull end in */
+        }
+        /* both ends clear: a leftover in the MIDDLE is a real obstacle -> refuse */
+        int mid = PL_OK;
+        for (int m = 1; m < pl.nmod - 1; m++) {
+            int st = pl_module_status(p, s, &pl, m, ca, sa, hv, cs);
+            if (st != PL_OK) { mid = st; break; }
+        }
+        if (mid != PL_OK) { p->reason = mid; return 0; }   /* out keeps full plan (red) */
+        if (out) *out = pl;                    /* shortened plan (green ghost) */
+        if (def_budget(g) < pl.cost) { p->reason = PL_NOFUNDS; return 0; }
+        if (def_struct_count(g) + pl.nmod > def_struct_cap()) {
+            p->reason = PL_BLOCKED; return 0;
+        }
+        p->valid = 1; p->reason = PL_OK; return 1;
     }
-    p->valid = 1; p->reason = PL_OK; return 1;
+    p->reason = reason; return 0;
 }
 
 int pl_line_commit(Placement *p, DefGame *g, SimP *s,

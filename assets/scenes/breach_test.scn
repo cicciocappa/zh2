@@ -1,0 +1,26 @@
+# breach_test — banco per la VERIFICA IN GIOCO del breach per-modulo di una
+# linea costruita dal giocatore (GUIDA_COMPLETAMENTO §3.1, leftover fase B).
+#
+# Imbuto sigillato: due muri indistruttibili (poly solid = costo palazzo)
+# lasciano UNA sola gola larga 10 m (y 15..25) davanti alla LZ. L'orda
+# dall'exit ovest deve passare di lì per raggiungere la LZ a est.
+# In PREP pianti una LINEA di barricate (tier 1, la preda d'assedio) che
+# chiude la gola: ~4 moduli da 2.5 m. Sotto assedio un singolo modulo (12 HP)
+# salta in pochi secondi -> il varco locale si apre, il suo box sparisce
+# lasciando gli altri, e l'orda ci imbuca. Spawn denso e continuo.
+#
+# PREP illimitata (prep 0): costruisci con calma, INVIO per lanciare l'assalto.
+cell 0.5
+world 60 40
+set k_density 2.5
+set k_jam 8
+
+mission survive 180 prep 0 budget 900
+lz 52 20
+
+# imbuto: banda verticale a x[28..32], sigillata ai bordi, gola a y[15..25]
+poly 4 solid  28 0  32 0  32 15  28 15
+poly 4 solid  28 25 32 25 32 40  28 40
+
+# un exit largo a ovest che pompa l'orda verso la gola/LZ (pool infinito)
+exit 1 4 3 32 12 0 0
