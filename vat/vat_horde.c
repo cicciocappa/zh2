@@ -870,17 +870,52 @@ static int prop_box_lean(float *buf, int c, float cx, float cz, float ox, float 
 #define BLAST_DMG  180.0f
 #define FALL_DMG   25.0f
 
+// Crateri scorch (EXPLOSION_DESIGN §7 v1): ring buffer host di dischi scuri a
+// terra timbrati da host_blast, resi con lo shader dei decal di sangue (colore
+// per-istanza nero-marrone). Persistenti per la partita, azzerati al rebuild del
+// mondo. Piccolo (64): niente decay, il più vecchio viene sovrascritto.
+#define SCORCH_MAX 64
+static float gScorch[SCORCH_MAX * 3];             // x, y, radius (world m)
+static int   gScorchN = 0, gScorchHead = 0;
+static void scorch_add(float x, float y, float r) {
+    float *e = &gScorch[gScorchHead * 3];
+    e[0] = x; e[1] = y; e[2] = r;
+    gScorchHead = (gScorchHead + 1) % SCORCH_MAX;
+    if (gScorchN < SCORCH_MAX) gScorchN++;
+}
+
+#ifdef GAME_SHELL
+// Attacchi speciali: colpo di mortaio (GAME_PLAN fase F, v0 PLACEHOLDER). Niente
+// animazione di lancio (la base non è ancora un'entità: prossimo step importante),
+// niente costo biomassa (fase E), UN colpo alla volta. In ASSALTO M o l'icona in
+// barra entra in aiming (una X segue il mouse a terra); LMB programma il colpo,
+// che dopo MORTAR_DELAY esplode via host_blast sul punto mirato. Stato qui (serve
+// a build_world per il reset); barra/aiming più sotto. La formalizzazione (modulo
+// strikes.c + test + biomassa + dispersione) arriva con la gestione base / fase F.
+#define MORTAR_DELAY 1.0f
+#define STRIKE_MAX   8
+static struct { float x, y, t; int on; } gStrikes[STRIKE_MAX];
+static void strike_add(float x, float y, float delay) {
+    for (int i = 0; i < STRIKE_MAX; i++) if (!gStrikes[i].on) {
+        gStrikes[i].x = x; gStrikes[i].y = y; gStrikes[i].t = delay; gStrikes[i].on = 1;
+        return; }
+}
+static int gAimMort = 0; static float gAimX = 0.0f, gAimY = 0.0f;
+#endif
+
 // Esplosione lato host (EXPLOSION_DESIGN.md §3): la verità di gioco (def_blast:
 // agenti/strutture/cadaveri, con gli eventi DEF_EV_* che accendono gib+sangue)
-// più la fiction — archetipi prop (§4) e FX (§6). Ritorna nonzero se un prop è
-// cambiato (il chiamante ri-uploada la mesh prop). Scorch/decal + incendi (burn)
-// = prossima passata. I prop SOLID (bus/edifici/cancellate) li gestisce già
-// def_blast via il pool struttura (o sono muri permanenti): qui NON si toccano;
-// il decor NON-solid (tavolini/panchine/bidoni…) scoppia se D(d) supera resist.
+// più la fiction — archetipi prop (§4), FX (§6) e cratere scorch (§7 v1).
+// Ritorna nonzero se un prop è cambiato (il chiamante ri-uploada la mesh prop).
+// Incendi (burn) + annerimento facciate = prossima passata. I prop SOLID
+// (bus/edifici/cancellate) li gestisce già def_blast via il pool struttura (o
+// sono muri permanenti): qui NON si toccano; il decor NON-solid
+// (tavolini/panchine/bidoni…) scoppia se D(d) supera resist.
 static int host_blast(DefGame *g, SimP *s, const Scene *sc, const PropCatalog *cat,
-                      Destruct *dz, FxParticles *fx,
+                      Destruct *dz, FxParticles *fx, VatLayer *vl,
                       float x, float y, float r, float dmg, float strength, float up) {
-    def_blast(g, x, y, r, dmg, strength, up);
+    def_blast(g, x, y, r, dmg, strength, up);     // agenti/strutture + cadaveri FISICI
+    vat_layer_clear_corpses(vl, x, y, r);         // + sagome VISIVE nel raggio (§3)
     int changed = 0;
     DestructCtx dc = { fx };
     for (int i = 0; i < sc->n_prop; i++) {
@@ -901,6 +936,7 @@ static int host_blast(DefGame *g, SimP *s, const Scene *sc, const PropCatalog *c
     fx_emit(fx, of, &EXPL_FLASH_DEF,    0.0f, -1.0f);
     fx_emit(fx, of, &EXPL_FIREBALL_DEF, 0.0f, -1.0f);
     fx_emit(fx, os, &EXPL_SMOKE_DEF,    0.0f, -1.0f);
+    scorch_add(x, y, r * 0.6f);                     // cratere annerito (§7 v1)
     au_play(SND_BOOM);
     (void)s;
     return changed;
@@ -911,12 +947,12 @@ static int host_blast(DefGame *g, SimP *s, const Scene *sc, const PropCatalog *c
 // d'esplosione — friendly fire incluso). prop_changed segnala che una mesh prop
 // va ri-uploadata. Il core traps non conosce né def_blast né gli FX.
 typedef struct { DefGame *g; SimP *s; const Scene *sc; const PropCatalog *cat;
-                 Destruct *dz; FxParticles *fx; int prop_changed; } TrapBlastCtx;
+                 Destruct *dz; FxParticles *fx; VatLayer *vl; int prop_changed; } TrapBlastCtx;
 static void on_trap_blast(void *user, int id, float x, float y,
                           float r, float dmg, float strength, float up){
     (void)id;
     TrapBlastCtx *c=user;
-    if(host_blast(c->g,c->s,c->sc,c->cat,c->dz,c->fx,x,y,r,dmg,strength,up))
+    if(host_blast(c->g,c->s,c->sc,c->cat,c->dz,c->fx,c->vl,x,y,r,dmg,strength,up))
         c->prop_changed=1;
 }
 
@@ -1349,6 +1385,10 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     SimP *s = scene_instantiate(sc, MAXA);
     if(!s){ fprintf(stderr,"scene_instantiate fail\n"); return -1; }
     spctx->s = s; spctx->vl = vl;
+    gScorchN = gScorchHead = 0;                     // crateri scorch: mondo pulito
+#ifdef GAME_SHELL
+    gAimMort = 0; for(int i=0;i<STRIKE_MAX;i++) gStrikes[i].on = 0;  // reset mortaio
+#endif
 
     // buchi del terreno (statici indistruttibili) PRIMA di prefill/base, così
     // gli agenti non nascono dentro un palazzo e il nav è già corretto.
@@ -1815,6 +1855,36 @@ static void prep_bar_draw(int SW,int SH,DefGame *g,float mpx,float mpy){
       ui_text_c(r->x+r->w*0.5f,y0+100,1.5f,"INVIO",0.6f,0.6f,0.6f,1); }
 }
 
+// ---- barra + aiming del colpo di mortaio (stato pool in cima, presso gScorch) --
+static UiRect gMortR; static float gStrikeBarY = 1e9f;
+static void strikes_ui_layout(int SW, int SH) {
+    (void)SW; float y0 = (float)SH - PREP_BAR_H; gStrikeBarY = y0;
+    gMortR = (UiRect){ 10.0f, y0 + 36, PREP_CARD_W, PREP_CARD_H };
+}
+static void strikes_bar_draw(int SW, int SH) {
+    strikes_ui_layout(SW, SH);
+    float y0 = gStrikeBarY;
+    ui_quad(0, y0, (float)SW, PREP_BAR_H, 0.05f, 0.05f, 0.09f, 0.88f);
+    ui_quad(0, y0, (float)SW, 2, 0.35f, 0.10f, 0.08f, 1);
+    const UiRect *r = &gMortR; int on = gAimMort;
+    ui_quad(r->x, r->y, r->w, r->h, on ? 0.28f : 0.12f, on ? 0.14f : 0.10f, 0.10f, 0.92f);
+    ui_quad(r->x, r->y, r->w, 2, 0.65f, 0.32f, 0.12f, 1);
+    float cx = r->x + r->w * 0.5f, cy = r->y + 24;
+    ui_quad(cx - 10, cy - 2, 20, 7, 0.35f, 0.37f, 0.35f, 1);        // piastra
+    ui_quad(cx - 2, cy - 13, 5, 12, 0.52f, 0.52f, 0.58f, 1);        // tubo
+    ui_text_c(cx, r->y + r->h - 12, 1.5f, "MORTAIO", 0.95f, 0.9f, 0.85f, 1);
+    ui_text(r->x + r->w + 18, y0 + 52, 2,
+            on ? "MIRA COL MOUSE - CLICK SINISTRO = FUOCO (RMB/M ANNULLA)"
+               : "M O CLICCA L'ICONA PER IL COLPO DI MORTAIO",
+            0.85f, 0.85f, 0.85f, 1);
+}
+static int strikes_ui_click(float mx, float my, int SW, int SH) {
+    strikes_ui_layout(SW, SH);
+    if (my < gStrikeBarY) return 0;
+    if (ui_hit(&gMortR, mx, my)) { gAimMort = !gAimMort; au_play(SND_MENU_SELECT); }
+    return 1;                                       // sfondo barra: consumato (mai mondo)
+}
+
 static void shell_build_ui(int SW,int SH,DefGame *g,float mpx,float mpy){
     float W=(float)SW,H=(float)SH;
     AppState st=gApp.state;
@@ -1832,6 +1902,7 @@ static void shell_build_ui(int SW,int SH,DefGame *g,float mpx,float mpy){
         ui_quad(0,0,W,28,0,0,0,0.55f);
         ui_text(10,8,2,line,1,1,1,1);
         if(st==APP_PREP) prep_bar_draw(SW,SH,g,mpx,mpy);   // barra PREP (§3)
+        else if(st==APP_ASSAULT) strikes_bar_draw(SW,SH);  // barra strike (mortaio)
         return;
     }
     ui_quad(0,0,W,H,0.02f,0.02f,0.04f,0.72f);           // oscura il mondo fermo
@@ -2073,6 +2144,7 @@ int main(int argc, char **argv){
 #define DECALMAX 8192
     static float decalraw[DECALMAX*6];           // x,y,size,r,g,b (da vat_layer)
     static float decalinst[DECALMAX*7];          // cx,gy,cz,radius,r,g,b (istanza GL)
+    static float scorchinst[SCORCH_MAX*7];       // crateri scorch (§7 v1), stessa geom/shader
     GLuint progDc=vg_shader("assets/shaders/decal.vs","assets/shaders/decal.fs");
     GLint uVPdc=glGetUniformLocation(progDc,"uVP");
     GLuint dcVao,dcInst; glGenVertexArrays(1,&dcVao);glBindVertexArray(dcVao);
@@ -2473,6 +2545,30 @@ int main(int argc, char **argv){
                         continue;
                     }
                 }
+                // ASSALTO: barra strike (mortaio) + aiming. Dentro barra = UI;
+                // in aiming la X segue il mouse e LMB (fuori barra) programma il
+                // colpo; RMB o M annulla. Fuori aiming il mouse guida la camera.
+                if(!ed.active && gApp.state==APP_ASSAULT && !drag_cam){
+                    strikes_ui_layout(SW,SH);
+                    if(myf>=gStrikeBarY){
+                        if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN &&
+                           e.button.button==SDL_BUTTON_LEFT)
+                            strikes_ui_click(mxf,myf,SW,SH);
+                        continue;
+                    }
+                    if(gAimMort){
+                        float wx,wy;
+                        if(pick_y0(vp,mxf,myf,SW,SH,&wx,&wy)){
+                            gAimX=wx; gAimY=wy;
+                            if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
+                                if(e.button.button==SDL_BUTTON_LEFT){
+                                    strike_add(wx,wy,MORTAR_DELAY); au_play(SND_MENU_SELECT); }
+                                else if(e.button.button==SDL_BUTTON_RIGHT) gAimMort=0;
+                            }
+                        }
+                        continue;                  // in aiming il mouse non guida la camera
+                    }
+                }
 #endif
                 // camera col mouse? PLAY: LMB/RMB nudi; EDIT o placement: solo con Alt.
                 int cam_gesture = (!ed.active && !plc.active) || alt;
@@ -2489,7 +2585,11 @@ int main(int argc, char **argv){
                 if(plc.active && !ed.active){
                     // fase A: fuori PREP il piazzamento si chiude da solo
                     if(gMissionOn && !mission_placement_open(&gMission)){
-                        plc.active=0; plineOn=0; plineChain=0; continue; }
+                        plc.active=0;
+#ifdef GAME_SHELL
+                        plineOn=0; plineChain=0;   // esistono solo nella shell
+#endif
+                        continue; }
                     float wx,wy; if(pick_y0(vp,mxf,myf,SW,SH,&wx,&wy)) pl_set_cursor(&plc,wx,wy);
 #ifdef GAME_SHELL
                     // barriere a LINEA (§5): LMB = ancora, rilascio = commit
@@ -2661,7 +2761,15 @@ int main(int argc, char **argv){
             } else switch(e.key.key){                             // --- tasti PLAY ---
                 case SDLK_C:cam_free=!cam_free;break; case SDLK_T:useTex=!useTex;break;
                 case SDLK_SPACE:paused=!paused;break;
-                case SDLK_E:blast_x=cx;blast_y=cz;blast_pending=1;break;
+                case SDLK_E:  // blast di debug al PUNTATORE (non più al centro-camera)
+                    if(pick_y0(vp,mouse_px,mouse_py,SW,SH,&blast_x,&blast_y)) blast_pending=1;
+                    break;
+#ifdef GAME_SHELL
+                case SDLK_M:  // colpo di mortaio: entra/esci dall'aiming (solo in ASSALTO)
+                    if(gApp.state==APP_ASSAULT){ gAimMort=!gAimMort;
+                        if(gAimMort) au_play(SND_MENU_SELECT); }
+                    break;
+#endif
                 case SDLK_RETURN: case SDLK_KP_ENTER:  // fase A: via all'assalto
                     if(gMissionOn && gMission.state==MISSION_PREP){
                         mission_go(&gMission); plc.active=0;
@@ -2732,7 +2840,7 @@ int main(int argc, char **argv){
                 // host_blast = def_blast (danno/impulso/strutture/cadaveri, +eventi
                 // gib/sangue) + FX §6 + burst dei prop decor. Il re-upload della
                 // mesh prop serve perché destruct_force non lo intercetta da solo.
-                if(host_blast(g,s,&sc,&gCatalog,&dz,&fx,blast_x,blast_y,BLAST_R,BLAST_DMG,blast_str,blast_up))
+                if(host_blast(g,s,&sc,&gCatalog,&dz,&fx,vl,blast_x,blast_y,BLAST_R,BLAST_DMG,blast_str,blast_up))
                     prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g);
                 blast_pending=0; printf("blast @ (%.1f,%.1f) R %.1f D %.0f str %.1f up %.2f\n",
                     (double)blast_x,(double)blast_y,(double)BLAST_R,(double)BLAST_DMG,
@@ -2766,9 +2874,21 @@ int main(int argc, char **argv){
                 // mine (GAME_PLAN fase D): dopo lo step (griglia fresca) le trappole
                 // ARMATE scattano sul primo agente vicino -> host_blast (def_blast +
                 // FX, friendly fire incluso). Catene risolte in ordine di id nel core.
-                { TrapBlastCtx tbc={g,s,&sc,&gCatalog,&dz,&fx,0};
+                { TrapBlastCtx tbc={g,s,&sc,&gCatalog,&dz,&fx,vl,0};
                   traps_update(&traps,s,FIXED_DT,on_trap_blast,&tbc);
                   if(tbc.prop_changed) prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g); }
+#ifdef GAME_SHELL
+                // colpi di mortaio programmati (attacchi speciali, placeholder fase F):
+                // scaduto MORTAR_DELAY, esplode al punto mirato via host_blast (stessa
+                // primitiva delle mine, friendly fire incluso).
+                for(int i=0;i<STRIKE_MAX;i++) if(gStrikes[i].on){
+                    gStrikes[i].t-=FIXED_DT;
+                    if(gStrikes[i].t<=0.0f){ gStrikes[i].on=0;
+                        if(host_blast(g,s,&sc,&gCatalog,&dz,&fx,vl,gStrikes[i].x,gStrikes[i].y,
+                                      BLAST_R,BLAST_DMG,blast_str,blast_up))
+                            prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g); }
+                }
+#endif
                 // danno da caduta (EXPLOSION_DESIGN §3.4): gli agenti atterrati in
                 // questo step (lanciati da un blast/impulso) prendono danno costante
                 // → ferite/gib+sangue via i soliti eventi. Chiude il buco M3.2
@@ -2936,6 +3056,19 @@ int main(int argc, char **argv){
                 glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)sv*9*sizeof(float),stBuf);
                 glDrawArrays(GL_TRIANGLES,0,sv); } }
 
+        // crateri scorch persistenti (§7 v1): dischi scuri col shader dei decal,
+        // SOTTO il sangue (disegnati prima) -> gli schizzi coprono il cratere.
+        { int ns=gScorchN;
+          for(int i=0;i<ns;i++){ float *e=&gScorch[i*3],*o=&scorchinst[i*7];
+              o[0]=e[0]; o[1]=ter_z(e[0],e[1])+0.02f; o[2]=e[1];
+              o[3]=e[2]; o[4]=0.09f; o[5]=0.06f; o[6]=0.05f; }   // nero-marrone
+          if(ns){ glUseProgram(progDc);glUniformMatrix4fv(uVPdc,1,GL_FALSE,vp);
+              glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);
+              glBindVertexArray(dcVao);glBindBuffer(GL_ARRAY_BUFFER,dcInst);
+              glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)ns*7*sizeof(float),scorchinst);
+              glDrawArraysInstanced(GL_TRIANGLE_FAN,0,SHADN,ns);
+              glDepthMask(GL_TRUE);glDisable(GL_BLEND); } }
+
         // decal di sangue persistenti (a terra, blended): sotto orda e ombre
         { int nd=vat_layer_fill_decals(vl,decalraw,DECALMAX);
           for(int i=0;i<nd;i++){ float *r=decalraw+i*6,*o=decalinst+i*7;
@@ -3084,6 +3217,19 @@ int main(int argc, char **argv){
                 glEnable(GL_DEPTH_TEST); }
         }
 #ifdef GAME_SHELL
+        // X di mira del mortaio: due barre incrociate sul punto mirato (aiming
+        // attivo in ASSALTO). Riusa l'overlay flat del ghost di placement.
+        if(gAimMort && gApp.state==APP_ASSAULT && !ed.active){
+            int ov=0; float sX=1.4f;
+            ov=ed_push_bar(edovl,ov, gAimX-sX,gAimY-sX, gAimX+sX,gAimY+sX, 0.35f, 0.95f,0.25f,0.12f);
+            ov=ed_push_bar(edovl,ov, gAimX-sX,gAimY+sX, gAimX+sX,gAimY-sX, 0.35f, 0.95f,0.25f,0.12f);
+            if(ov){ glDisable(GL_DEPTH_TEST);
+                glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
+                glBindVertexArray(ovVao);glBindBuffer(GL_ARRAY_BUFFER,ovVbo);
+                glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)ov*9*sizeof(float),edovl);
+                glDrawArrays(GL_TRIANGLES,0,ov);
+                glEnable(GL_DEPTH_TEST); }
+        }
         // overlay shell (title/menu/briefing/debrief + barra di fase): 2D in
         // pixel, sopra tutto, blend alpha (l'alpha viaggia in aNormal.x).
         gUiV=0; shell_build_ui(SW,SH,g,mouse_px,mouse_py);

@@ -176,6 +176,10 @@ int  vat_layer_fill_decals(VatLayer *vl, float *out, int max_out);
  * cappato (niente decay). 6 float/decal: x, y, heading(rad), size(raggio mondo),
  * colonna d'atlante, outfit. Ritorna il numero. */
 int  vat_layer_fill_corpse_decals(VatLayer *vl, float *out, int max_out);
+/* Vaporizza le sagome-cadavere entro il raggio (esplosione/fuoco): le marca
+ * cancellate; fill_corpse_decals le salta. Lo slot torna vivo se un nuovo
+ * cadavere lo riusa. Speculare a simp_corpse_clear per la parte VISIVA. */
+void vat_layer_clear_corpses(VatLayer *vl, float x, float y, float r);
 
 /* Riempie inst_buf (12 float/istanza: pos.xyz, heading, scala, gA, gB, mix,
  * outfit, tint.rgb) con i SOLI agenti assegnati a `variant`. Ritorna il numero

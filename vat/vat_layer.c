@@ -536,9 +536,17 @@ int vat_layer_fill_decals(VatLayer *vl, float *out, int max_out){
    outfit). colonna = variante*VAT_CORPSE_NPOSE + posa (la posa di morte giocata);
    outfit = riga d'atlante (0..31). Il chiamante somma terrain_z(x,y), orienta il
    quad per heading e campiona la cella (colonna,outfit). Ritorna il numero. */
+void vat_layer_clear_corpses(VatLayer *vl, float x, float y, float r){
+    float r2=r*r;
+    for(int q=0; q<vl->qcount; q++){
+        float dx=vl->qx[q]-x, dy=vl->qy[q]-y;
+        if(dx*dx+dy*dy<=r2) vl->qsz[q]=0.0f;      /* qsz<=0 = cancellata (saltata nel fill) */
+    }
+}
 int vat_layer_fill_corpse_decals(VatLayer *vl, float *out, int max_out){
     int c=0;
     for(int q=0; q<vl->qcount && c<max_out; q++){
+        if(vl->qsz[q]<=0.0f) continue;            /* sagoma vaporizzata da un blast */
         float *o=out+c*6;
         o[0]=vl->qx[q]; o[1]=vl->qy[q]; o[2]=vl->qhd[q]; o[3]=vl->qsz[q];
         o[4]=(float)(vl->qvar[q]*VAT_CORPSE_NPOSE + vl->qpose[q]);
