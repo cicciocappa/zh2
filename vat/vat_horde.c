@@ -911,12 +911,17 @@ static void scorch_add(float x, float y, float r) {
 // che dopo MORTAR_DELAY esplode via host_blast sul punto mirato. Stato qui (serve
 // a build_world per il reset); barra/aiming più sotto. La formalizzazione (modulo
 // strikes.c + test + biomassa + dispersione) arriva con la gestione base / fase F.
-#define MORTAR_DELAY 1.0f
+#define MORTAR_DELAY 1.8f          // tempo di volo (s): arco lobato ben leggibile
+#define MORTAR_APEX  22.0f         // altezza extra dell'arco al culmine (m)
 #define STRIKE_MAX   8
-static struct { float x, y, t; int on; } gStrikes[STRIKE_MAX];
-static void strike_add(float x, float y, float delay) {
+// Colpo in volo (BASE_DESIGN §3): parte dal container (ox,oy) e ATTERRA su (x,y)
+// esattamente allo scadere di ttot; il proiettile è fiction (billboard di scia),
+// l'impatto è host_blast. t = tempo residuo; p = 1−t/ttot = progresso 0→1.
+static struct { float x, y, ox, oy, t, ttot; int on; } gStrikes[STRIKE_MAX];
+static void strike_add(float x, float y, float ox, float oy, float delay) {
     for (int i = 0; i < STRIKE_MAX; i++) if (!gStrikes[i].on) {
-        gStrikes[i].x = x; gStrikes[i].y = y; gStrikes[i].t = delay; gStrikes[i].on = 1;
+        gStrikes[i].x = x; gStrikes[i].y = y; gStrikes[i].ox = ox; gStrikes[i].oy = oy;
+        gStrikes[i].t = delay; gStrikes[i].ttot = delay; gStrikes[i].on = 1;
         return; }
 }
 static int gAimMort = 0; static float gAimX = 0.0f, gAimY = 0.0f;
@@ -1243,6 +1248,15 @@ static int build_tracer_mesh(float *buf){
 // structure cells (mesh sweep); gCoreId >= 0 only for the legacy base.
 static int gStructOn=0, gCoreId=-1, gOuterId=-1;
 static int gStX0=0, gStY0=0, gStX1=-1, gStY1=-1;
+// BASE container (BASE_DESIGN §3): the lz core is one real container ISO 20"
+// (~6,1 × 2,44 × 2,6 m, Chinook hook load), orientabile via lz yaw. Placement
+// stored here at build time so build_struct_mesh can draw it as ONE oriented box.
+static int gLzCore=-1;                   // id struttura core della LZ (se lz), -1 = nessuna
+static float gLzX=0, gLzY=0, gLzYaw=0;   // centro (m) e orientamento (radianti) del container
+static float gBaseOX=0, gBaseOY=0;       // origine attacchi speciali: container se lz, else centro base
+#define BASE_W 6.1f
+#define BASE_D 2.44f
+#define BASE_H 2.6f
 static void build_base(DefGame *g, SimP *s, float cell, float bcx, float bcy){
     int cx0=(int)(bcx/cell), cy0=(int)(bcy/cell), hc=6, ho=16;
     gCoreId  = def_add_structure(g, 1200.0f, 1);   // innermost = loss
@@ -1295,6 +1309,7 @@ static int build_struct_mesh(DefGame *g, float cell, float *buf, int maxV){
         if(c+30 > maxV) return c;                         // cap: non sforare il VBO
         int id=def_cell_struct(g,cx,cy); if(id<0) continue;
         if(def_struct_is_turret(g,id)) continue;          // drawn as a turret pillar
+        if(id==gLzCore) continue;                         // il container si disegna come box unico (sotto)
         if(id<PROP_WORLD_MAX_STRUCT && gPropW.struct_is_prop[id]) continue; // il prop disegna la sua mesh (§6)
 #ifdef GAME_SHELL
         if(id<PLMOD_SIDCAP && gSidMod[id]) continue;      // modulo linea: box ruotato (sotto)
@@ -1354,6 +1369,36 @@ static int build_struct_mesh(DefGame *g, float cell, float *buf, int maxV){
 #undef QM
     }
 #endif
+    // BASE container (fase 1b): il core della LZ è UN box orientato (placeholder
+    // container 6,1×2,44×2,6 m) al posto dei cubetti per-cella saltati sopra.
+    // Si scurisce col danno e sparisce al crollo (celle liberate da defense).
+    if(gLzCore>=0 && !def_struct_collapsed(g,gLzCore) && c+30<=maxV){
+        float frac=def_struct_hp(g,gLzCore)/(def_struct_hp_max(g,gLzCore)+1e-3f);
+        float t=0.35f+0.65f*frac;
+        float cr=0.82f*t, cg=0.40f*t, cb=0.12f*t;        // arancio container da spedizione
+        float ca=cosf(gLzYaw), sa=sinf(gLzYaw);
+        float hw=0.5f*BASE_W, ht=0.5f*BASE_D;            // half-length lungo u, half-depth lungo v
+        /* corners: center ± hw·u ± ht·v, u=(ca,sa) lunghezza, v=(-sa,ca) profondità */
+        float px[4]={ gLzX-ca*hw+sa*ht, gLzX+ca*hw+sa*ht,
+                      gLzX+ca*hw-sa*ht, gLzX-ca*hw-sa*ht };
+        float pz[4]={ gLzY-sa*hw-ca*ht, gLzY+sa*hw-ca*ht,
+                      gLzY+sa*hw+ca*ht, gLzY-sa*hw+ca*ht };
+        float zb=ter_z(gLzX,gLzY), H1=zb+BASE_H;
+#define VC(PX,PY,PZ,NX,NY,NZ) do{float*o=buf+c*9;o[0]=PX;o[1]=PY;o[2]=PZ;\
+        o[3]=NX;o[4]=NY;o[5]=NZ;o[6]=cr;o[7]=cg;o[8]=cb;c++;}while(0)
+#define QC(A,B,YA,YB,nx,nz) do{ /* lato A->B, sotto YA sopra YB */ \
+        VC(px[A],YA,pz[A],nx,0,nz);VC(px[B],YA,pz[B],nx,0,nz);\
+        VC(px[B],YB,pz[B],nx,0,nz);VC(px[A],YA,pz[A],nx,0,nz);\
+        VC(px[B],YB,pz[B],nx,0,nz);VC(px[A],YB,pz[A],nx,0,nz);}while(0)
+        VC(px[0],H1,pz[0],0,1,0);VC(px[1],H1,pz[1],0,1,0);VC(px[2],H1,pz[2],0,1,0);
+        VC(px[0],H1,pz[0],0,1,0);VC(px[2],H1,pz[2],0,1,0);VC(px[3],H1,pz[3],0,1,0);
+        QC(1,2,zb,H1,  ca, sa);      /* +u (testa) */
+        QC(3,0,zb,H1, -ca,-sa);      /* -u (coda)  */
+        QC(2,3,zb,H1, -sa, ca);      /* +v (fianco) */
+        QC(0,1,zb,H1,  sa,-ca);      /* -v (fianco) */
+#undef VC
+#undef QC
+    }
     return c;
 }
 
@@ -1371,7 +1416,6 @@ static int build_struct_mesh(DefGame *g, float cell, float *buf, int maxV){
 // director (uno per exit) e li fa emettere solo in ASSAULT. gMissionOn=0 =
 // scena legacy -> director unico di demo come sempre.
 static Mission gMission; static int gMissionOn=0;
-static int gLzCore=-1;                  // id struttura core della LZ (se lz)
 
 // entita' `lz x y` (fase A): goal centrale 3x3 (profondo >=2 celle, trappola
 // tank di M3.5) + anello 5x5 di celle-core assediabili (is_core: crollo =
@@ -1379,8 +1423,7 @@ static int gLzCore=-1;                  // id struttura core della LZ (se lz)
 // del core); HP da VAT_HORDE_LZ_HP (default 1500).
 // La base è un CONTAINER (BASE_DESIGN §3): footprint reale di un container ISO
 // 20" (~6,1 × 2,44 m, carico a gancio di un Chinook), orientabile via lz yaw.
-#define BASE_W 6.1f
-#define BASE_D 2.44f
+// (gLzCore/gLzX/gLzY/gLzYaw + BASE_W/D/H sono dichiarati sopra build_struct_mesh.)
 // Ogni cella del rettangolo ruotato diventa una cella della struttura assediabile
 // (is_core), TRANNE la cella centrale che resta goal NON solido: il core §316 di
 // sim_particles ammette solo goal non murati come sorgenti, quindi l'orda è
@@ -1409,6 +1452,8 @@ static void build_lz_core(DefGame *g, SimP *s, const Scene *sc){
     scene_raster_cells(vx,vy,4,cell,gw,gh,lz_foot_cb,&fc);
     simp_terrain_commit(s);
     gLzCore=sid; gStructOn=1;
+    gLzX=sc->lz_x; gLzY=sc->lz_y; gLzYaw=a;   // per il box container in build_struct_mesh
+    gBaseOX=sc->lz_x; gBaseOY=sc->lz_y;       // il mortaio parte dal container
 }
 
 typedef struct { SimP *s; int n; } HoleCtx;
@@ -1442,6 +1487,7 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     if(sc->n_goal>0){ float sx=0,sy=0; for(int k=0;k<sc->n_goal;k++){
             sx+=sc->goal[k].x+sc->goal[k].w*0.5f; sy+=sc->goal[k].y+sc->goal[k].h*0.5f; }
         bcx=sx/sc->n_goal; bcy=sy/sc->n_goal; }
+    gBaseOX=bcx; gBaseOY=bcy;                 // fallback origine mortaio (il container lo sovrascrive)
     float mn = sc->world_w<sc->world_h?sc->world_w:sc->world_h;
     float TR_R = 0.22f*mn;
     def_set_budget(g, getenv("VAT_HORDE_BUDGET")?atoi(getenv("VAT_HORDE_BUDGET")):1000);
@@ -2603,7 +2649,12 @@ int main(int argc, char **argv){
                             gAimX=wx; gAimY=wy;
                             if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
                                 if(e.button.button==SDL_BUTTON_LEFT){
-                                    strike_add(wx,wy,MORTAR_DELAY); au_play(SND_MENU_SELECT); }
+                                    strike_add(wx,wy,gBaseOX,gBaseOY,MORTAR_DELAY);
+                                    // puff di lancio dal container: lampo + fumo alla bocca
+                                    float lo[3]={gBaseOX,ter_z(gBaseOX,gBaseOY)+BASE_H,gBaseOY};
+                                    fx_emit(&fx,lo,&MUZZLE_FLASH_HVY_DEF,0.0f,-1.0f);
+                                    fx_emit(&fx,lo,&EXPL_SMOKE_DEF,0.0f,-1.0f);
+                                    au_play(SND_MENU_SELECT); }
                                 else if(e.button.button==SDL_BUTTON_RIGHT) gAimMort=0;
                             }
                         }
@@ -2919,15 +2970,33 @@ int main(int argc, char **argv){
                   traps_update(&traps,s,FIXED_DT,on_trap_blast,&tbc);
                   if(tbc.prop_changed) prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g); }
 #ifdef GAME_SHELL
-                // colpi di mortaio programmati (attacchi speciali, placeholder fase F):
-                // scaduto MORTAR_DELAY, esplode al punto mirato via host_blast (stessa
-                // primitiva delle mine, friendly fire incluso).
+                // colpi di mortaio in volo (BASE_DESIGN §3): il proiettile parte dal
+                // container (ox,oy) e segue un arco parabolico fino al bersaglio (x,y),
+                // che raggiunge esattamente a t<=0 -> host_blast (impatto). Il proiettile
+                // è FICTION: una testata billboard luminosa + scia di fumo emessa lungo
+                // il percorso (fx_emit_one, niente stato persistente). Precise, no RNG.
                 for(int i=0;i<STRIKE_MAX;i++) if(gStrikes[i].on){
                     gStrikes[i].t-=FIXED_DT;
                     if(gStrikes[i].t<=0.0f){ gStrikes[i].on=0;
                         if(host_blast(g,s,&sc,&gCatalog,&dz,&fx,vl,gStrikes[i].x,gStrikes[i].y,
                                       BLAST_R,BLAST_DMG,blast_str,blast_up))
-                            prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g); }
+                            prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g);
+                        continue; }
+                    // posizione lungo l'arco a questo step
+                    float p=1.0f-gStrikes[i].t/gStrikes[i].ttot;   // 0 lancio -> 1 impatto
+                    float ox=gStrikes[i].ox, oy=gStrikes[i].oy, tx=gStrikes[i].x, ty=gStrikes[i].y;
+                    float ax=ox+(tx-ox)*p, az=oy+(ty-oy)*p;        // XZ (mondo: x, z=mappa-y)
+                    float h0=ter_z(ox,oy)+BASE_H, h1=ter_z(tx,ty)+0.2f;
+                    float ay=h0+(h1-h0)*p + MORTAR_APEX*4.0f*p*(1.0f-p);
+                    float hp3[3]={ax,ay,az};
+                    // testata: puntino brillante additivo, fermo e a vita breve -> scia-cometa
+                    float hc0[4]={1.0f,0.95f,0.65f,1.0f}, hc1[4]={1.0f,0.55f,0.15f,0.0f};
+                    float zerov[3]={0,0,0};
+                    fx_emit_one(&fx,hp3,zerov, 0.18f, 0.0f,0.0f, hc0,hc1, 0.55f,0.22f, -1, 0.0f,false,FX_BLEND_ADD);
+                    // fumo di scia: grigio, sale piano, sfuma
+                    float sc0[4]={0.55f,0.55f,0.58f,0.7f}, sc1[4]={0.35f,0.35f,0.38f,0.0f};
+                    float sv[3]={0,0.6f,0};
+                    fx_emit_one(&fx,hp3,sv, 0.7f, 0.0f,1.2f, sc0,sc1, 0.4f,1.1f, -1, 0.0f,false,FX_BLEND_ALPHA);
                 }
 #endif
                 // danno da caduta (EXPLOSION_DESIGN §3.4): gli agenti atterrati in
