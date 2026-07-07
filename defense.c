@@ -652,6 +652,15 @@ void def_damage_agent(DefGame *g, SimPHandle h, float dmg) {
     hurt_light(g, i, simp_slot_of(g->s, i), (int)(dmg + 0.5f));
 }
 
+/* Dismember an agent outright (no HP check): the explosive-death path — GIB
+ * event (renderer bursts the body + drops a blood pool, no corpse), nav gore,
+ * kill. Used for a lethal fall landing (EXPLOSION_DESIGN §3.4). */
+void def_gib_agent(DefGame *g, SimPHandle h) {
+    int i = simp_index_of(g->s, h);
+    if (i < 0) return;
+    gib(g, i);
+}
+
 /* Explosion primitive (EXPLOSION_DESIGN.md §3): ONE geometry drives both damage
  * and physics via the same linear falloff D(d) = dmg*(1 - d/r). Order:
  *   1. agents  — falloff damage (dead -> corpses a later blast can sweep), then

@@ -35,6 +35,9 @@ static inline float rng_fsym(uint32_t *st) {          /* [-1,1) */
 #define DRAG_CAP   1024       /* fixed draggable pool (DRAG_DESIGN.md) */
 #define LINK_CAP   512        /* fixed car-joint pool (DRAG_DESIGN.md §8) */
 #define TAKEOFF_VZ 1.0f       /* vertical speed that flips SIMP_FLYING */
+#define FLY_DRAG   0.8f       /* horizontal air drag in flight (1/s): bleeds off
+                                 launch speed so a blast can't fling an agent
+                                 across the whole map (annoying flat trajectory) */
 #define COST_MIN (-0.8f)      /* user cost clamp: edges stay positive */
 #define COST_MAX 100.0f       /* and never competitive with WALL_ENTER */
 #define RHO_EMA 0.3f          /* density EMA gain per flow recompute */
@@ -2018,6 +2021,9 @@ int simp_step(SimP *s, float dt) {
         if (s->aflags[i] & SIMP_FLYING) {
             s->vz[i] -= GRAV * dt;
             s->z[i]  += s->vz[i] * dt;
+            float fd = 1.0f - FLY_DRAG * dt;             /* horizontal air drag */
+            if (fd < 0.0f) fd = 0.0f;
+            s->vx[i] *= fd; s->vy[i] *= fd;
             if (s->z[i] <= 0.0f) {                       /* touchdown */
                 s->z[i] = 0.0f; s->vz[i] = 0.0f;
                 s->aflags[i] &= (uint8_t)~SIMP_FLYING;

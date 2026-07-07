@@ -41,7 +41,7 @@ static int roundtrip(void) {
     a.n_exit = 2;                                            /* fase A entities */
     a.exits[0] = (SceneExit){ 1, 4, 2, 8, 12.0f, 5.0f, 400 };
     a.exits[1] = (SceneExit){ 27, 4, 2, 8, 6.0f, 0.0f, 0 };  /* no delay, inf pool */
-    a.has_lz = 1; a.lz_x = 15.0f; a.lz_y = 10.0f;
+    a.has_lz = 1; a.lz_x = 15.0f; a.lz_y = 10.0f; a.lz_yaw = 31.0f;
     a.mission = (SceneMission){ SCENE_MISSION_SURVIVE, 300.0f, 90.0f, 500.0f };
 
     int ok = scene_save(TMP, &a) == 0;
@@ -71,7 +71,8 @@ static int roundtrip(void) {
          fabsf(b.exits[0].rate - 12.0f) < 1e-6f && fabsf(b.exits[0].delay - 5.0f) < 1e-6f &&
          b.exits[0].pool == 400 && b.exits[1].pool == 0 &&
          fabsf(b.exits[1].x - 27.0f) < 1e-6f;
-    ok = ok && b.has_lz && fabsf(b.lz_x - 15.0f) < 1e-6f && fabsf(b.lz_y - 10.0f) < 1e-6f;
+    ok = ok && b.has_lz && fabsf(b.lz_x - 15.0f) < 1e-6f && fabsf(b.lz_y - 10.0f) < 1e-6f
+            && fabsf(b.lz_yaw - 31.0f) < 1e-6f;
     ok = ok && b.mission.kind == SCENE_MISSION_SURVIVE &&
          fabsf(b.mission.survive_s - 300.0f) < 1e-6f &&
          fabsf(b.mission.prep_s - 90.0f) < 1e-6f &&

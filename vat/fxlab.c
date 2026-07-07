@@ -56,7 +56,7 @@ static const char *PREFIX[] = {
 typedef struct { GLuint vao, texP, texN, texD; int ni, hasTex; const VatMeta *M; } Asset;
 typedef struct { GLuint vao, vbo, ebo, tex; int nidx, hasTex; } Ground;
 
-static float inst[MAXSLOT*12];
+static float inst[MAXSLOT*14];   /* 12 base + 2 tumble (pitch,roll) */
 
 // terreno (heightmap render-only) + offset mondo: il footprint del glb può stare
 // a coord negative (origin del .zhm); trasliamo tutto in coord >=0 per la sim e
@@ -601,7 +601,9 @@ int main(int argc, char **argv){
         glGenBuffers(1,&eb);glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,eb);glBufferData(GL_ELEMENT_ARRAY_BUFFER,ni*2,idxb,GL_STATIC_DRAW);
         glBindBuffer(GL_ARRAY_BUFFER,bi);
         for(int i=0;i<3;i++){glEnableVertexAttribArray(2+i);
-            glVertexAttribPointer(2+i,4,GL_FLOAT,0,12*sizeof(float),(void*)(i*4*sizeof(float)));glVertexAttribDivisor(2+i,1);}
+            glVertexAttribPointer(2+i,4,GL_FLOAT,0,14*sizeof(float),(void*)(i*4*sizeof(float)));glVertexAttribDivisor(2+i,1);}
+        glEnableVertexAttribArray(5);      // tumble in volo (pitch, roll)
+        glVertexAttribPointer(5,2,GL_FLOAT,0,14*sizeof(float),(void*)(12*sizeof(float)));glVertexAttribDivisor(5,1);
         glBindVertexArray(0); A[v].vao=vao;
         free(verts);free(uvs);free(idxb);
     }
@@ -669,9 +671,9 @@ int main(int argc, char **argv){
                     int col=v*VAT_CORPSE_NPOSE+p;
                     for(int o=0;o<nout;o++){
                         // riga o = outfit base; bake con la versione INSANGUINATA (o+16)
-                        float one[12]={0,0,0, 0, 1.0f, (float)fr,(float)fr,0, (float)(o+16), 0.55f,0.5f,0.5f};
+                        float one[14]={0,0,0, 0, 1.0f, (float)fr,(float)fr,0, (float)(o+16), 0.55f,0.5f,0.5f, 0,0};
                         glViewport(col*CORPSE_CELL,o*CORPSE_CELL,CORPSE_CELL,CORPSE_CELL);
-                        glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferSubData(GL_ARRAY_BUFFER,0,12*sizeof(float),one);
+                        glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferSubData(GL_ARRAY_BUFFER,0,14*sizeof(float),one);
                         glDrawElementsInstanced(GL_TRIANGLES,A[v].ni,GL_UNSIGNED_SHORT,0,1);
                     }
                 }
@@ -971,9 +973,9 @@ int main(int argc, char **argv){
         for(int v=0;v<NVAR;v++){
             int count=vat_layer_fill_variant(vl,s,v,inst,MAXSLOT);
             if(!count) continue;
-            for(int q=0;q<count;q++) inst[q*12+1]+=ter_z(inst[q*12+0],inst[q*12+2]);
+            for(int q=0;q<count;q++) inst[q*14+1]+=ter_z(inst[q*14+0],inst[q*14+2]);
             const VatMeta *M=A[v].M;
-            glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferSubData(GL_ARRAY_BUFFER,0,count*12*sizeof(float),inst);
+            glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferSubData(GL_ARRAY_BUFFER,0,count*14*sizeof(float),inst);
             glUniform2f(uTS,(float)M->texW,(float)M->texH);glUniform1f(uRPF,(float)M->rowsPerFrame);
             glUniform1i(uHas,useTex&&A[v].hasTex);
             glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,A[v].texP);

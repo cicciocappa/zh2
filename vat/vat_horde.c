@@ -54,7 +54,7 @@
 
 #define MAXA 60000
 #define NT 10                  // numero massimo di torrette (anello demo)
-static float inst[MAXA*12];
+static float inst[MAXA*14];   /* 12 base + 2 tumble (pitch,roll) per istanza VAT */
 static float shad[MAXA*4];     // ground shadow instances: xyz center + radius
 #define EDOVL_MAXV 8192        // vertici max dell'overlay editor (rects+poly+cursore)
 static float edovl[EDOVL_MAXV*9];
@@ -303,7 +303,9 @@ static void on_def_event(void *user, int slot, int i, DefBody body, DefEvent ev)
     else if(ev==DEF_EV_DEATH)
         vat_layer_die(c->vl, slot, x, y, r);
     else if(ev==DEF_EV_GIB){
-        vat_layer_gib(c->vl, slot, x, y, r, seed);
+        // smembramento in MESH-parti vere (testa+2 braccia+2 gambe+2 tronchi +
+        // cubetti + pozza, niente cadavere): gibs.glb, non i cubetti soli.
+        vat_layer_explode(c->vl, slot, x, y, r, 1.0f, seed);
         fx_emit(c->fx, o, &BLOOD_BURST_DEF, 0.0f, -1.0f); }
     else if(ev==DEF_EV_WOUND_BLEED){
         vat_layer_gib_wound(c->vl, slot, x, y, r, seed);
@@ -1358,18 +1360,38 @@ static int gLzCore=-1;                  // id struttura core della LZ (se lz)
 // tank di M3.5) + anello 5x5 di celle-core assediabili (is_core: crollo =
 // sconfitta). L'elicottero e' fiction renderer-side (placeholder: pilastrino
 // del core); HP da VAT_HORDE_LZ_HP (default 1500).
+// La base è un CONTAINER (BASE_DESIGN §3): footprint reale di un container ISO
+// 20" (~6,1 × 2,44 m, carico a gancio di un Chinook), orientabile via lz yaw.
+#define BASE_W 6.1f
+#define BASE_D 2.44f
+// Ogni cella del rettangolo ruotato diventa una cella della struttura assediabile
+// (is_core), TRANNE la cella centrale che resta goal NON solido: il core §316 di
+// sim_particles ammette solo goal non murati come sorgenti, quindi l'orda è
+// attratta dal cuore sigillato e assedia il perimetro del container (come il
+// vecchio anello 5×5, generalizzato al rettangolo). Sconfitta al crollo (def_lost).
+typedef struct { DefGame *g; int sid, ccx, ccy; } LzFootCtx;
+static void lz_foot_cb(void *ud, int cx, int cy){
+    LzFootCtx *c=ud;
+    if(cx==c->ccx && cy==c->ccy) return;      // cavità centrale: goal, non struttura
+    def_struct_cell(c->g, c->sid, cx, cy);    // corpo del container: muro assediabile
+}
 static void build_lz_core(DefGame *g, SimP *s, const Scene *sc){
     gLzCore=-1;
-    int cx0=(int)(sc->lz_x/sc->cell), cy0=(int)(sc->lz_y/sc->cell);
-    for(int cy=cy0-1;cy<=cy0+1;cy++)for(int cx=cx0-1;cx<=cx0+1;cx++)
-        if(!simp_is_wall(s,cx,cy)) simp_set_goal(s,cx,cy,true);
+    float cell=sc->cell; int gw=simp_grid_w(s), gh=simp_grid_h(s);
+    float a=sc->lz_yaw*0.01745329252f, ca=cosf(a), sa=sinf(a);
+    float hw=0.5f*BASE_W, hd=0.5f*BASE_D;
+    float lx[4]={-hw,hw,hw,-hw}, ly[4]={-hd,-hd,hd,hd}, vx[4], vy[4];
+    for(int k=0;k<4;k++){ vx[k]=sc->lz_x+lx[k]*ca-ly[k]*sa;
+                          vy[k]=sc->lz_y+lx[k]*sa+ly[k]*ca; }
     float hp=getenv("VAT_HORDE_LZ_HP")?atof(getenv("VAT_HORDE_LZ_HP")):1500.0f;
-    int id=def_add_structure(g,hp,1), h=2;
-    if(id<0) return;
-    for(int cy=cy0-h;cy<=cy0+h;cy++)for(int cx=cx0-h;cx<=cx0+h;cx++)
-        if(cx==cx0-h||cx==cx0+h||cy==cy0-h||cy==cy0+h) def_struct_cell(g,id,cx,cy);
+    int sid=def_add_structure(g,hp,1);
+    if(sid<0) return;
+    int ccx=(int)(sc->lz_x/cell), ccy=(int)(sc->lz_y/cell);
+    if(!simp_is_wall(s,ccx,ccy)) simp_set_goal(s,ccx,ccy,true);   // sorgente sigillata
+    LzFootCtx fc={g,sid,ccx,ccy};
+    scene_raster_cells(vx,vy,4,cell,gw,gh,lz_foot_cb,&fc);
     simp_terrain_commit(s);
-    gLzCore=id; gStructOn=1;
+    gLzCore=sid; gStructOn=1;
 }
 
 typedef struct { SimP *s; int n; } HoleCtx;
@@ -2351,7 +2373,9 @@ int main(int argc, char **argv){
         // attributi istanza dal buffer condiviso bi (stesso layout per tutte le mesh)
         glBindBuffer(GL_ARRAY_BUFFER,bi);
         for(int i=0;i<3;i++){glEnableVertexAttribArray(2+i);
-            glVertexAttribPointer(2+i,4,GL_FLOAT,0,12*sizeof(float),(void*)(i*4*sizeof(float)));glVertexAttribDivisor(2+i,1);}
+            glVertexAttribPointer(2+i,4,GL_FLOAT,0,14*sizeof(float),(void*)(i*4*sizeof(float)));glVertexAttribDivisor(2+i,1);}
+        glEnableVertexAttribArray(5);      // tumble in volo (pitch, roll)
+        glVertexAttribPointer(5,2,GL_FLOAT,0,14*sizeof(float),(void*)(12*sizeof(float)));glVertexAttribDivisor(5,1);
         glBindVertexArray(0); A[v].vao=vao;
         free(verts);free(uvs);free(idx);
     }
@@ -2412,9 +2436,9 @@ int main(int argc, char **argv){
                     int col=v*VAT_CORPSE_NPOSE+p;
                     for(int o=0;o<nout;o++){
                         // riga o = outfit base; bake con la versione INSANGUINATA (o+16)
-                        float one[12]={0,0,0, 0, 1.0f, (float)fr,(float)fr,0, (float)(o+16), 0.55f,0.5f,0.5f};
+                        float one[14]={0,0,0, 0, 1.0f, (float)fr,(float)fr,0, (float)(o+16), 0.55f,0.5f,0.5f, 0,0};
                         glViewport(col*CORPSE_CELL,o*CORPSE_CELL,CORPSE_CELL,CORPSE_CELL);
-                        glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferSubData(GL_ARRAY_BUFFER,0,12*sizeof(float),one);
+                        glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferSubData(GL_ARRAY_BUFFER,0,14*sizeof(float),one);
                         glDrawElementsInstanced(GL_TRIANGLES,A[v].ni,GL_UNSIGNED_SHORT,0,1);
                     }
                 }
@@ -2893,8 +2917,18 @@ int main(int argc, char **argv){
                 // questo step (lanciati da un blast/impulso) prendono danno costante
                 // → ferite/gib+sangue via i soliti eventi. Chiude il buco M3.2
                 // (simp_landed non era mai consumato dall'host).
+                // Atterraggio: se la caduta è LETALE lo zombie si SMEMBRA in gib
+                // (cubetti che svaniscono + pozza di sangue, niente clip di morte
+                // né cadavere — BASE-side vat_layer_gib); altrimenti incassa il
+                // danno e prosegue. (side note utente 2026-07-07)
                 { int nl=simp_landed_count(s); const SimPHandle *lh=simp_landed(s);
-                  for(int k=0;k<nl;k++) def_damage_agent(g,lh[k],FALL_DMG); }
+                  const int *hp=def_hp(g); int fd=(int)(FALL_DMG+0.5f);
+                  for(int k=0;k<nl;k++){
+                      int i=simp_index_of(s,lh[k]); if(i<0) continue;
+                      int slot=simp_slot_of(s,i);
+                      if(hp[slot]<=fd) def_gib_agent(g,lh[k]);   // caduta letale -> smembra
+                      else            def_damage_agent(g,lh[k],FALL_DMG);
+                  } }
                 // rinculo torrette + vampa alla bocca + streak del proiettile:
                 // per chi ha sparato in questo step. build_turret_mesh legge il
                 // rinculo; il tracer parte dalla bocca del cannone verso l'impatto.
@@ -3138,9 +3172,9 @@ int main(int argc, char **argv){
             int count=vat_layer_fill_variant(vl,s,v,inst,MAXA);
             if(!count) continue; total+=count;
             // posa gli sprite sulla quota del terreno (o[1]=altezza, o[0]/o[2]=x/y)
-            if(gTerOn) for(int q=0;q<count;q++) inst[q*12+1]+=ter_z(inst[q*12+0],inst[q*12+2]);
+            if(gTerOn) for(int q=0;q<count;q++) inst[q*14+1]+=ter_z(inst[q*14+0],inst[q*14+2]);
             const VatMeta *M=A[v].M;
-            glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferSubData(GL_ARRAY_BUFFER,0,count*12*sizeof(float),inst);
+            glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferSubData(GL_ARRAY_BUFFER,0,count*14*sizeof(float),inst);
             glUniform2f(uTS,(float)M->texW,(float)M->texH);glUniform1f(uRPF,(float)M->rowsPerFrame);
             glUniform1i(uHas,useTex&&A[v].hasTex);
             glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,A[v].texP);

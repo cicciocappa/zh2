@@ -127,7 +127,7 @@ typedef struct {
     SceneProp prop[SCENE_MAX_PROP];   int n_prop;   /* pure-decor instances (render-only) */
     SceneExit exits[SCENE_MAX_RECT];  int n_exit;   /* scripted exits (host-side, fase A) */
     SceneMission mission;             /* kind NONE = legacy demo scene      */
-    float lz_x, lz_y; int has_lz;     /* helicopter LZ (host: core + goal)  */
+    float lz_x, lz_y, lz_yaw; int has_lz; /* base LZ: pos + yaw(deg) (host: container core + goal) */
 } Scene;
 
 /* Load/save/free. Return 0 on success, negative on error (file or format). */

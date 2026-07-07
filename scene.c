@@ -193,10 +193,12 @@ int scene_load(const char *path, Scene *sc) {
                             (float)atof(t[4]), dl ? (float)atof(dl) : 0.0f,
                             pl ? atoi(pl) : 0 };
             sc->exits[sc->n_exit++] = e;
-        } else if (!strcmp(key, "lz")) {               /* fase A: helicopter LZ */
+        } else if (!strcmp(key, "lz")) {               /* base LZ: x y [yaw(deg)] */
             char *x = strtok_r(NULL, " \t", &save), *y = strtok_r(NULL, " \t", &save);
+            char *yaw = strtok_r(NULL, " \t", &save);  /* optional container orientation */
             if (!x || !y) { err = -2; break; }
-            sc->lz_x = (float)atof(x); sc->lz_y = (float)atof(y); sc->has_lz = 1;
+            sc->lz_x = (float)atof(x); sc->lz_y = (float)atof(y);
+            sc->lz_yaw = yaw ? (float)atof(yaw) : 0.0f; sc->has_lz = 1;
         } else if (!strcmp(key, "mission")) {          /* fase A: mission decl  */
             char *kind = strtok_r(NULL, " \t", &save);
             char *secs = strtok_r(NULL, " \t", &save);
@@ -275,7 +277,8 @@ int scene_save(const char *path, const Scene *sc) {
         fprintf(f, "exit %g %g %g %g %g %g %d\n", (double)sc->exits[k].x,
                 (double)sc->exits[k].y, (double)sc->exits[k].w, (double)sc->exits[k].h,
                 (double)sc->exits[k].rate, (double)sc->exits[k].delay, sc->exits[k].pool);
-    if (sc->has_lz) fprintf(f, "lz %g %g\n", (double)sc->lz_x, (double)sc->lz_y);
+    if (sc->has_lz) fprintf(f, "lz %g %g %g\n", (double)sc->lz_x, (double)sc->lz_y,
+                            (double)sc->lz_yaw);
     if (sc->mission.kind != SCENE_MISSION_NONE) {
         fprintf(f, "mission %s %g",
                 sc->mission.kind == SCENE_MISSION_SURVIVE ? "survive" : "clear",

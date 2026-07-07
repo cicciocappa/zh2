@@ -32,6 +32,7 @@ struct VatLayer {
     int max;
     SimPHandle *seen;
     float *hx, *hy, *spd, *phaseA, *phaseB, *blendF, *hmul;
+    float *tpitch, *troll;   /* tumble multi-asse in volo (accumulo, rad) */
     int   *clipA, *clipB, *pin;              /* pin[slot] = variante+1 forzata, 0 = libera */
     int   *force_clip;                       /* override clip locomozione, -1 = AUTO (FSM) */
     unsigned char *state, *target, *blending, *outfit, *var, *tr, *tg, *tb;
@@ -137,6 +138,7 @@ VatLayer *vat_layer_create_multi(const char *const *meta_paths, int nvariants, i
     vl->seen=calloc(n,sizeof(SimPHandle));
     vl->hx=calloc(n,4); vl->hy=calloc(n,4); vl->spd=calloc(n,4);
     vl->phaseA=calloc(n,4); vl->phaseB=calloc(n,4); vl->blendF=calloc(n,4); vl->hmul=calloc(n,4);
+    vl->tpitch=calloc(n,4); vl->troll=calloc(n,4);
     vl->clipA=calloc(n,sizeof(int)); vl->clipB=calloc(n,sizeof(int)); vl->pin=calloc(n,sizeof(int));
     vl->force_clip=malloc(n*sizeof(int)); for(int i=0;i<n;i++)vl->force_clip[i]=-1;
     vl->state=calloc(n,1); vl->target=calloc(n,1); vl->blending=calloc(n,1);
@@ -180,6 +182,7 @@ VatLayer *vat_layer_create(const char *meta_path, int max_slots){
     return vat_layer_create_multi(&meta_path, 1, max_slots);
 }
 void vat_layer_destroy(VatLayer *vl){ if(!vl)return;
+    free(vl->tpitch);free(vl->troll);
     free(vl->seen);free(vl->hx);free(vl->hy);free(vl->spd);free(vl->phaseA);free(vl->phaseB);
     free(vl->blendF);free(vl->hmul);free(vl->clipA);free(vl->clipB);free(vl->pin);free(vl->force_clip);free(vl->state);free(vl->target);
     free(vl->blending);free(vl->outfit);free(vl->var);free(vl->tr);free(vl->tg);free(vl->tb);
@@ -624,6 +627,7 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
             vl->seen[slot]=h; vl->hx[slot]=sinf(ang)*0.01f; vl->hy[slot]=cosf(ang)*0.01f;
             vl->spd[slot]=1.0f; vl->state[slot]=ST_WALK; vl->blending[slot]=0;
             vl->osT[slot]=0.0f; vl->atk[slot]=0.0f; vl->force_clip[slot]=-1;  /* niente flinch/override/assedio dal precedente slot */
+            vl->tpitch[slot]=0.0f; vl->troll[slot]=0.0f;   /* tumble azzerato per lo slot riusato */
             /* body: pinnato (tipo di gioco, es. crawler) o random fra le cosmetiche */
             int body = vl->pin[slot] ? vl->pin[slot]-1 : (int)(hashu(h+333u)%(unsigned)vl->nrandom);
             vl->pin[slot]=0;                          /* consuma: slot riusato torna libero */
@@ -646,6 +650,22 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
            assedia (sotto: l'attacco punta il muro, non la velocita' di spinta) */
         if(sp>MOVE_MIN && !(fl[i]&SIMP_FLYING) && !(vl->atk[slot]>0.0f)){
             vl->hx[slot]+=alpha*(vx[i]-vl->hx[slot]); vl->hy[slot]+=alpha*(vy[i]-vl->hy[slot]); }
+
+        /* tumble multi-asse mentre l'agente è balistico (lanciato da un blast):
+           pitch+roll accumulano a rate casuali per-agente; a terra decadono
+           rapidi verso l'assetto dritto (l'atterraggio letale smembra, il
+           non-letale torna a camminare senza scatti). */
+        if(fl[i]&SIMP_FLYING){
+            unsigned th=hashu(h+0x7Bu);
+            float rp=1.5f+((th)&255)/255.0f*4.5f, rr=1.5f+((th>>8)&255)/255.0f*4.5f;
+            if(th&0x10000u)rp=-rp; if(th&0x20000u)rr=-rr;
+            vl->tpitch[slot]+=rp*dt; vl->troll[slot]+=rr*dt;
+        } else if(vl->tpitch[slot]!=0.0f || vl->troll[slot]!=0.0f){
+            float k=1.0f-fminf(1.0f,10.0f*dt);
+            vl->tpitch[slot]*=k; vl->troll[slot]*=k;
+            if(fabsf(vl->tpitch[slot])<1e-3f) vl->tpitch[slot]=0.0f;
+            if(fabsf(vl->troll[slot])<1e-3f)  vl->troll[slot]=0.0f;
+        }
 
         int body=vl->var[slot];
 
@@ -695,7 +715,10 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
 
         /* avanza fase (distanza per locomozione, tempo per il resto) — stride/durata
            dal meta del BODY di questo agente (variano per taglia: il bambino ha
-           stride diverso dall'adulto). */
+           stride diverso dall'adulto). IN VOLO la fase e' CONGELATA: il corpo
+           balistico tumbla su piu' assi, l'anim degli arti a velocita' altissima
+           dava fastidio (side note utente) -> l'unico movimento e' il tumble. */
+        if(!(fl[i]&SIMP_FLYING)){
         const VatMeta *M=&vl->m[vl->var[slot]];
         float dist=sp*dt;
         const VatClip *ca=&M->clip[vl->clipA[slot]];
@@ -708,6 +731,7 @@ void vat_layer_update(VatLayer *vl, const SimP *s, float dt){
             vl->blendF[slot]+=dt/BLEND_DUR;
             if(vl->blendF[slot]>=1.0f){ vl->state[slot]=vl->target[slot];
                 vl->clipA[slot]=vl->clipB[slot]; vl->phaseA[slot]=vl->phaseB[slot]; vl->blending[slot]=0; }
+        }
         }
     }
 }
@@ -740,6 +764,7 @@ static void emit_instance(VatLayer *vl, int slot, const VatMeta *M,
     o[0]=x; o[1]=z; o[2]=y; o[3]=head;
     o[4]=inst_scale(vl,vl->var[slot],slot,r); o[5]=gA; o[6]=gB; o[7]=mix; o[8]=(float)vl->outfit[slot];
     o[9]=vl->tr[slot]/255.0f; o[10]=vl->tg[slot]/255.0f; o[11]=vl->tb[slot]/255.0f;
+    o[12]=vl->tpitch[slot]; o[13]=vl->troll[slot];   /* tumble in volo (pitch, roll) */
 }
 
 /* Emette un decedente del pool (clip morte una volta, ultimo frame tenuto). */
@@ -750,6 +775,7 @@ static void emit_decedent(VatLayer *vl, int d, const VatMeta *M, float *o){
     o[0]=vl->dx[d]; o[1]=vl->dz[d]; o[2]=vl->dy[d]; o[3]=vl->dhd[d];
     o[4]=vl->dsc[d]; o[5]=c->startFrame+fa; o[6]=c->startFrame+fb; o[7]=local-fa;
     o[8]=(float)vl->dout[d]; o[9]=vl->dtr[d]/255.0f; o[10]=vl->dtg[d]/255.0f; o[11]=vl->dtb[d]/255.0f;
+    o[12]=0.0f; o[13]=0.0f;                           /* i decedenti non tumblano */
 }
 
 int vat_layer_fill_variant(VatLayer *vl, const SimP *s, int variant, float *buf, int max_inst){
@@ -760,12 +786,12 @@ int vat_layer_fill_variant(VatLayer *vl, const SimP *s, int variant, float *buf,
     for(int i=0;i<n && c<max_inst;i++){
         int slot=simp_slot_of(s,i); if(slot<0||slot>=vl->max) continue;
         if(vl->var[slot]!=variant) continue;
-        emit_instance(vl,slot,M,px[i],py[i],za?za[i]:0.0f,rad[i],buf+c*12);
+        emit_instance(vl,slot,M,px[i],py[i],za?za[i]:0.0f,rad[i],buf+c*14);
         c++;
     }
     /* decedenti di questa variante, in coda agli agenti vivi (stessa mesh/draw) */
     for(int d=0; d<vl->dmax && c<max_inst; d++)
-        if(vl->dactive[d] && vl->dvar[d]==variant){ emit_decedent(vl,d,M,buf+c*12); c++; }
+        if(vl->dactive[d] && vl->dvar[d]==variant){ emit_decedent(vl,d,M,buf+c*14); c++; }
     return c;
 }
 
@@ -774,7 +800,7 @@ int vat_layer_fill(VatLayer *vl, const SimP *s, float *buf, int max_inst){
     int n=simp_count(s), c=0;
     for(int i=0;i<n && c<max_inst;i++){
         int slot=simp_slot_of(s,i); if(slot<0||slot>=vl->max) continue;
-        emit_instance(vl,slot,&vl->m[vl->var[slot]],px[i],py[i],za?za[i]:0.0f,rad[i],buf+c*12);
+        emit_instance(vl,slot,&vl->m[vl->var[slot]],px[i],py[i],za?za[i]:0.0f,rad[i],buf+c*14);
         c++;
     }
     return c;

@@ -118,6 +118,9 @@ void  def_struct_damage(DefGame *g, int id, float dmg);
 void  def_blast(DefGame *g, float x, float y, float r, float dmg,
                 float strength, float up_ratio);
 void  def_damage_agent(DefGame *g, SimPHandle h, float dmg);
+/* def_gib_agent: dismember one agent outright (explosive-death path: GIB event,
+ * blood pool, no corpse). For a lethal fall landing. */
+void  def_gib_agent(DefGame *g, SimPHandle h);
 /* Structure id owning nav cell (cx,cy), or -1 (none / freed on collapse). Lets
  * the renderer rebuild the live structure mesh (collapsed cells disappear). */
 int   def_cell_struct(const DefGame *g, int cx, int cy);
