@@ -59,6 +59,43 @@ static float shad[MAXA*4];     // ground shadow instances: xyz center + radius
 #define EDOVL_MAXV 8192        // vertici max dell'overlay editor (rects+poly+cursore)
 static float edovl[EDOVL_MAXV*9];
 
+// gesto di mira delle torrette (piazzamento DIREZIONALE): LMB tiene = ancora la
+// posizione, trascina = orienta il cono, rilascia = piazza. Stato condiviso tra
+// gestione eventi e blocco ghost del frame (entrambe le build, shell e nuda).
+static int   gTAimOn=0;
+static float gTAimX=0.0f, gTAimY=0.0f;   // ancora (posizione della torretta)
+static float gTAimFacing=0.0f;           // ultima direzione valida del drag
+
+// settore di mira nell'overlay flat (ghost di piazzamento / hover su torretta):
+// due bordi radiali + arco sul raggio esterno + lancetta di direzione.
+static int push_aim_cone(float *buf, int v, int maxv, float x, float y,
+                         float facing, float half, float R,
+                         float r, float g, float b){
+    if(half>=3.1f){                       // arco pieno: solo l'anello di gittata
+        const int NSEG=64;
+        for(int k=0;k<NSEG && v+6<=maxv;k++){
+            float a0=(float)k*6.2831853f/NSEG, a1=(float)(k+1)*6.2831853f/NSEG;
+            v=ed_push_bar(buf,v,x+cosf(a0)*R,y+sinf(a0)*R,
+                          x+cosf(a1)*R,y+sinf(a1)*R,0.30f,r,g,b);
+        }
+        return v;
+    }
+    int nseg=(int)(half*2.0f/0.12f)+1; if(nseg<4)nseg=4; if(nseg>64)nseg=64;
+    if(v+6<=maxv) v=ed_push_bar(buf,v,x,y,x+cosf(facing-half)*R,
+                                y+sinf(facing-half)*R,0.30f,r,g,b);
+    if(v+6<=maxv) v=ed_push_bar(buf,v,x,y,x+cosf(facing+half)*R,
+                                y+sinf(facing+half)*R,0.30f,r,g,b);
+    for(int k=0;k<nseg && v+6<=maxv;k++){
+        float a0=facing-half+2.0f*half*(float)k/(float)nseg;
+        float a1=facing-half+2.0f*half*(float)(k+1)/(float)nseg;
+        v=ed_push_bar(buf,v,x+cosf(a0)*R,y+sinf(a0)*R,
+                      x+cosf(a1)*R,y+sinf(a1)*R,0.30f,r,g,b);
+    }
+    if(v+6<=maxv) v=ed_push_bar(buf,v,x,y,x+cosf(facing)*R*0.35f,
+                                y+sinf(facing)*R*0.35f,0.16f,r,g,b);
+    return v;
+}
+
 // I body type disponibili (asset bakati in vat/assets/). Texture placeholder: la
 // skirt non ha ancora il _diffuse.png -> rende flat-shaded (tintata), corretto.
 // Gli ULTIMI due (crawler, tank) sono body "di gioco": non assegnati a caso, solo
@@ -623,11 +660,11 @@ static int ter_blocked(float x, float y){ return gTerOn && terrain_hole(&gTer, x
 // --- piazzamento a runtime (PLACEMENT_DESIGN.md): catalogo + veto static ---
 static int pl_blocked_host(void *u, float x, float y){ (void)u; return ter_blocked(x,y); }
 static const PlItem PL_CAT[] = {
-    /* kind        name          cost   w     h    radius  hp     mass   combat: 0 = default | trap: 0 */
-    { PL_BARRICADE, "Barricata",   50,  4.0f, 1.0f, 0.0f, 300.0f, 30.0f, 0, 0,0,0, 0, 0,0,0,0,0,0 },  /* mass>0 = detriti al crollo */
-    { PL_TURRET,    "Torretta",   100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 0, 0,0,0, 0, 0,0,0,0,0,0 },
-    { PL_BIN,       "Cassonetto",  20,  0.0f, 0.0f, 0.6f,   0.0f, 12.0f, 0, 0,0,0, 0, 0,0,0,0,0,0 },
-    { PL_CAR,       "Auto",        60,  3.0f, 0.0f, 0.6f,   0.0f, 20.0f, 0, 0,0,0, 0, 0,0,0,0,0,0 },
+    /* kind        name          cost   w     h    radius  hp     mass   combat: 0 = default | trap: 0 | arc (0 = 90°) */
+    { PL_BARRICADE, "Barricata",   50,  4.0f, 1.0f, 0.0f, 300.0f, 30.0f, 0, 0,0,0, 0, 0,0,0,0,0,0, 0 },  /* mass>0 = detriti al crollo */
+    { PL_TURRET,    "Torretta",   100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 0, 0,0,0, 0, 0,0,0,0,0,0, 0 },
+    { PL_BIN,       "Cassonetto",  20,  0.0f, 0.0f, 0.6f,   0.0f, 12.0f, 0, 0,0,0, 0, 0,0,0,0,0,0, 0 },
+    { PL_CAR,       "Auto",        60,  3.0f, 0.0f, 0.6f,   0.0f, 20.0f, 0, 0,0,0, 0, 0,0,0,0,0,0, 0 },
 };
 #define PL_NCAT ((int)(sizeof(PL_CAT)/sizeof(PL_CAT[0])))
 
@@ -638,14 +675,14 @@ static const PlItem PL_CAT[] = {
 // cancellata è il cover semi-trasparente dell'asse C: opacità 0.3, le torrette
 // sparano attraverso (test_cover). Parametri combat a 0 = default di place.c.
 static const PlItem PL_CAT_GAME[] = {
-    /* kind        name          cost   w     h    radius  hp     mass   heavy range per dmg  opac  trap: trig blastR dmg str up arm */
-    { PL_TURRET,    "Leggera",    100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 0,    0,0,0,         0,    0,0,0,0,0,0 },
-    { PL_TURRET,    "Pesante",    250,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 1,    0,0,0,         0,    0,0,0,0,0,0 },
-    { PL_BARRICADE, "Barricata",   12,  2.5f, 1.0f, 0.0f, 300.0f, 30.0f, 0,    0,0,0,         0,    0,0,0,0,0,0 },
-    { PL_BARRICADE, "Cancellata",  20,  2.5f, 1.0f, 0.0f, 200.0f, 15.0f, 0,    0,0,0,         0.3f, 0,0,0,0,0,0 },
+    /* kind        name          cost   w     h    radius  hp     mass   heavy range per dmg  opac  trap: trig blastR dmg str up arm | arc° */
+    { PL_TURRET,    "Leggera",    100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 0,    0,0,0,         0,    0,0,0,0,0,0,  90.0f },
+    { PL_TURRET,    "Pesante",    250,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 1,    0,0,0,         0,    0,0,0,0,0,0,  90.0f },
+    { PL_BARRICADE, "Barricata",   12,  2.5f, 1.0f, 0.0f, 300.0f, 30.0f, 0,    0,0,0,         0,    0,0,0,0,0,0,  0 },
+    { PL_BARRICADE, "Cancellata",  20,  2.5f, 1.0f, 0.0f, 200.0f, 15.0f, 0,    0,0,0,         0.3f, 0,0,0,0,0,0,  0 },
     /* MINA (GAME_PLAN fase D): one-shot a pressione. trigger 1.2 m, blast R 6 /
      * dmg 150, loft 22/0.6, arm 1 s (non ti esplode in mano al piazzamento). */
-    { PL_TRAP,      "Mina",        40,  0.0f, 0.0f, 0.3f,   0.0f,  0.0f, 0,    0,0,0,         0,    1.2f,6.0f,150.0f,22.0f,0.6f,1.0f },
+    { PL_TRAP,      "Mina",        40,  0.0f, 0.0f, 0.3f,   0.0f,  0.0f, 0,    0,0,0,         0,    1.2f,6.0f,150.0f,22.0f,0.6f,1.0f, 0 },
 };
 #define PL_NCAT_GAME ((int)(sizeof(PL_CAT_GAME)/sizeof(PL_CAT_GAME[0])))
 
@@ -1955,8 +1992,15 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     if(designed){
         for(int k=0;k<sc->n_turret;k++){ const SceneTurret *st=&sc->turret[k];
             DefTurret t={0};
-            t.x=st->x; t.y=st->y; t.ang=0.0f;
-            t.arc_min=-3.1416f; t.arc_max=3.1416f;        // full sweep: engage anything in range
+            t.x=st->x; t.y=st->y;
+            if(st->arc_deg>0.0f){                         // authored aim cone
+                float fc=st->facing_deg*(3.14159265f/180.0f);
+                float ha=st->arc_deg*(3.14159265f/360.0f);
+                t.ang=fc; t.arc_min=fc-ha; t.arc_max=fc+ha;
+                t.aim_tol=DEF_AIM_TOL_STD;                // turn-then-shoot
+            } else {                                      // legacy: full sweep
+                t.ang=0.0f; t.arc_min=-3.1416f; t.arc_max=3.1416f;
+            }
             t.sweep_dir=1; t.sweep_speed=3.0f; t.range=st->range;
             t.heavy=st->heavy; t.piercing=0;
             t.fire_period=st->heavy?0.5f:0.10f; t.damage=st->heavy?0.0f:55.0f;
@@ -2427,6 +2471,7 @@ static int strikes_ui_click(float mx, float my, int SW, int SH) {
 // costo irrilevante, niente raycast contro le mesh.
 static int gHovOn=0; static char gHovLabel[64];
 static float gHovHp=0, gHovHpMax=0;     // hp_max<=0 = senza barra (indistruttibile)
+static int gHovTurret=-1;               // torretta sotto il cursore -> cono a terra
 #define HOVER_TURRET_H 1.9f             // altezza cliccabile della torretta
 #define HOVER_STRUCT_H 2.8f             // muri/barriere/nucleo (H del render)
 #define HOVER_SCAN_TOP 8.0f             // quota massima scandita (prop alti)
@@ -2445,6 +2490,7 @@ static int hover_resolve(const Scene *sc, DefGame *g, float wx, float wy, float 
             int sid=def_cell_struct(g,cx,cy);
             if(sid>=0 && def_struct_is_turret(g,sid)){
                 gHovHp=def_struct_hp(g,sid); gHovHpMax=def_struct_hp_max(g,sid); }
+            gHovTurret=best;
             gHovOn=1; return 1; } }
     int cx=(int)(wx/sc->cell), cy=(int)(wy/sc->cell);
     int id=def_cell_struct(g,cx,cy);
@@ -3227,7 +3273,7 @@ int main(int argc, char **argv){
                 if(plc.active && !ed.active){
                     // fase A: fuori PREP il piazzamento si chiude da solo
                     if(gMissionOn && !mission_placement_open(&gMission)){
-                        plc.active=0;
+                        plc.active=0; gTAimOn=0;
 #ifdef GAME_SHELL
                         plineOn=0; plineChain=0;   // esistono solo nella shell
 #endif
@@ -3276,6 +3322,29 @@ int main(int argc, char **argv){
                         continue;
                     }
 #endif
+                    // torrette: piazzamento DIREZIONALE — LMB (su punto valido)
+                    // ancora la posizione, il drag orienta il cono di mira,
+                    // il rilascio piazza con quel facing (Placement.facing).
+                    // RMB = annulla il gesto in corso, o esce dal piazzamento.
+                    { const PlItem *tsel=pl_selected(&plc);
+                      if(tsel && tsel->kind==PL_TURRET){
+                        if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
+                            if(e.button.button==SDL_BUTTON_LEFT){
+                                if(pl_validate(&plc,g,s)){
+                                    gTAimOn=1; gTAimX=plc.cx; gTAimY=plc.cy; }
+                            } else if(e.button.button==SDL_BUTTON_RIGHT){
+                                if(gTAimOn) gTAimOn=0; else plc.active=0; }
+                        } else if(e.type==SDL_EVENT_MOUSE_BUTTON_UP &&
+                                  e.button.button==SDL_BUTTON_LEFT && gTAimOn){
+                            float dx=plc.cx-gTAimX, dy=plc.cy-gTAimY;
+                            if(dx*dx+dy*dy>=0.09f) gTAimFacing=atan2f(dy,dx);
+                            pl_set_cursor(&plc,gTAimX,gTAimY);  // commit all'ANCORA
+                            plc.facing=gTAimFacing;
+                            if(pl_commit(&plc,g,s)) gStructOn=1;
+                            gTAimOn=0;
+                        }
+                        continue;
+                      } }
                     if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
                         if(e.button.button==SDL_BUTTON_LEFT){ if(pl_commit(&plc,g,s)) gStructOn=1; }
                         else if(e.button.button==SDL_BUTTON_RIGHT){ plc.active=0; }
@@ -3420,7 +3489,7 @@ int main(int argc, char **argv){
                 case SDLK_P:    // piazzamento runtime: attiva/disattiva (budget di prova se 0)
                     if(gMissionOn && !mission_placement_open(&gMission)){
                         printf("placement: solo in PREP (fase A)\n"); break; }
-                    plc.active=!plc.active;
+                    plc.active=!plc.active; gTAimOn=0;
                     if(plc.active && def_budget(g)<=0){ def_set_budget(g,99999); printf("placement ON (budget di prova)\n"); }
                     break;
 #ifdef GAME_SHELL
@@ -3930,21 +3999,29 @@ int main(int argc, char **argv){
             } else
 #endif
             {
-                pl_validate(&plc,g,s);                      // colore fresco ogni frame
+                // durante il gesto di mira il ghost resta inchiodato all'ANCORA
+                // (il cursore è a fine drag): posizione e validate vanno lì.
+                float ax=plc.cx, ay=plc.cy;
+                if(gTAimOn && it && it->kind==PL_TURRET){
+                    ax=gTAimX; ay=gTAimY;
+                    float dx=plc.cx-ax, dy=plc.cy-ay;
+                    if(dx*dx+dy*dy>=0.09f) gTAimFacing=atan2f(dy,dx);
+                    float sx=plc.cx, sy=plc.cy;
+                    pl_set_cursor(&plc,ax,ay); pl_validate(&plc,g,s);
+                    pl_set_cursor(&plc,sx,sy);
+                } else pl_validate(&plc,g,s);               // colore fresco ogni frame
                 float r = it ? fmaxf(0.5f, 0.5f*fmaxf(it->w,fmaxf(it->h,it->radius*2.0f))) : 0.6f;
                 float cr = plc.valid?0.20f:0.95f, cg = plc.valid?0.90f:0.18f, cb=0.18f;
-                ov = ed_push_marker(edovl,0,plc.cx,plc.cy,r, cr,cg,cb);
-#ifdef GAME_SHELL
-                if(it && it->kind==PL_TURRET){              // cerchio di gittata (§8)
+                ov = ed_push_marker(edovl,0,ax,ay,r, cr,cg,cb);
+                if(it && it->kind==PL_TURRET){
+                    // cono di mira (facing±half): segue il drag; prima del
+                    // gesto mostra l'ultima direzione usata. Raggio = gittata.
                     float R=it->range>0.0f?it->range:40.0f;
-                    const int NSEG=64;
-                    for(int k=0;k<NSEG && ov+6<=EDOVL_MAXV;k++){
-                        float a0=(float)k*6.2831853f/NSEG, a1=(float)(k+1)*6.2831853f/NSEG;
-                        ov=ed_push_bar(edovl,ov,plc.cx+cosf(a0)*R,plc.cy+sinf(a0)*R,
-                                       plc.cx+cosf(a1)*R,plc.cy+sinf(a1)*R,0.3f,cr,cg,cb);
-                    }
+                    float half=(it->arc_deg>0.0f?it->arc_deg:90.0f)
+                               *(3.14159265f/360.0f);
+                    ov=push_aim_cone(edovl,ov,EDOVL_MAXV,ax,ay,
+                                     gTAimFacing,half,R,cr,cg,cb);
                 }
-#endif
             }
             if(ov){ glDisable(GL_DEPTH_TEST);
                 glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
@@ -3990,7 +4067,7 @@ int main(int argc, char **argv){
         // struttura su tutta la sagoma (facciata e tetto), non solo alla base.
         // (Approssimazione: quote assolute — su terreni collinari il bordo alto
         // può slittare di poco, per un tooltip è irrilevante.)
-        gHovOn=0;
+        gHovOn=0; gHovTurret=-1;
         if(!ed.active && (gApp.state==APP_PREP || gApp.state==APP_ASSAULT) &&
            !drag_cam && !(gAimMort && gApp.state==APP_ASSAULT)){
             if(gApp.state==APP_PREP) prep_ui_layout(SW,SH); else strikes_ui_layout(SW,SH);
@@ -4002,6 +4079,23 @@ int main(int argc, char **argv){
                     if(pick_ray_plane(r0,r1,hplane,&wx,&wy) &&
                        hover_resolve(&sc,g,wx,wy,hplane)) break;
                 }
+            }
+        }
+        // cono di mira della torretta sotto il cursore (ambra, depth off):
+        // rende leggibile a colpo d'occhio arco e gittata delle difese piazzate.
+        if(gHovTurret>=0 && !plc.active){
+            DefTurret *ht=def_turret(g,gHovTurret);
+            if(ht){
+                float fc=0.5f*(ht->arc_min+ht->arc_max);
+                float half=0.5f*(ht->arc_max-ht->arc_min);
+                int ov=push_aim_cone(edovl,0,EDOVL_MAXV,ht->x,ht->y,
+                                     fc,half,ht->range,0.95f,0.70f,0.15f);
+                if(ov){ glDisable(GL_DEPTH_TEST);
+                    glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
+                    glBindVertexArray(ovVao);glBindBuffer(GL_ARRAY_BUFFER,ovVbo);
+                    glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)ov*9*sizeof(float),edovl);
+                    glDrawArrays(GL_TRIANGLES,0,ov);
+                    glEnable(GL_DEPTH_TEST); }
             }
         }
         // overlay shell (title/menu/briefing/debrief + barra di fase): 2D in

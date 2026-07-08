@@ -60,6 +60,9 @@ typedef struct {
     float       strength;    /* blast impulse strength                        */
     float       up_ratio;    /* blast impulse loft                            */
     float       arm_delay;   /* s before the mine can fire                    */
+    /* turret aim arc: TOTAL width in degrees, centered on the facing the
+     * player picks at placement (Placement.facing). 0 = default (90°). */
+    float       arc_deg;
 } PlItem;
 
 /* Host veto: return 1 if (wx,wy) sits on an immovable static (palazzo/roccia).
@@ -90,6 +93,9 @@ typedef struct {
     int    sel;                      /* selected catalog index               */
     float  cx, cy;                   /* cursor in world meters               */
     int    rot90;                    /* 0..3 orientation (barricade/car)     */
+    float  facing;                   /* turret aim-arc centre (rad, world +x
+                                        = 0, CCW); host sets it via the
+                                        place-then-drag aiming gesture       */
     int    valid;                    /* commit allowed here? (pl_validate)   */
     int    reason;                   /* PlReason of the last validate        */
     PlBlockedFn blocked; void *blocked_user;

@@ -85,8 +85,11 @@ typedef struct { float x, y, w, h, weight; } SceneRect;  /* meters; weight = cos
 typedef struct { float x, y, w, h, hp, cost_mult; } SceneWall;   /* meters + hp + mult */
 
 /* Fixed sweeping turret (applied by the host). range in m; heavy != 0 = gibs;
- * hp = destructible-emplacement toughness vs the swarm (0 = host default). */
-typedef struct { float x, y, range; int heavy; float hp; } SceneTurret;
+ * hp = destructible-emplacement toughness vs the swarm (0 = host default).
+ * facing_deg = aim-arc centre (deg, world +x = 0, CCW); arc_deg = TOTAL arc
+ * width (deg). arc_deg <= 0 = legacy full-circle sweep (facing ignored). */
+typedef struct { float x, y, range; int heavy; float hp;
+                 float facing_deg, arc_deg; } SceneTurret;
 
 /* Pure-decor prop instance: catalog key + world position + Y-rotation (deg).
  * Render-only (no sim effect); resolved against props/catalog.txt by the host. */

@@ -163,10 +163,13 @@ int scene_load(const char *path, Scene *sc) {
             char *x = strtok_r(NULL, " \t", &save), *y = strtok_r(NULL, " \t", &save);
             char *rg = strtok_r(NULL, " \t", &save), *hv = strtok_r(NULL, " \t", &save);
             char *hp = strtok_r(NULL, " \t", &save);
+            char *fc = strtok_r(NULL, " \t", &save), *ar = strtok_r(NULL, " \t", &save);
             if (!x || !y) { err = -2; break; }
             SceneTurret t = { (float)atof(x), (float)atof(y),
                               rg ? (float)atof(rg) : 30.0f, hv ? atoi(hv) : 0,
-                              hp ? (float)atof(hp) : 0.0f };
+                              hp ? (float)atof(hp) : 0.0f,
+                              fc ? (float)atof(fc) : 0.0f,   /* facing_deg */
+                              ar ? (float)atof(ar) : 0.0f }; /* arc_deg, <=0 = full */
             sc->turret[sc->n_turret++] = t;
         } else if (!strcmp(key, "prop")) {
             if (sc->n_prop >= SCENE_MAX_PROP) { err = -2; break; }
@@ -268,8 +271,9 @@ int scene_save(const char *path, const Scene *sc) {
                 (double)sc->wall[k].x, (double)sc->wall[k].y,
                 (double)sc->wall[k].w, (double)sc->wall[k].h);
     for (int k = 0; k < sc->n_turret; k++)
-        fprintf(f, "turret %g %g %g %d %g\n", (double)sc->turret[k].x, (double)sc->turret[k].y,
-                (double)sc->turret[k].range, sc->turret[k].heavy, (double)sc->turret[k].hp);
+        fprintf(f, "turret %g %g %g %d %g %g %g\n", (double)sc->turret[k].x, (double)sc->turret[k].y,
+                (double)sc->turret[k].range, sc->turret[k].heavy, (double)sc->turret[k].hp,
+                (double)sc->turret[k].facing_deg, (double)sc->turret[k].arc_deg);
     for (int k = 0; k < sc->n_prop; k++)
         fprintf(f, "prop %s %g %g %g\n", sc->prop[k].key, (double)sc->prop[k].x,
                 (double)sc->prop[k].y, (double)sc->prop[k].rot);

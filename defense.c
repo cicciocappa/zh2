@@ -313,21 +313,44 @@ static void turret_update(DefGame *g, DefTurret *t, float dt) {
         bestd2 = d2; best = i;
     }
 
+    float aim_err = 1e30f;                     /* |error| AFTER this turn step */
     if (best >= 0) {                           /* dwell: turn toward target */
         float bearing = atan2f(py[best] - t->y, px[best] - t->x);
-        float diff = wrap_pi(bearing - t->ang);
         float maxstep = t->sweep_speed * dt;
-        t->ang += (fabsf(diff) <= maxstep) ? diff
-                  : (diff > 0 ? maxstep : -maxstep);
+        if (half >= 3.13f) {
+            /* free mount (near-full arc, no stops): wrapped shortest path —
+             * targets straddling the ±pi seam must not trigger long slews.
+             * ang deliberately NOT re-wrapped (it may drift past ±pi until
+             * the sweep clamp catches it): bit-identical to the pre-arc-gate
+             * behaviour the M5 scenarios (test_lure) are calibrated on. */
+            float diff = wrap_pi(bearing - t->ang);
+            t->ang += (fabsf(diff) <= maxstep) ? diff
+                      : (diff > 0 ? maxstep : -maxstep);
+            aim_err = fabsf(wrap_pi(bearing - t->ang));
+        } else {
+            /* limited mount: chase the target's angle in the UNWRAPPED arc
+             * frame (the acquire filter guarantees wrap_pi(bearing-cx) is
+             * within ±half, so goal lies in [arc_min, arc_max] like t->ang) —
+             * when the wrapped shortest path crosses the stops, the barrel
+             * slews the long way around INSIDE the arc instead of pinning. */
+            float goal = cx + wrap_pi(bearing - cx);
+            float diff = goal - t->ang;
+            t->ang += (fabsf(diff) <= maxstep) ? diff
+                      : (diff > 0 ? maxstep : -maxstep);
+            aim_err = fabsf(goal - t->ang);
+        }
     } else {                                   /* sweep the arc */
         t->ang += (float)t->sweep_dir * t->sweep_speed * dt;
         if (t->ang > t->arc_max) { t->ang = t->arc_max; t->sweep_dir = -1; }
         if (t->ang < t->arc_min) { t->ang = t->arc_min; t->sweep_dir =  1; }
     }
 
-    /* fire only with a target (free bullets, no waste on empty arc) */
+    /* fire only with a target IN THE SIGHTS (turn-then-shoot): hold fire while
+     * the barrel is still slewing, with the timer primed so the shot leaves the
+     * instant alignment is reached (no waste on empty arc either).
+     * aim_tol <= 0 = legacy gate-less turret (defense.h) */
     t->fire_timer += dt;
-    if (best < 0) {
+    if (best < 0 || (t->aim_tol > 0.0f && aim_err > t->aim_tol)) {
         if (t->fire_timer > t->fire_period) t->fire_timer = t->fire_period;
         return;
     }

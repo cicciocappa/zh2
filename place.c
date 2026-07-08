@@ -50,6 +50,7 @@ static void pl_car_discs(const PlItem *it, float cx, float cy, int rot90,
 void pl_init(Placement *p, const PlItem *catalog, int n) {
     p->cat = catalog; p->ncat = n;
     p->active = 0; p->sel = 0; p->cx = p->cy = 0.0f; p->rot90 = 0;
+    p->facing = 0.0f;
     p->valid = 0; p->reason = PL_BADITEM;
     p->blocked = 0; p->blocked_user = 0;
     p->undo = 0;
@@ -164,12 +165,20 @@ int pl_validate(Placement *p, DefGame *g, SimP *s) {
 
 /* Turret built at the cursor, combat params from the catalog entry
  * (PREP_UI_DESIGN §2). 0 = standard default, so bare rows keep behaving
- * like the old fixed light turret. */
-static int commit_turret(DefGame *g, const PlItem *it, float cx, float cy) {
+ * like the old fixed light turret. The aim arc is CENTERED on the facing
+ * the player picked with the aiming drag (Placement.facing); width from
+ * the catalog (it->arc_deg, 0 = 90° total). arc_min/max stay UNWRAPPED
+ * (facing ± half may leave ±pi — defense.c compares bearings via wrap_pi). */
+static int commit_turret(DefGame *g, const PlItem *it, float cx, float cy,
+                         float facing) {
     DefTurret t = {0};
+    float half = (it->arc_deg > 0.0f ? it->arc_deg : 90.0f)
+                 * (3.14159265f / 360.0f);
     t.x = cx; t.y = cy;
-    t.arc_min = -3.14159265f; t.arc_max = 3.14159265f;   /* full sweep */
+    t.ang = facing;
+    t.arc_min = facing - half; t.arc_max = facing + half;
     t.sweep_dir = 1; t.sweep_speed = 2.5f;
+    t.aim_tol = DEF_AIM_TOL_STD;          /* turn-then-shoot (game turret) */
     t.heavy = it->heavy; t.piercing = 0;
     t.range       = it->range       > 0.0f ? it->range       : 40.0f;
     t.fire_period = it->fire_period > 0.0f ? it->fire_period : (it->heavy ? 0.5f : 0.12f);
@@ -379,7 +388,7 @@ int pl_commit(Placement *p, DefGame *g, SimP *s) {
     int ok = 0;
     switch (it->kind) {
         case PL_BARRICADE: ok = commit_barricade(g, s, it, p->cx, p->cy, p->rot90); break;
-        case PL_TURRET:    ok = commit_turret(g, it, p->cx, p->cy); break;
+        case PL_TURRET:    ok = commit_turret(g, it, p->cx, p->cy, p->facing); break;
         case PL_BIN:       ok = simp_drag_add(s, p->cx, p->cy, it->radius, it->mass) >= 0; break;
         case PL_CAR:       ok = commit_car(s, it, p->cx, p->cy, p->rot90); break;
         case PL_TRAP:      ok = commit_trap(p->traps, it, p->cx, p->cy); break;

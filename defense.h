@@ -38,6 +38,10 @@ typedef struct {
     float arc_min, arc_max;/* sweep arc extents (rad, no ±pi wrap assumed)  */
     int   sweep_dir;       /* +1 / -1                                       */
     float sweep_speed;     /* rad/s (also the dwell turn rate)              */
+    float aim_tol;         /* rad: fires only when |aim error| <= this
+                              (turn-then-shoot). <= 0 = NO gate (legacy
+                              fire-while-slewing — the M5 tests are tuned on
+                              it); game turrets use DEF_AIM_TOL_STD.        */
     float range;           /* m                                             */
     float fire_period;     /* s between shots (light < heavy)               */
     float fire_timer;
@@ -49,6 +53,11 @@ typedef struct {
     float last_t;          /* hit distance of the last shot (else range)    */
     float tracer_ttl;      /* > 0 → draw a tracer; decays each update       */
 } DefTurret;
+
+/* Standard fire-alignment tolerance (~7°) for game turrets (placement,
+ * authored scene cones). Not applied by def_add_turret: aim_tol <= 0 keeps
+ * the legacy gate-less behaviour the M5 test scenarios are calibrated on. */
+#define DEF_AIM_TOL_STD 0.12f
 
 typedef struct DefGame DefGame;
 

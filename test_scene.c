@@ -36,8 +36,8 @@ static int roundtrip(void) {
     strcpy(a.prop[0].key, "bench"); a.prop[0].x = 7.5f; a.prop[0].y = 12.0f; a.prop[0].rot = 90.0f;
     strcpy(a.prop[1].key, "sign");  a.prop[1].x = 3.0f; a.prop[1].y = 4.5f;  a.prop[1].rot = 0.0f;
     a.n_turret = 2;
-    a.turret[0] = (SceneTurret){ 12, 8, 25.0f, 0, 400.0f };  /* tough emplacement */
-    a.turret[1] = (SceneTurret){ 20, 6, 30.0f, 1, 0.0f };    /* hp omitted -> default */
+    a.turret[0] = (SceneTurret){ 12, 8, 25.0f, 0, 400.0f, 135.0f, 90.0f }; /* authored aim cone */
+    a.turret[1] = (SceneTurret){ 20, 6, 30.0f, 1, 0.0f, 0, 0 }; /* hp/cone omitted -> default/full */
     a.n_exit = 2;                                            /* fase A entities */
     a.exits[0] = (SceneExit){ 1, 4, 2, 8, 12.0f, 5.0f, 400 };
     a.exits[1] = (SceneExit){ 27, 4, 2, 8, 6.0f, 0.0f, 0 };  /* no delay, inf pool */
@@ -62,7 +62,10 @@ static int roundtrip(void) {
     ok = ok && b.n_turret == 2 &&
          fabsf(b.turret[0].range - 25.0f) < 1e-6f && b.turret[0].heavy == 0 &&
          fabsf(b.turret[0].hp - 400.0f) < 1e-6f &&
-         b.turret[1].heavy == 1 && fabsf(b.turret[1].hp - 0.0f) < 1e-6f;
+         fabsf(b.turret[0].facing_deg - 135.0f) < 1e-6f &&
+         fabsf(b.turret[0].arc_deg - 90.0f) < 1e-6f &&
+         b.turret[1].heavy == 1 && fabsf(b.turret[1].hp - 0.0f) < 1e-6f &&
+         fabsf(b.turret[1].arc_deg - 0.0f) < 1e-6f;  /* omitted -> legacy full */
     ok = ok && b.n_prop == 2 &&
          strcmp(b.prop[0].key, "bench") == 0 && fabsf(b.prop[0].x - 7.5f) < 1e-6f &&
          fabsf(b.prop[0].rot - 90.0f) < 1e-6f &&
