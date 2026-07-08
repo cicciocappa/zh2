@@ -1532,6 +1532,15 @@ enum { HELI_IN, HELI_DOWN, HELI_ACT, HELI_UP, HELI_OUT };
 #define HELI_CABLE_MIN 0.06f      // cavo ritirato (quasi invisibile)
 #define HELI_ROTOR_W  17.0f       // spin dei rotori (rad/s)
 #define HELI_CAM_HH   60.0f       // half-height camera per le cinematiche (zoom out)
+// camera di GIOCO vincolata (decisione 2026-07-08): elevation FISSA (il ¾ di
+// GFX_DESIGN — si gioca sempre alla stessa inquadratura), yaw libero (per
+// guardare dietro palazzi e muri), zoom clampato (niente close-up sui lowpoly
+// né vista-satellite). Vale solo per la shell fuori da EDIT; il sandbox
+// vat_horde resta libero. Se l'ombra visiva dietro gli statici alti risulta
+// scomoda, alzare l'elevation fissa, non liberarla.
+#define GAME_CAM_EL     0.40f     // rad (~23°, il default storico)
+#define GAME_CAM_HH_MIN 8.0f      // zoom-in massimo (half-height, m)
+#define GAME_CAM_HH_MAX 90.0f     // zoom-out massimo (HELI_CAM_HH ci sta dentro)
 static struct {
     int active;                   // 0 spento, 1 = consegna, 2 = estrazione
     int phase; float t;
@@ -3680,6 +3689,16 @@ int main(int argc, char **argv){
             if(pick_y0(vp,mouse_px,mouse_py,SW,SH,&cxw,&cyw)){ cx+=drag_anx-cxw; cz+=drag_any-cyw; } }
         else if(drag_cam==2){ az-=(mouse_px-rot_px)*0.005f; el+=(mouse_py-rot_py)*0.005f;
             if(el<0.08f)el=0.08f; if(el>1.50f)el=1.50f; rot_px=mouse_px; rot_py=mouse_py; }
+#ifdef GAME_SHELL
+        // vincoli camera di gioco (GAME_CAM_*): un solo punto di enforcement,
+        // a valle di TUTTI gli input (rotella, +/-, frecce, drag RMB, tasto C)
+        // — l'elevation e la prospettiva libera si toccano solo in EDIT.
+        if(!ed.active){
+            el=GAME_CAM_EL; cam_free=0;
+            if(hh<GAME_CAM_HH_MIN)hh=GAME_CAM_HH_MIN;
+            if(hh>GAME_CAM_HH_MAX)hh=GAME_CAM_HH_MAX;
+        }
+#endif
         float asp=(float)SW/SH; mat4 proj,view; float ctr[3]={cx,0.9f,cz},up[3]={0,1,0};
         float eye[3]={cx+hh*cosf(el)*sinf(az),0.9f+hh*sinf(el),cz+hh*cosf(el)*cosf(az)};
         if(cam_free)m_persp(proj,45.0f*3.14159f/180.0f,asp,0.1f,500.0f);
