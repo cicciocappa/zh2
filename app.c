@@ -181,6 +181,14 @@ AppAction app_input(App *a, AppInput in){
     case APP_BRIEFING:
         if (in == APP_IN_BACK){ a->state = APP_MENU; return APP_ACT_NONE; }
         if (in == APP_IN_CONFIRM && a->level_ready){
+            a->state = APP_DEPLOY;
+            return APP_ACT_START_DEPLOY;
+        }
+        return APP_ACT_NONE;
+
+    case APP_DEPLOY:            /* cutscene: CONFIRM = finished OR skipped */
+        if (in == APP_IN_BACK){ a->state = APP_MENU; return APP_ACT_NONE; }
+        if (in == APP_IN_CONFIRM){
             a->state = APP_PREP;
             return APP_ACT_START_PREP;
         }
@@ -197,6 +205,13 @@ AppAction app_input(App *a, AppInput in){
     case APP_ASSAULT:
         if (in == APP_IN_BACK){ a->state = APP_MENU; return APP_ACT_NONE; }
         return APP_ACT_NONE;                /* outcome via app_report_result */
+
+    case APP_EXTRACT:           /* cutscene: any exit lands on the debrief */
+        if (in == APP_IN_CONFIRM || in == APP_IN_BACK){
+            a->state = APP_DEBRIEF;
+            return APP_ACT_NONE;
+        }
+        return APP_ACT_NONE;
 
     case APP_DEBRIEF:
         if (in == APP_IN_CONFIRM || in == APP_IN_BACK){
@@ -224,7 +239,11 @@ void app_level_ready(App *a){
 
 AppAction app_report_result(App *a, int won){
     if (a->state != APP_ASSAULT) return APP_ACT_NONE;
-    a->state = APP_DEBRIEF;
+    /* a win detours through the extraction cutscene (BASE_DESIGN §4.2); the
+     * host checks state==APP_EXTRACT after this call and either plays the
+     * heli sequence or feeds APP_IN_CONFIRM straight away. A loss has no
+     * extraction: the container just fell. */
+    a->state = won ? APP_EXTRACT : APP_DEBRIEF;
     a->won = won;
     if (won && a->cur + 1 > a->unlocked && a->cur + 1 < a->nlevels){
         a->unlocked = a->cur + 1;

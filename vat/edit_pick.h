@@ -62,11 +62,11 @@ static void m4_mulv(const float m[16], const float v[4], float out[4]) {
         out[r] = m[0*4+r]*v[0] + m[1*4+r]*v[1] + m[2*4+r]*v[2] + m[3*4+r]*v[3];
 }
 
-/* Pixel (mx,my, top-left origin) in a W x H viewport, through VP, onto y=0.
- * Returns 1 and writes world (*wx,*wy) [the ground (x,z) in meters], or 0 if the
- * eye ray is parallel to the ground plane (no hit). */
-static int pick_y0(const float vp[16], float mx, float my, int W, int H,
-                   float *wx, float *wy) {
+/* Unproject pixel (mx,my, top-left origin) in a W x H viewport to the world
+ * segment near->far. For callers that intersect several horizontal planes
+ * (hover over tall structures) without re-inverting VP per plane. */
+static int pick_ray(const float vp[16], float mx, float my, int W, int H,
+                    float p0out[3], float p1out[3]) {
     float inv[16];
     if (!m4_invert(vp, inv)) return 0;
     float ndc_x = 2.0f*mx/(float)W - 1.0f;
@@ -77,13 +77,28 @@ static int pick_y0(const float vp[16], float mx, float my, int W, int H,
     m4_mulv(inv, nearc, p0);
     m4_mulv(inv, farc,  p1);
     if (p0[3] == 0.0f || p1[3] == 0.0f) return 0;
-    for (int i = 0; i < 3; i++) { p0[i] /= p0[3]; p1[i] /= p1[3]; }
+    for (int i = 0; i < 3; i++) { p0out[i] = p0[i]/p0[3]; p1out[i] = p1[i]/p1[3]; }
+    return 1;
+}
+
+/* Intersect the unprojected segment with the horizontal plane y=h. Returns 1
+ * and writes world (*wx,*wy) [the (x,z) in meters], 0 if parallel. */
+static int pick_ray_plane(const float p0[3], const float p1[3], float h,
+                          float *wx, float *wy) {
     float dy = p1[1] - p0[1];
-    if (dy > -1e-9f && dy < 1e-9f) return 0;         /* ray parallel to ground */
-    float t = -p0[1] / dy;
+    if (dy > -1e-9f && dy < 1e-9f) return 0;         /* ray parallel to plane */
+    float t = (h - p0[1]) / dy;
     *wx = p0[0] + t*(p1[0] - p0[0]);
     *wy = p0[2] + t*(p1[2] - p0[2]);
     return 1;
+}
+
+/* Pixel onto the ground plane y=0 (the editor's original entry point). */
+static int pick_y0(const float vp[16], float mx, float my, int W, int H,
+                   float *wx, float *wy) {
+    float p0[3], p1[3];
+    if (!pick_ray(vp, mx, my, W, H, p0, p1)) return 0;
+    return pick_ray_plane(p0, p1, 0.0f, wx, wy);
 }
 
 #endif /* EDIT_PICK_H */

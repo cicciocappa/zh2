@@ -1,0 +1,8 @@
+# heli_test_campaign — un solo livello con `lz` per vedere le cinematiche
+# della base (BASE_DESIGN §4: consegna in DEPLOY, estrazione a vittoria) e la
+# mira del mortaio dal container. Uso: make game && ./game heli_test_campaign.txt
+level assets/scenes/mission_demo.scn
+name  Consegna della base
+survive 120
+brief L'elicottero sta portando la base operativa.
+brief Difendila e verremo a riprenderla.

@@ -15,7 +15,10 @@ enum { APP_MAX_LEVELS = 16, APP_BRIEF_MAX = 1024 };
 
 typedef enum {
     APP_TITLE, APP_MENU, APP_SETTINGS, APP_BRIEFING,
-    APP_PREP, APP_ASSAULT, APP_DEBRIEF, APP_QUIT
+    APP_DEPLOY,   /* heli delivers the base container (skippable cutscene)   */
+    APP_PREP, APP_ASSAULT,
+    APP_EXTRACT,  /* won: heli picks the container back up (skippable)       */
+    APP_DEBRIEF, APP_QUIT
 } AppState;
 
 /* device-agnostic inputs: the host maps keys (arrows/WASD, ENTER, ESC). */
@@ -28,6 +31,8 @@ typedef enum {
 typedef enum {
     APP_ACT_NONE = 0,
     APP_ACT_LOAD_LEVEL,     /* load level[cur].scene, then app_level_ready */
+    APP_ACT_START_DEPLOY,   /* play the delivery cutscene (or skip: host
+                               feeds APP_IN_CONFIRM when done/no heli)     */
     APP_ACT_START_PREP,     /* enter fortification phase (sim runs, no waves) */
     APP_ACT_START_ASSAULT,  /* unleash the directors                        */
     APP_ACT_APPLY_SETTINGS, /* volumes changed: push to audio               */

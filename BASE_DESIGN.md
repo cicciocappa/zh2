@@ -1,11 +1,28 @@
 # La base: consegna, difesa, estrazione — design tecnico
 
-> **STATO: DECISO (2026-07-07), da implementare.** Decisioni §8 sciolte con
-> l'utente; pronto per il codice. Evolve il concetto DEPLOY di GAME_PLAN §1
+> **STATO: IMPLEMENTATO (2026-07-08), verifica visiva utente in corso.**
+> Fasi 1a/1b (footprint orientato + box container + arco mortaio) committate
+> in precedenza; questa passata aggiunge: stati `APP_DEPLOY`/`APP_EXTRACT` in
+> `app.c` (skippabili con INVIO, testati in `test_app`), cinematiche chinook
+> (`assets/models/chinook.glb`, nodi `helicopter_body`/`rotor1`/`rotor2`/
+> `cable` — il cavo si srotola scalando la Y attorno alla sua ancora in cima,
+> i rotori girano attorno all'asse misurato dalla normale media, disegnati in
+> 2 copie sfasate di 90° come trucco anti-strobo), modello base
+> `assets/models/base_and_mortar.glb` (nodi `container`/`mortar_stand`/
+> `mortar_carriage`: lo stand ruota sull'azimut di mira, il tubo — verticale a
+> riposo — si inclina all'alzo balistico `atan(4·apex/d)`, slew limitato nel
+> fixed loop), gittata min/max del mortaio (default 12/90 m, env
+> `VAT_HORDE_MORTAR_MIN/MAX`; click fuori gittata rifiutato, X grigia, anelli
+> di gittata in aiming) e colpo che parte dalla BOCCA del tubo. Il container
+> appeso al cavo è stampato da `build_struct_mesh` (`gLzHeld`); senza glb
+> restano i placeholder (box arancio) e le cinematiche si saltano da sole.
+> Banco di prova: `./game heli_test_campaign.txt` (mission_demo ha la `lz`;
+> la campagna normale non ce l'ha ancora → DEPLOY/EXTRACT auto-skip).
+> Evolve il concetto DEPLOY di GAME_PLAN §1
 > ("l'elicottero È il core") e sostituisce la nota "elicottero = fiction futura"
 > di `build_lz_core`. Nessuna API core nuova: la base è già una struttura
 > assediabile + goal; le cinematiche sono fiction renderer-side; il gating di
-> fase vive nella shell (`app.c`, nuovi stati `APP_DEPLOY`/`APP_EXTRACT`).
+> fase vive nella shell (`app.c`).
 
 ## 1. Principio
 
@@ -36,7 +53,7 @@ vengono a riprendere.
 | Attacco mortaio | `host_blast` + pool strike in vat_horde | FATTO (v0: parte dal punto X, NESSUNA origine base — placeholder in attesa di QUESTO doc) |
 | Rendering strutture (danno/crollo) | `build_struct_mesh` (scurimento col danno, sparizione al crollo) | FATTO |
 | Pipeline modelli 3D | glb flat-color (`load_prop_models`), VAT animato (zombie), torrette a nodi (`base`/`gun`) | FATTO — riusabile per heli/container |
-| Barre HP world-space | citate in GUIDA §3.7 (quad flat su core/segmenti) | DA FARE |
+| Barre HP world-space | **SCARTATE** (2026-07-08: ingombranti alla scala del gioco) → sostituite dall'**hover inspect**: tooltip screen-space al cursore (nome + mini-barra HP) sull'elemento sotto il mouse — torrette, muri, barriere, prop assediabili, base. `hover_resolve`/`hover_tooltip_draw` in vat_horde | FATTO |
 | Asset elicottero / container / cavo | — | **DA CREARE (utente)**; placeholder procedurali per la meccanica |
 
 ## 3. La base come entità

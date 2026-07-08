@@ -497,6 +497,126 @@ static int tur_emit(float *buf, int c, const TurPart *p, float tx, float tz,
         o[6]=cr; o[7]=cg; o[8]=cb; }
     return c+p->nv;
 }
+// --- base container + mortar model (assets/models/base_and_mortar.glb,
+// BASE_DESIGN §3/§5): tre nodi per nome. "container" = il box ISO 20"
+// (authored alle misure reali BASE_W/D/H, base su y=0, origine al centro del
+// footprint); "mortar_stand" ruota sull'AZIMUT di mira attorno al proprio
+// asse verticale; "mortar_carriage" = il tubo, VERTICALE a riposo, che si
+// inclina dal verticale verso l'azimut per l'alzo (indicazione utente).
+// Parti bakate come soup 6-float world-transformed (tur_read_part); colore =
+// baseColorFactor del materiale; perni misurati dai vertici bakati. Glb
+// assente/malformato -> resta il box arancio placeholder.
+typedef struct {
+    TurPart cont, stand, tube;
+    float cont_col[3], stand_col[3], tube_col[3];
+    float stand_px, stand_pz;                 // asse yaw dello stand (x,z modello)
+    float tube_px, tube_py, tube_pz;          // perno base del tubo (spazio modello)
+    float tube_len;                           // perno -> bocca lungo il tubo a riposo
+    int ok;
+} BaseModel;
+static BaseModel gBaseM;
+// atteggiamento del mortaio: azimut MONDO del colpo e alzo dal verticale.
+// Lo slew (inseguimento della mira) vive nella shell; senza shell resta fermo.
+static float gMortAz=0.0f, gMortTilt=0.0f;
+
+static void base_part_color(cgltf_node *nd, float col[3]){
+    col[0]=col[1]=col[2]=0.65f;
+    if(!nd->mesh || nd->mesh->primitives_count<1) return;
+    cgltf_primitive *pr=&nd->mesh->primitives[0];
+    if(pr->material && pr->material->has_pbr_metallic_roughness){
+        const cgltf_float *bc=pr->material->pbr_metallic_roughness.base_color_factor;
+        col[0]=bc[0]; col[1]=bc[1]; col[2]=bc[2]; }
+}
+static int load_base_model(const char *path, BaseModel *bm){
+    memset(bm,0,sizeof *bm);
+    cgltf_options opt={0}; cgltf_data *data=NULL;
+    if(cgltf_parse_file(&opt,path,&data)!=cgltf_result_success){
+        fprintf(stderr,"base: parse fail %s (fallback box)\n",path); return 0; }
+    if(cgltf_load_buffers(&opt,data,path)!=cgltf_result_success){
+        fprintf(stderr,"base: buffers fail %s\n",path); cgltf_free(data); return 0; }
+    for(size_t n=0;n<data->nodes_count;n++){ cgltf_node *nd=&data->nodes[n];
+        if(!nd->name) continue;
+        if(!strcmp(nd->name,"container")){
+            tur_read_part(nd,&bm->cont,1.0f);  base_part_color(nd,bm->cont_col); }
+        else if(!strcmp(nd->name,"mortar_stand")){
+            tur_read_part(nd,&bm->stand,1.0f); base_part_color(nd,bm->stand_col); }
+        else if(!strcmp(nd->name,"mortar_carriage")){
+            tur_read_part(nd,&bm->tube,1.0f);  base_part_color(nd,bm->tube_col); } }
+    cgltf_free(data);
+    if(!bm->cont.nv || !bm->stand.nv || !bm->tube.nv){
+        fprintf(stderr,"base: %s manca container/mortar_stand/mortar_carriage (fallback box)\n",path);
+        free(bm->cont.v); free(bm->stand.v); free(bm->tube.v);
+        memset(bm,0,sizeof *bm); return 0; }
+    // perni dai vertici bakati: stand = centroide x,z (asse verticale);
+    // tubo = centro della base (min y), la bocca è il max y a riposo.
+    double sx=0,sz=0; for(int k=0;k<bm->stand.nv;k++){ sx+=bm->stand.v[k*6]; sz+=bm->stand.v[k*6+2]; }
+    bm->stand_px=(float)(sx/bm->stand.nv); bm->stand_pz=(float)(sz/bm->stand.nv);
+    float ymin=1e30f,ymax=-1e30f; double tx=0,tz=0;
+    for(int k=0;k<bm->tube.nv;k++){ const float *o=bm->tube.v+k*6;
+        if(o[1]<ymin)ymin=o[1];
+        if(o[1]>ymax)ymax=o[1];
+        tx+=o[0]; tz+=o[2]; }
+    bm->tube_px=(float)(tx/bm->tube.nv); bm->tube_py=ymin; bm->tube_pz=(float)(tz/bm->tube.nv);
+    bm->tube_len=ymax-ymin;
+    bm->ok=1;
+    printf("base: %s ok (%d+%d+%d vert, tubo %.2f m)\n",path,
+           bm->cont.nv,bm->stand.nv,bm->tube.nv,(double)bm->tube_len);
+    return 1;
+}
+// stamp di una parte del modello base nel buffer flat 9-float. Pipeline per
+// vertice (spazio modello -> mondo): [alzo `beta` attorno al perno del tubo,
+// il +Y a riposo piega verso il +X locale] -> [azimut relativo `rel` attorno
+// all'asse dello stand] -> yaw del container (ca,sa) -> traslazione (tx,ty,tz)
+// con ty = quota della BASE del container (a terra o appeso al cavo).
+// tint scurisce il colore della parte (danno). Ritorna il nuovo count.
+static int base_emit(float *buf, int c, int maxV, const TurPart *p, const float col[3],
+                     float tint, float tx, float ty, float tz, float ca, float sa,
+                     int do_yaw, float rel, int do_tilt, float beta){
+    if(c+p->nv > maxV) return c;
+    float cb=cosf(beta), sb=sinf(beta), cr=cosf(rel), sr=sinf(rel);
+    float R=col[0]*tint, G=col[1]*tint, B=col[2]*tint;
+    for(int k=0;k<p->nv;k++){ const float *i=p->v+k*6;
+        float x=i[0], y=i[1], z=i[2], nx=i[3], ny=i[4], nz=i[5];
+        if(do_tilt){                        // rotazione attorno a Z locale: +Y -> -X
+            // (-X locale col gruppo già girato di MORT_MODEL_YAW: combinazione
+            // verificata a occhio dall'utente 2026-07-08 — stand al fronte E
+            // tubo piegato sul bersaglio)
+            float lx=x-gBaseM.tube_px, ly=y-gBaseM.tube_py;
+            x=gBaseM.tube_px + lx*cb - ly*sb;
+            y=gBaseM.tube_py + lx*sb + ly*cb;
+            float nx2=nx*cb-ny*sb; ny=nx*sb+ny*cb; nx=nx2;
+        }
+        if(do_yaw){                         // yaw attorno all'asse dello stand
+            float lx=x-gBaseM.stand_px, lz=z-gBaseM.stand_pz;
+            x=gBaseM.stand_px + lx*cr - lz*sr;
+            z=gBaseM.stand_pz + lx*sr + lz*cr;
+            float nx2=nx*cr-nz*sr; nz=nx*sr+nz*cr; nx=nx2;
+        }
+        float *o=buf+(size_t)c*9; c++;
+        o[0]=tx + x*ca - z*sa;
+        o[1]=ty + y;
+        o[2]=tz + x*sa + z*ca;
+        o[3]=nx*ca - nz*sa; o[4]=ny; o[5]=nx*sa + nz*ca;
+        o[6]=R; o[7]=G; o[8]=B;
+    }
+    return c;
+}
+// il modello completo (container + stand + tubo) in un colpo: yaw = yaw del
+// container, az_rel = azimut del mortaio RELATIVO al container, tilt = alzo.
+// MORT_MODEL_YAW: il gruppo supporto+tubo è authored col fronte girato di
+// 180° rispetto all'azimut di tiro (verificato a occhio 2026-07-08) — la
+// rotazione fissa raddrizza il fronte, l'alzo +X locale resta sul bersaglio.
+#define MORT_MODEL_YAW 3.14159265f
+static int base_model_emit(float *buf, int c, int maxV, float tint,
+                           float tx, float ty, float tz, float yaw,
+                           float az_rel, float tilt){
+    float ca=cosf(yaw), sa=sinf(yaw), rel=az_rel+MORT_MODEL_YAW;
+    c=base_emit(buf,c,maxV,&gBaseM.cont, gBaseM.cont_col, tint,tx,ty,tz,ca,sa,0,0,0,0);
+    c=base_emit(buf,c,maxV,&gBaseM.stand,gBaseM.stand_col,tint,tx,ty,tz,ca,sa,1,rel,0,0);
+    c=base_emit(buf,c,maxV,&gBaseM.tube, gBaseM.tube_col, tint,tx,ty,tz,ca,sa,1,rel,1,tilt);
+    return c;
+}
+
 // veto editor (§10): non si piazza nulla su una cella-statico (buco palazzo).
 static int ter_blocked(float x, float y){ return gTerOn && terrain_hole(&gTer, x, y); }
 
@@ -925,6 +1045,12 @@ static void strike_add(float x, float y, float ox, float oy, float delay) {
         return; }
 }
 static int gAimMort = 0; static float gAimX = 0.0f, gAimY = 0.0f;
+// gittata del mortaio (BASE_DESIGN §3 + richiesta utente 2026-07-08): oltre
+// alla massima c'è una MINIMA (sotto non si può inarcare il tiro — e tiene il
+// giocatore dallo spammare colpi sull'assedio a contatto). Fuori gittata il
+// click è rifiutato e la X di mira si spegne; in aiming i due anelli sono
+// disegnati attorno alla base. Env VAT_HORDE_MORTAR_MIN/MAX.
+static float gMortMinR = 12.0f, gMortMaxR = 90.0f;
 #endif
 
 // Esplosione lato host (EXPLOSION_DESIGN.md §3): la verità di gioco (def_blast:
@@ -1257,6 +1383,288 @@ static float gBaseOX=0, gBaseOY=0;       // origine attacchi speciali: container
 #define BASE_W 6.1f
 #define BASE_D 2.44f
 #define BASE_H 2.6f
+// container in mano all'elicottero (cinematiche BASE_DESIGN §4): finché è
+// appeso al cavo la mesh della base NON si disegna a terra (la struttura sim
+// esiste già — l'orda è assente/ferma durante le cinematiche, non importa).
+static int gLzHeld=0;
+
+#ifdef GAME_SHELL
+// bocca del mortaio in coordinate render (x, up, z=sim y): perno del tubo +
+// tube_len lungo il tubo inclinato, poi azimut relativo attorno allo stand,
+// yaw del container, e la quota di terra. Fallback senza modello: centro
+// container a quota BASE_H.
+static void mortar_muzzle(float *ox, float *oy, float *oz){
+    float zb=ter_z(gLzX,gLzY);
+    if(!gBaseM.ok || gLzCore<0){ *ox=gBaseOX; *oy=ter_z(gBaseOX,gBaseOY)+BASE_H; *oz=gBaseOY; return; }
+    float b=gMortTilt, rel=gMortAz-gLzYaw+MORT_MODEL_YAW;
+    float x=gBaseM.tube_px - gBaseM.tube_len*sinf(b);   // -X: come il tilt di base_emit
+    float y=gBaseM.tube_py + gBaseM.tube_len*cosf(b);
+    float z=gBaseM.tube_pz;
+    float lx=x-gBaseM.stand_px, lz=z-gBaseM.stand_pz, cr=cosf(rel), sr=sinf(rel);
+    x=gBaseM.stand_px + lx*cr - lz*sr; z=gBaseM.stand_pz + lx*sr + lz*cr;
+    float ca=cosf(gLzYaw), sa=sinf(gLzYaw);
+    *ox=gLzX + x*ca - z*sa; *oy=zb + y; *oz=gLzY + x*sa + z*ca;
+}
+
+// --- chinook (assets/models/chinook.glb, BASE_DESIGN §4-§5): consegna ed
+// estrazione del container. Nodi per nome: "helicopter_body" (statico),
+// "rotor1"/"rotor2" (girano attorno all'asse del proprio disco: perno =
+// centroide, asse = normale media delle pale — i nodi sono leggermente
+// inclinati, l'asse va misurato, non assunto verticale), "cable" (ancorato
+// al suo punto PIÙ ALTO: la scala Y lo srotola verso il basso, indicazione
+// utente — il perno del nodo glb non sta in cima, quindi ri-ancoriamo noi).
+// Parti = VAO indicizzati 8-float (pos/nrm/uv) per lo shader mesh.vs/fs dei
+// mesh-gib; texture = base-color embedded del glb (il cavo, senza materiale,
+// usa una 1x1 grigia). Traiettoria e fasi = stato host (heli_update), il glb
+// non porta animazioni.
+typedef struct { GLuint vao; int ni; float piv[3]; float axis[3]; } HeliPart;
+static struct {
+    HeliPart body, r1, r2, cable;
+    GLuint tex, greyTex;
+    float cable_top;                 // quota (modello) dell'ancora del cavo
+    float cable_len;                 // lunghezza del cavo a scala 1
+    int ok;
+} gHeliM;
+
+// legge un nodo come VAO 8-float indicizzato, vertici in spazio mondo del glb.
+// out_v/out_n = bounds opzionali. Ritorna il numero di vertici (0 = niente).
+static int heli_read_node(cgltf_node *nd, HeliPart *out, float bmin[3], float bmax[3]){
+    memset(out,0,sizeof *out);
+    if(!nd->mesh || nd->mesh->primitives_count<1) return 0;
+    cgltf_primitive *pr=&nd->mesh->primitives[0];
+    if(pr->type!=cgltf_primitive_type_triangles || !pr->indices) return 0;
+    cgltf_accessor *pos=NULL,*nrm=NULL,*uv=NULL;
+    for(size_t a=0;a<pr->attributes_count;a++){ cgltf_attribute *at=&pr->attributes[a];
+        if(at->type==cgltf_attribute_type_position) pos=at->data;
+        else if(at->type==cgltf_attribute_type_normal) nrm=at->data;
+        else if(at->type==cgltf_attribute_type_texcoord && at->index==0) uv=at->data; }
+    if(!pos) return 0;
+    float M[16]; cgltf_node_transform_world(nd,M);
+    size_t nv=pos->count, ni=pr->indices->count;
+    float *verts=malloc(nv*8*sizeof(float));
+    unsigned short *idx=malloc(ni*sizeof(unsigned short));
+    double cx=0,cy=0,cz=0, ax=0,ay=0,az=0;
+    for(size_t v=0;v<nv;v++){
+        float P[3]={0,0,0}, N[3]={0,1,0}, T[2]={0,0};
+        cgltf_accessor_read_float(pos,v,P,3);
+        if(nrm) cgltf_accessor_read_float(nrm,v,N,3);
+        if(uv)  cgltf_accessor_read_float(uv,v,T,2);
+        float wx=M[0]*P[0]+M[4]*P[1]+M[8]*P[2]+M[12];
+        float wy=M[1]*P[0]+M[5]*P[1]+M[9]*P[2]+M[13];
+        float wz=M[2]*P[0]+M[6]*P[1]+M[10]*P[2]+M[14];
+        float nx=M[0]*N[0]+M[4]*N[1]+M[8]*N[2];
+        float ny=M[1]*N[0]+M[5]*N[1]+M[9]*N[2];
+        float nz=M[2]*N[0]+M[6]*N[1]+M[10]*N[2];
+        float *o=verts+v*8; o[0]=wx;o[1]=wy;o[2]=wz; o[3]=nx;o[4]=ny;o[5]=nz; o[6]=T[0];o[7]=T[1];
+        cx+=wx; cy+=wy; cz+=wz; ax+=nx; ay+=ny; az+=nz;
+        if(bmin){ if(wx<bmin[0])bmin[0]=wx; if(wy<bmin[1])bmin[1]=wy; if(wz<bmin[2])bmin[2]=wz; }
+        if(bmax){ if(wx>bmax[0])bmax[0]=wx; if(wy>bmax[1])bmax[1]=wy; if(wz>bmax[2])bmax[2]=wz; }
+    }
+    for(size_t k=0;k<ni;k++) idx[k]=(unsigned short)cgltf_accessor_read_index(pr->indices,k);
+    out->piv[0]=(float)(cx/nv); out->piv[1]=(float)(cy/nv); out->piv[2]=(float)(cz/nv);
+    double al=sqrt(ax*ax+ay*ay+az*az);
+    if(al>1e-6){ out->axis[0]=(float)(ax/al); out->axis[1]=(float)(ay/al); out->axis[2]=(float)(az/al); }
+    else { out->axis[0]=0; out->axis[1]=1; out->axis[2]=0; }
+    GLuint vao,vbo,ebo; glGenVertexArrays(1,&vao);glBindVertexArray(vao);
+    glGenBuffers(1,&vbo);glBindBuffer(GL_ARRAY_BUFFER,vbo);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)nv*8*sizeof(float),verts,GL_STATIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,0,8*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1,3,GL_FLOAT,0,8*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2,2,GL_FLOAT,0,8*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
+    glGenBuffers(1,&ebo);glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,(GLsizeiptr)ni*sizeof(unsigned short),idx,GL_STATIC_DRAW);
+    glBindVertexArray(0); free(verts); free(idx);
+    out->vao=vao; out->ni=(int)ni;
+    return (int)nv;
+}
+static int heli_load(const char *path){
+    memset(&gHeliM,0,sizeof gHeliM);
+    cgltf_options opt={0}; cgltf_data *data=NULL;
+    if(cgltf_parse_file(&opt,path,&data)!=cgltf_result_success){
+        fprintf(stderr,"heli: parse fail %s (cinematiche saltate)\n",path); return 0; }
+    if(cgltf_load_buffers(&opt,data,path)!=cgltf_result_success){
+        fprintf(stderr,"heli: buffers fail %s\n",path); cgltf_free(data); return 0; }
+    char dir[512]; snprintf(dir,sizeof dir,"%s",path);
+    char *slash=strrchr(dir,'/'); if(slash) slash[1]='\0'; else dir[0]='\0';
+    int nb=0,n1=0,n2=0,nc=0;
+    float cmin[3]={1e30f,1e30f,1e30f}, cmax[3]={-1e30f,-1e30f,-1e30f};
+    for(size_t n=0;n<data->nodes_count;n++){ cgltf_node *nd=&data->nodes[n];
+        if(!nd->name || !nd->mesh) continue;
+        if(!strcmp(nd->name,"helicopter_body")) nb=heli_read_node(nd,&gHeliM.body,NULL,NULL);
+        else if(!strcmp(nd->name,"rotor1"))     n1=heli_read_node(nd,&gHeliM.r1,NULL,NULL);
+        else if(!strcmp(nd->name,"rotor2"))     n2=heli_read_node(nd,&gHeliM.r2,NULL,NULL);
+        else if(!strcmp(nd->name,"cable"))      nc=heli_read_node(nd,&gHeliM.cable,cmin,cmax);
+        if(!gHeliM.tex && nd->mesh->primitives_count>0)
+            gHeliM.tex=ground_load_tex(data,&nd->mesh->primitives[0],dir);
+    }
+    cgltf_free(data);
+    if(!nb || !n1 || !n2 || !nc){
+        fprintf(stderr,"heli: %s manca body/rotor1/rotor2/cable (cinematiche saltate)\n",path);
+        return 0; }
+    gHeliM.cable_top=cmax[1];
+    gHeliM.cable_len=cmax[1]-cmin[1];
+    // l'ancora del cavo è il suo punto PIÙ ALTO: heli_part_mat scala attorno
+    // al pivot (piv + S·(v-piv)), quindi la scala Y lo srotola verso il basso
+    // restando attaccato alla pancia.
+    gHeliM.cable.piv[1]=cmax[1];
+    // 1x1 grigio-cavo per le parti senza texture (mesh.fs campiona sempre uTex)
+    unsigned char grey[3]={82,82,88};
+    glGenTextures(1,&gHeliM.greyTex); glBindTexture(GL_TEXTURE_2D,gHeliM.greyTex);
+    glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,1,1,0,GL_RGB,GL_UNSIGNED_BYTE,grey);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+    if(!gHeliM.tex) gHeliM.tex=gHeliM.greyTex;
+    gHeliM.ok=1;
+    printf("heli: %s ok (body %d, rotori %d+%d, cavo %d vert, cavo %.2f m)\n",
+           path,nb,n1,n2,nc,(double)gHeliM.cable_len);
+    return 1;
+}
+
+// --- sequenza (fasi host, BASE_DESIGN §4): IN (entra in quota lungo l'asse
+// del container) -> DOWN (scende sopra la lz) -> ACT (deposita+ritira il cavo,
+// o srotola+aggancia) -> UP -> OUT (esce oltre il bordo) -> fine = CONFIRM
+// alla shell (stesso percorso dello skip con INVIO).
+enum { HELI_IN, HELI_DOWN, HELI_ACT, HELI_UP, HELI_OUT };
+#define HELI_CRUISE   32.0f       // quota di crociera sopra il terreno (m)
+#define HELI_SPEED    26.0f       // velocità orizzontale (m/s)
+#define HELI_VSPEED    7.5f       // velocità verticale (m/s)
+#define HELI_CABLE_FLY 2.4f       // scala del cavo col carico appeso
+#define HELI_CABLE_MIN 0.06f      // cavo ritirato (quasi invisibile)
+#define HELI_ROTOR_W  17.0f       // spin dei rotori (rad/s)
+#define HELI_CAM_HH   60.0f       // half-height camera per le cinematiche (zoom out)
+static struct {
+    int active;                   // 0 spento, 1 = consegna, 2 = estrazione
+    int phase; float t;
+    float x, z;                   // posizione (sim x, sim y)
+    float alt;                    // quota dell'origine modello
+    float dx, dz;                 // direzione di volo (unitaria, piano sim)
+    float ex, ez;                 // punto d'uscita
+    float cable_s;                // scala Y corrente del cavo
+    float rot;                    // angolo rotori
+    int carrying;
+} gHeli;
+static void shell_do_act(AppAction act);          // definita più sotto
+static App gApp;                                  // stato shell (sezione GAME SHELL)
+
+// quota a cui la BASE del container appeso tocca terra alla lz
+static float heli_alt_low(void){
+    return ter_z(gLzX,gLzY) + BASE_H + gHeliM.cable_len*HELI_CABLE_FLY - gHeliM.cable_top;
+}
+static void heli_begin(int mode, const Scene *sc){
+    float a=gLzYaw;
+    gHeli.dx=cosf(a); gHeli.dz=sinf(a);
+    float R=0.5f*sqrtf(sc->world_w*sc->world_w+sc->world_h*sc->world_h)+40.0f;
+    gHeli.x=gLzX-gHeli.dx*R; gHeli.z=gLzY-gHeli.dz*R;
+    gHeli.ex=gLzX+gHeli.dx*R; gHeli.ez=gLzY+gHeli.dz*R;
+    gHeli.alt=ter_z(gLzX,gLzY)+HELI_CRUISE;
+    gHeli.phase=HELI_IN; gHeli.t=0.0f; gHeli.rot=0.0f;
+    gHeli.active=mode;
+    if(mode==1){ gHeli.carrying=1; gHeli.cable_s=HELI_CABLE_FLY; gLzHeld=1; }
+    else       { gHeli.carrying=0; gHeli.cable_s=HELI_CABLE_MIN; gLzHeld=0; }
+}
+static void heli_update(float dt){
+    if(!gHeli.active) return;
+    // stato shell cambiato sotto i piedi (skip con INVIO, ESC al menu):
+    // finalizza — container a terra, elicottero via.
+    if((gHeli.active==1 && gApp.state!=APP_DEPLOY) ||
+       (gHeli.active==2 && gApp.state!=APP_EXTRACT)){
+        gHeli.active=0; gLzHeld=0; return; }
+    gHeli.rot+=HELI_ROTOR_W*dt;
+    float low=heli_alt_low();
+    switch(gHeli.phase){
+    case HELI_IN:{
+        float rx=gLzX-gHeli.x, rz=gLzY-gHeli.z, d=sqrtf(rx*rx+rz*rz), st=HELI_SPEED*dt;
+        if(d<=st){ gHeli.x=gLzX; gHeli.z=gLzY; gHeli.phase=HELI_DOWN; }
+        else { gHeli.x+=rx/d*st; gHeli.z+=rz/d*st; }
+    } break;
+    case HELI_DOWN:
+        gHeli.alt-=HELI_VSPEED*dt;
+        if(gHeli.alt<=low){ gHeli.alt=low; gHeli.phase=HELI_ACT; gHeli.t=0.0f; }
+        break;
+    case HELI_ACT:
+        gHeli.t+=dt;
+        if(gHeli.active==1){                   // consegna: posa, poi ritira il cavo
+            if(gHeli.carrying && gHeli.t>0.6f){ gHeli.carrying=0; gLzHeld=0; }
+            if(!gHeli.carrying){
+                gHeli.cable_s-=(HELI_CABLE_FLY-HELI_CABLE_MIN)/0.9f*dt;
+                if(gHeli.cable_s<=HELI_CABLE_MIN){ gHeli.cable_s=HELI_CABLE_MIN; gHeli.phase=HELI_UP; }
+            }
+        } else {                               // estrazione: srotola, aggancia, solleva
+            if(gHeli.cable_s<HELI_CABLE_FLY){
+                gHeli.cable_s+=(HELI_CABLE_FLY-HELI_CABLE_MIN)/0.9f*dt;
+                if(gHeli.cable_s>=HELI_CABLE_FLY){ gHeli.cable_s=HELI_CABLE_FLY; gHeli.t=0.0f; }
+            } else if(!gHeli.carrying && gHeli.t>0.5f){ gHeli.carrying=1; gLzHeld=1; gHeli.phase=HELI_UP; }
+        }
+        break;
+    case HELI_UP:
+        gHeli.alt+=HELI_VSPEED*1.3f*dt;
+        if(gHeli.alt>=ter_z(gLzX,gLzY)+HELI_CRUISE){ gHeli.phase=HELI_OUT; }
+        break;
+    case HELI_OUT:{
+        float rx=gHeli.ex-gHeli.x, rz=gHeli.ez-gHeli.z, d=sqrtf(rx*rx+rz*rz), st=HELI_SPEED*dt;
+        if(d<=st){ gHeli.active=0; gLzHeld=0;
+            shell_do_act(app_input(&gApp,APP_IN_CONFIRM));   // fine naturale = skip
+        } else { gHeli.x+=rx/d*st; gHeli.z+=rz/d*st; }
+    } break;
+    }
+}
+// matrici: M_part = T(pos)·RotY(yaw) · T(piv)·R(axis,ang)·S(1,sy,1)·T(-piv)
+static void heli_place_mat(mat4 m){
+    float yaw=atan2f(gHeli.dx,gHeli.dz), c=cosf(yaw), s=sinf(yaw);
+    m_identity(m);
+    m[0]=c;  m[2]=-s;
+    m[8]=s;  m[10]=c;
+    m[12]=gHeli.x; m[13]=gHeli.alt; m[14]=gHeli.z;
+}
+static void heli_part_mat(mat4 out, const mat4 place, const HeliPart *p,
+                          float ang, float sy){
+    mat4 L; float c=cosf(ang), s=sinf(ang), C=1.0f-c;
+    float ax=p->axis[0], ay=p->axis[1], az=p->axis[2];
+    float R[9]={ ax*ax*C+c,    ax*ay*C-az*s, ax*az*C+ay*s,
+                 ay*ax*C+az*s, ay*ay*C+c,    ay*az*C-ax*s,
+                 az*ax*C-ay*s, az*ay*C+ax*s, az*az*C+c };
+    // colonne = R·S; traslazione = piv - R·S·piv
+    L[0]=R[0];    L[1]=R[3];    L[2]=R[6];    L[3]=0;
+    L[4]=R[1]*sy; L[5]=R[4]*sy; L[6]=R[7]*sy; L[7]=0;
+    L[8]=R[2];    L[9]=R[5];    L[10]=R[8];   L[11]=0;
+    float px=p->piv[0], py=p->piv[1], pz=p->piv[2];
+    L[12]=px-(L[0]*px+L[4]*py+L[8]*pz);
+    L[13]=py-(L[1]*px+L[5]*py+L[9]*pz);
+    L[14]=pz-(L[2]*px+L[6]*py+L[10]*pz);
+    L[15]=1;
+    m_mul(out,place,L);
+}
+static void heli_draw(GLuint prog, GLint uVP_, GLint uModel_, const mat4 vp){
+    if(!gHeli.active || !gHeliM.ok) return;
+    glUseProgram(prog); glUniformMatrix4fv(uVP_,1,GL_FALSE,vp);
+    glActiveTexture(GL_TEXTURE0);
+    glUniform1i(glGetUniformLocation(prog,"uTex"),0);
+    mat4 place, mm; heli_place_mat(place);
+    glBindTexture(GL_TEXTURE_2D,gHeliM.tex);
+    glUniformMatrix4fv(uModel_,1,GL_FALSE,place);
+    glBindVertexArray(gHeliM.body.vao);
+    glDrawElements(GL_TRIANGLES,gHeliM.body.ni,GL_UNSIGNED_SHORT,0);
+    // rotori: 2 copie sfasate di 90° per pala — il "trucco" anti-strobo: a
+    // spin pieno le copie si fondono in un disco pieno di pale.
+    for(int cpy=0;cpy<2;cpy++){
+        float off=cpy*1.5707963f;
+        heli_part_mat(mm,place,&gHeliM.r1,gHeli.rot+off,1.0f);
+        glUniformMatrix4fv(uModel_,1,GL_FALSE,mm);
+        glBindVertexArray(gHeliM.r1.vao);
+        glDrawElements(GL_TRIANGLES,gHeliM.r1.ni,GL_UNSIGNED_SHORT,0);
+        heli_part_mat(mm,place,&gHeliM.r2,-gHeli.rot+off,1.0f);   // controrotante
+        glUniformMatrix4fv(uModel_,1,GL_FALSE,mm);
+        glBindVertexArray(gHeliM.r2.vao);
+        glDrawElements(GL_TRIANGLES,gHeliM.r2.ni,GL_UNSIGNED_SHORT,0);
+    }
+    glBindTexture(GL_TEXTURE_2D,gHeliM.greyTex);
+    heli_part_mat(mm,place,&gHeliM.cable,0.0f,gHeli.cable_s);
+    glUniformMatrix4fv(uModel_,1,GL_FALSE,mm);
+    glBindVertexArray(gHeliM.cable.vao);
+    glDrawElements(GL_TRIANGLES,gHeliM.cable.ni,GL_UNSIGNED_SHORT,0);
+    glBindVertexArray(0);
+}
+#endif /* GAME_SHELL */
 static void build_base(DefGame *g, SimP *s, float cell, float bcx, float bcy){
     int cx0=(int)(bcx/cell), cy0=(int)(bcy/cell), hc=6, ho=16;
     gCoreId  = def_add_structure(g, 1200.0f, 1);   // innermost = loss
@@ -1369,12 +1777,20 @@ static int build_struct_mesh(DefGame *g, float cell, float *buf, int maxV){
 #undef QM
     }
 #endif
-    // BASE container (fase 1b): il core della LZ è UN box orientato (placeholder
-    // container 6,1×2,44×2,6 m) al posto dei cubetti per-cella saltati sopra.
-    // Si scurisce col danno e sparisce al crollo (celle liberate da defense).
-    if(gLzCore>=0 && !def_struct_collapsed(g,gLzCore) && c+30<=maxV){
+    // BASE container (fase 1b/1c): il core della LZ è il modello
+    // base_and_mortar (container + mortaio che mira, BASE_DESIGN §3) o, senza
+    // glb, UN box orientato 6,1×2,44×2,6 m al posto dei cubetti per-cella
+    // saltati sopra. Si scurisce col danno e sparisce al crollo (celle
+    // liberate da defense). Mentre è appeso all'elicottero (gLzHeld) non si
+    // disegna a terra: lo stampa il blocco cinematica in fondo.
+    if(gLzCore>=0 && !def_struct_collapsed(g,gLzCore) && !gLzHeld && c+30<=maxV){
         float frac=def_struct_hp(g,gLzCore)/(def_struct_hp_max(g,gLzCore)+1e-3f);
         float t=0.35f+0.65f*frac;
+        if(gBaseM.ok){
+            c=base_model_emit(buf,c,maxV,t, gLzX,ter_z(gLzX,gLzY),gLzY, gLzYaw,
+                              gMortAz-gLzYaw, gMortTilt);
+            return c;
+        }
         float cr=0.82f*t, cg=0.40f*t, cb=0.12f*t;        // arancio container da spedizione
         float ca=cosf(gLzYaw), sa=sinf(gLzYaw);
         float hw=0.5f*BASE_W, ht=0.5f*BASE_D;            // half-length lungo u, half-depth lungo v
@@ -1399,6 +1815,16 @@ static int build_struct_mesh(DefGame *g, float cell, float *buf, int maxV){
 #undef VC
 #undef QC
     }
+#ifdef GAME_SHELL
+    // container APPESO al cavo durante le cinematiche (BASE_DESIGN §4): stessa
+    // mesh, quota = fondo del cavo (ancora - lunghezza·scala), già allo yaw
+    // finale della lz (carico imbragato orientato).
+    if(gLzHeld && gHeli.active && gBaseM.ok){
+        float basey=gHeli.alt + gHeliM.cable_top - gHeliM.cable_len*gHeli.cable_s - BASE_H;
+        c=base_model_emit(buf,c,maxV,1.0f, gHeli.x,basey,gHeli.z, gLzYaw,
+                          gMortAz-gLzYaw, gMortTilt);
+    }
+#endif
     return c;
 }
 
@@ -1454,6 +1880,7 @@ static void build_lz_core(DefGame *g, SimP *s, const Scene *sc){
     gLzCore=sid; gStructOn=1;
     gLzX=sc->lz_x; gLzY=sc->lz_y; gLzYaw=a;   // per il box container in build_struct_mesh
     gBaseOX=sc->lz_x; gBaseOY=sc->lz_y;       // il mortaio parte dal container
+    gMortAz=a; gMortTilt=0.0f;                // tubo a riposo, lungo l'asse container
 }
 
 typedef struct { SimP *s; int n; } HoleCtx;
@@ -1472,6 +1899,7 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     gScorchN = gScorchHead = 0;                     // crateri scorch: mondo pulito
 #ifdef GAME_SHELL
     gAimMort = 0; for(int i=0;i<STRIKE_MAX;i++) gStrikes[i].on = 0;  // reset mortaio
+    gHeli.active = 0; gLzHeld = 0;                                   // reset cinematica
 #endif
 
     // buchi del terreno (statici indistruttibili) PRIMA di prefill/base, così
@@ -1625,7 +2053,7 @@ static int upload_obstacle_mesh(GLuint vbo, const Scene *sc, int with_ground){
 // (GAME_APP_DESIGN.md §4) Il flusso vive in app.c (logica pura, testata da
 // test_app); qui c'è solo l'ESECUZIONE delle azioni (caricare il livello,
 // avviare le fasi, salvare) e il disegno degli overlay con font8.
-static App   gApp;
+// (gApp è dichiarata sopra, accanto al modulo heli che la legge)
 static float gSurviveT=0.0f;            // orologio dell'assalto
 static int   gShellCore=-1;             // id struttura core LZ del livello
 
@@ -1654,7 +2082,7 @@ typedef struct {
     Scene *sc; SimP **s; DefGame **g; DefDirector **dir;
     VatLayer *vl; SpawnCtx *spctx; Destruct *dz;
     GLuint obVbo, prVbo; int *obNV, *prNV; int ground_on;
-    float *cam_x, *cam_z; int *running;
+    float *cam_x, *cam_z, *cam_hh; int *running;
     Placement *plc; Traps *traps;
 } ShellHost;
 static ShellHost gHost;
@@ -1725,6 +2153,15 @@ static void shell_do_act(AppAction act){
             shell_music_start("assets/music/marcia_dell_orda",1);   // tema in loop
             break;
         case APP_ACT_START_PREP:    /* gating della sim legge lo stato */ break;
+        case APP_ACT_START_DEPLOY:  // cinematica di consegna (BASE_DESIGN §4.1):
+            // parte solo con lz + modello chinook; altrimenti si salta subito
+            // in PREP (stesso percorso dello skip con INVIO).
+            if(gHost.sc->has_lz && gHeliM.ok && gLzCore>=0){
+                heli_begin(1,gHost.sc);
+                *gHost.cam_x=gHost.sc->lz_x; *gHost.cam_z=gHost.sc->lz_y;
+                if(*gHost.cam_hh<HELI_CAM_HH) *gHost.cam_hh=HELI_CAM_HH; // zoom out: heli in campo da subito
+            } else shell_do_act(app_input(&gApp,APP_IN_CONFIRM));
+            break;
         default: break;
     }
 }
@@ -1970,6 +2407,80 @@ static int strikes_ui_click(float mx, float my, int SW, int SH) {
     return 1;                                       // sfondo barra: consumato (mai mondo)
 }
 
+// --- hover inspect (decisione 2026-07-08): feedback su difese/strutture SENZA
+// barre HP world-space (provate: ingombranti alla scala del gioco). Tooltip
+// SCREEN-SPACE accanto al cursore, solo sull'elemento sotto il mouse: nome +
+// mini-barra HP. Il cursore becca la struttura su TUTTA la sagoma visibile,
+// non solo il footprint: il chiamante scandisce i piani di quota dall'alto
+// verso terra (pick_ray + pick_ray_plane, un solo unproject) e a ogni piano h
+// questo resolver accetta solo elementi la cui ALTEZZA raggiunge h — il primo
+// hit scendendo è la faccia davanti sullo schermo. ~20 piani × lookup O(1):
+// costo irrilevante, niente raycast contro le mesh.
+static int gHovOn=0; static char gHovLabel[64];
+static float gHovHp=0, gHovHpMax=0;     // hp_max<=0 = senza barra (indistruttibile)
+#define HOVER_TURRET_H 1.9f             // altezza cliccabile della torretta
+#define HOVER_STRUCT_H 2.8f             // muri/barriere/nucleo (H del render)
+#define HOVER_SCAN_TOP 8.0f             // quota massima scandita (prop alti)
+static int hover_resolve(const Scene *sc, DefGame *g, float wx, float wy, float h){
+    // torrette per raggio (le distrutte sono sparite dal render: niente tooltip)
+    if(h<=HOVER_TURRET_H){
+        int nt=def_turret_count(g), best=-1; float bd=1.4f*1.4f;
+        for(int i=0;i<nt;i++){ DefTurret *t=def_turret(g,i);
+            if(def_turret_disabled(g,i)) continue;
+            float dx=t->x-wx, dy=t->y-wy, d=dx*dx+dy*dy;
+            if(d<bd){ bd=d; best=i; } }
+        if(best>=0){ DefTurret *t=def_turret(g,best);
+            snprintf(gHovLabel,sizeof gHovLabel,"Torretta %s",t->heavy?"pesante":"leggera");
+            gHovHp=gHovHpMax=0;                   // indistruttibile: solo il nome
+            int cx=(int)(t->x/sc->cell), cy=(int)(t->y/sc->cell);
+            int sid=def_cell_struct(g,cx,cy);
+            if(sid>=0 && def_struct_is_turret(g,sid)){
+                gHovHp=def_struct_hp(g,sid); gHovHpMax=def_struct_hp_max(g,sid); }
+            gHovOn=1; return 1; } }
+    int cx=(int)(wx/sc->cell), cy=(int)(wy/sc->cell);
+    int id=def_cell_struct(g,cx,cy);
+    if(id<0) return 0;
+    if(def_struct_is_turret(g,id)) return 0;      // coperte dal raggio qui sopra
+    float eh=HOVER_STRUCT_H;                      // altezza dell'elemento colpito
+    const char *lab="Muro";
+    if(id==gLzCore){ lab="Base operativa"; eh=BASE_H; }
+    else if(id==gCoreId)  lab="Nucleo";
+    else if(id==gOuterId) lab="Mura esterne";
+    else if(id<PROP_WORLD_MAX_STRUCT && gPropW.struct_is_prop[id]){
+        lab="Struttura";
+        for(int i=0;i<sc->n_prop && i<gPropW.n;i++) if(gPropW.struct_id[i]==id){
+            const PropDef *d=prop_catalog_find(&gCatalog,sc->prop[i].key);
+            if(d){ if(d->label[0]) lab=d->label; else lab=sc->prop[i].key;
+                   if(d->height>0.0f) eh=d->height; }
+            else lab=sc->prop[i].key;
+            break; }
+    }
+    else if(id<PLMOD_SIDCAP && gSidMod[id]) lab="Barriera";
+    if(h>eh) return 0;                            // piano sopra la cima: si scende
+    snprintf(gHovLabel,sizeof gHovLabel,"%s",lab);
+    gHovHp=def_struct_hp(g,id); gHovHpMax=def_struct_hp_max(g,id);
+    gHovOn=1; return 1;
+}
+// tooltip accanto al cursore (chiamata dentro shell_build_ui, spazio schermo)
+static void hover_tooltip_draw(float W, float H, float mpx, float mpy){
+    if(!gHovOn) return;
+    float s=1.5f;
+    float w=ui_text_w(s,gHovLabel); if(w<44)w=44;
+    float h=(gHovHpMax>0.0f)?24.0f:15.0f;
+    float tx=mpx+13, ty=mpy+11;
+    if(tx+w+10>W) tx=mpx-w-16;                    // non uscire dallo schermo
+    if(ty+h+6>H)  ty=mpy-h-14;
+    ui_quad(tx-4,ty-3,w+8,h,0.04f,0.04f,0.08f,0.82f);
+    ui_text(tx,ty,s,gHovLabel,0.95f,0.92f,0.85f,1);
+    if(gHovHpMax>0.0f){
+        float frac=gHovHp/gHovHpMax;
+        if(frac<0)frac=0;
+        if(frac>1)frac=1;
+        ui_quad(tx,ty+14,w,4,0.22f,0.22f,0.26f,1);
+        ui_quad(tx,ty+14,w*frac,4, 0.20f+0.70f*(1.0f-frac), 0.15f+0.75f*frac, 0.12f, 1);
+    }
+}
+
 static void shell_build_ui(int SW,int SH,DefGame *g,float mpx,float mpy){
     float W=(float)SW,H=(float)SH;
     AppState st=gApp.state;
@@ -1988,6 +2499,15 @@ static void shell_build_ui(int SW,int SH,DefGame *g,float mpx,float mpy){
         ui_text(10,8,2,line,1,1,1,1);
         if(st==APP_PREP) prep_bar_draw(SW,SH,g,mpx,mpy);   // barra PREP (§3)
         else if(st==APP_ASSAULT) strikes_bar_draw(SW,SH);  // barra strike (mortaio)
+        hover_tooltip_draw(W,H,mpx,mpy);                   // ispezione al cursore
+        return;
+    }
+    if(st==APP_DEPLOY||st==APP_EXTRACT){                // cinematiche: mondo visibile
+        ui_quad(0,0,W,28,0,0,0,0.55f);
+        ui_text(10,8,2, st==APP_DEPLOY
+                ?"CONSEGNA DELLA BASE IN CORSO - INVIO PER SALTARE"
+                :"MISSIONE COMPIUTA - ESTRAZIONE DEL CONTAINER - INVIO PER SALTARE",
+                1,1,1,1);
         return;
     }
     ui_quad(0,0,W,H,0.02f,0.02f,0.04f,0.72f);           // oscura il mondo fermo
@@ -2345,6 +2865,15 @@ int main(int argc, char **argv){
     { const char *bv=getenv("VAT_HORDE_BULLET_V"); if(bv) gBulletV=atof(bv); }
     load_turret_model("assets/models/light_turret.glb", &gTurM[0]);
     load_turret_model("assets/models/heavy_turret.glb", &gTurM[1]);
+    // base container + mortaio (BASE_DESIGN §3/§5): solo parsing CPU, il
+    // rendering passa dal buffer strutture (build_struct_mesh).
+    load_base_model("assets/models/base_and_mortar.glb", &gBaseM);
+#ifdef GAME_SHELL
+    if(getenv("VAT_HORDE_MORTAR_MIN")) gMortMinR=atof(getenv("VAT_HORDE_MORTAR_MIN"));
+    if(getenv("VAT_HORDE_MORTAR_MAX")) gMortMaxR=atof(getenv("VAT_HORDE_MORTAR_MAX"));
+    if(gMortMinR<0) gMortMinR=0;
+    if(gMortMaxR<gMortMinR+1.0f) gMortMaxR=gMortMinR+1.0f;
+#endif
     printf("torrette 3D: light=%s heavy=%s (scala %.2f)\n",
            gTurM[0].ok?"ok":"pilastrino", gTurM[1].ok?"ok":"pilastrino", (double)gTurScale);
     int turCap=def_turret_count(g); if(turCap<NT) turCap=NT;   // >= tracer's NT cap
@@ -2536,6 +3065,9 @@ int main(int argc, char **argv){
     // statica texturizzata (diffuse di zombie_man, A[0]). Pool fisico in vat_layer.
     GibMesh GM[8]={0}; int nGibMesh=load_gib_meshes("assets/models/gibs.glb",GM,8);
     GLuint mProg=vg_shader("assets/shaders/mesh.vs","assets/shaders/mesh.fs");
+#ifdef GAME_SHELL
+    heli_load("assets/models/chinook.glb");   // VAO GL: serve il context attivo
+#endif
     GLint uVPm=glGetUniformLocation(mProg,"uVP"), uModelm=glGetUniformLocation(mProg,"uModel");
     static float meshgib[256*9];
     printf("mesh-gib: %d mesh da assets/models/gibs.glb\n",nGibMesh);
@@ -2582,7 +3114,7 @@ int main(int argc, char **argv){
     gHost.sc=&sc; gHost.s=&s; gHost.g=&g; gHost.dir=&dir;
     gHost.vl=vl; gHost.spctx=&spctx; gHost.dz=&dz;
     gHost.obVbo=obVbo; gHost.prVbo=prVbo; gHost.obNV=&obNV; gHost.prNV=&prNV;
-    gHost.ground_on=groundOn; gHost.cam_x=&cx; gHost.cam_z=&cz; gHost.running=&running;
+    gHost.ground_on=groundOn; gHost.cam_x=&cx; gHost.cam_z=&cz; gHost.cam_hh=&hh; gHost.running=&running;
     gHost.plc=&plc; gHost.traps=&traps; prep_tabs_build(&plc);   // barra PREP: indice tab->voci (§7)
     gUiBuf=malloc((size_t)UI_MAX_V*9*sizeof(float));
     GLuint uiProg=vg_shader("assets/shaders/flat.vs","assets/shaders/ui.fs");
@@ -2649,12 +3181,21 @@ int main(int argc, char **argv){
                             gAimX=wx; gAimY=wy;
                             if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
                                 if(e.button.button==SDL_BUTTON_LEFT){
-                                    strike_add(wx,wy,gBaseOX,gBaseOY,MORTAR_DELAY);
-                                    // puff di lancio dal container: lampo + fumo alla bocca
-                                    float lo[3]={gBaseOX,ter_z(gBaseOX,gBaseOY)+BASE_H,gBaseOY};
-                                    fx_emit(&fx,lo,&MUZZLE_FLASH_HVY_DEF,0.0f,-1.0f);
-                                    fx_emit(&fx,lo,&EXPL_SMOKE_DEF,0.0f,-1.0f);
-                                    au_play(SND_MENU_SELECT); }
+                                    // gittata min/max (BASE_DESIGN §3): fuori si rifiuta
+                                    float rdx=wx-gBaseOX, rdy=wy-gBaseOY;
+                                    float rd=sqrtf(rdx*rdx+rdy*rdy);
+                                    if(rd<gMortMinR || rd>gMortMaxR){
+                                        au_play(SND_MENU_MOVE);        // "no": fuori gittata
+                                    } else {
+                                        // il colpo parte dalla BOCCA del tubo (modello),
+                                        // fallback centro container + BASE_H
+                                        float mx_,my_,mz_; mortar_muzzle(&mx_,&my_,&mz_);
+                                        strike_add(wx,wy,mx_,mz_,MORTAR_DELAY);
+                                        float lo[3]={mx_,my_,mz_};
+                                        fx_emit(&fx,lo,&MUZZLE_FLASH_HVY_DEF,0.0f,-1.0f);
+                                        fx_emit(&fx,lo,&EXPL_SMOKE_DEF,0.0f,-1.0f);
+                                        au_play(SND_MENU_SELECT);
+                                    } }
                                 else if(e.button.button==SDL_BUTTON_RIGHT) gAimMort=0;
                             }
                         }
@@ -2970,6 +3511,35 @@ int main(int argc, char **argv){
                   traps_update(&traps,s,FIXED_DT,on_trap_blast,&tbc);
                   if(tbc.prop_changed) prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g); }
 #ifdef GAME_SHELL
+                // mortaio che MIRA (BASE_DESIGN §3): in aiming lo stand insegue
+                // l'azimut del cursore e il tubo si inclina all'alzo balistico
+                // dell'arco reale (pendenza al lancio di una parabola con apex
+                // MORTAR_APEX sulla gittata: elev = atan(4·apex/d), alzo dal
+                // verticale = 90° − elev). Slew limitato = fiction meccanica;
+                // il click spara comunque subito (mentre miri il tubo è già lì).
+                if(gLzCore>=0 && gBaseM.ok){
+                    float taz=gMortAz, ttl=gMortTilt;
+                    if(gAimMort && gApp.state==APP_ASSAULT){
+                        float adx=gAimX-gBaseOX, ady=gAimY-gBaseOY;
+                        float ad=sqrtf(adx*adx+ady*ady);
+                        if(ad>1e-3f){
+                            taz=atan2f(ady,adx);
+                            float dc=ad; if(dc<gMortMinR)dc=gMortMinR; if(dc>gMortMaxR)dc=gMortMaxR;
+                            ttl=1.5707963f-atanf(4.0f*MORTAR_APEX/dc);
+                        }
+                    }
+                    float da=taz-gMortAz;
+                    while(da> 3.14159265f) da-=6.28318531f;
+                    while(da<-3.14159265f) da+=6.28318531f;
+                    float ms=2.4f*FIXED_DT;                    // rad/s dello stand
+                    if(da>ms)da=ms;
+                    if(da<-ms)da=-ms;
+                    gMortAz+=da;
+                    float dl=ttl-gMortTilt, ls=1.8f*FIXED_DT;  // rad/s dell'alzo
+                    if(dl>ls)dl=ls;
+                    if(dl<-ls)dl=-ls;
+                    gMortTilt+=dl;
+                }
                 // colpi di mortaio in volo (BASE_DESIGN §3): il proiettile parte dal
                 // container (ox,oy) e segue un arco parabolico fino al bersaglio (x,y),
                 // che raggiunge esattamente a t<=0 -> host_blast (impatto). Il proiettile
@@ -3055,6 +3625,16 @@ int main(int argc, char **argv){
                     if(lost || won){
                         au_play(lost?SND_LOSE:SND_WIN);
                         shell_do_act(app_report_result(&gApp,!lost));
+                        // vinta -> cinematica di ESTRAZIONE (BASE_DESIGN §4.2);
+                        // senza lz/modello/base viva si passa dritti al debrief.
+                        if(gApp.state==APP_EXTRACT){
+                            if(sc.has_lz && gHeliM.ok && gLzCore>=0 &&
+                               !def_struct_collapsed(g,gLzCore)){
+                                heli_begin(2,&sc);
+                                cx=sc.lz_x; cz=sc.lz_y;
+                                if(hh<HELI_CAM_HH) hh=HELI_CAM_HH;   // zoom out per la cinematica
+                            } else shell_do_act(app_input(&gApp,APP_IN_CONFIRM));
+                        }
                     }
                 }
 #endif
@@ -3182,6 +3762,17 @@ int main(int argc, char **argv){
                 glBindVertexArray(stVao);glBindBuffer(GL_ARRAY_BUFFER,stVbo);
                 glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)sv*9*sizeof(float),stBuf);
                 glDrawArrays(GL_TRIANGLES,0,sv); } }
+
+#ifdef GAME_SHELL
+        // cinematiche elicottero (BASE_DESIGN §4): avanzano col tempo di frame
+        // (fiction pura, la sim è congelata fuori da PREP/ASSALTO) e disegnano
+        // col shader mesh texturato dei mesh-gib. Il container appeso lo ha già
+        // stampato build_struct_mesh qui sopra.
+        if(gHeli.active){
+            heli_update((float)frame_t);
+            heli_draw(mProg,uVPm,uModelm,vp);
+        }
+#endif
 
         // crateri scorch persistenti (§7 v1): dischi scuri col shader dei decal,
         // SOTTO il sangue (disegnati prima) -> gli schizzi coprono il cratere.
@@ -3346,16 +3937,53 @@ int main(int argc, char **argv){
 #ifdef GAME_SHELL
         // X di mira del mortaio: due barre incrociate sul punto mirato (aiming
         // attivo in ASSALTO). Riusa l'overlay flat del ghost di placement.
+        // Fuori gittata (min/max) la X si spegne in grigio; i due anelli di
+        // gittata attorno alla base restano visibili per tutto l'aiming.
         if(gAimMort && gApp.state==APP_ASSAULT && !ed.active){
             int ov=0; float sX=1.4f;
-            ov=ed_push_bar(edovl,ov, gAimX-sX,gAimY-sX, gAimX+sX,gAimY+sX, 0.35f, 0.95f,0.25f,0.12f);
-            ov=ed_push_bar(edovl,ov, gAimX-sX,gAimY+sX, gAimX+sX,gAimY-sX, 0.35f, 0.95f,0.25f,0.12f);
+            float rdx=gAimX-gBaseOX, rdy=gAimY-gBaseOY;
+            float rd=sqrtf(rdx*rdx+rdy*rdy);
+            int okr=(rd>=gMortMinR && rd<=gMortMaxR);
+            float xr=okr?0.95f:0.45f, xg=okr?0.25f:0.45f, xb=okr?0.12f:0.50f;
+            ov=ed_push_bar(edovl,ov, gAimX-sX,gAimY-sX, gAimX+sX,gAimY+sX, 0.35f, xr,xg,xb);
+            ov=ed_push_bar(edovl,ov, gAimX-sX,gAimY+sX, gAimX+sX,gAimY-sX, 0.35f, xr,xg,xb);
+            const int NSEG=72;
+            for(int ring=0;ring<2;ring++){
+                float R=ring?gMortMaxR:gMortMinR;
+                for(int k=0;k<NSEG && ov+6<=EDOVL_MAXV;k++){
+                    float a0=(float)k*6.2831853f/NSEG, a1=(float)(k+1)*6.2831853f/NSEG;
+                    ov=ed_push_bar(edovl,ov, gBaseOX+cosf(a0)*R,gBaseOY+sinf(a0)*R,
+                                   gBaseOX+cosf(a1)*R,gBaseOY+sinf(a1)*R, 0.3f,
+                                   0.95f,0.45f,0.12f);
+                }
+            }
             if(ov){ glDisable(GL_DEPTH_TEST);
                 glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
                 glBindVertexArray(ovVao);glBindBuffer(GL_ARRAY_BUFFER,ovVbo);
                 glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)ov*9*sizeof(float),edovl);
                 glDrawArrays(GL_TRIANGLES,0,ov);
                 glEnable(GL_DEPTH_TEST); }
+        }
+        // hover inspect: risolve l'elemento sotto il cursore (tooltip disegnato
+        // da shell_build_ui). Solo in PREP/ASSALTO, mouse sul MONDO (sopra le
+        // barre), niente in mira mortaio o durante un drag di camera. Scansione
+        // dei piani di quota dall'alto verso terra: il cursore prende la
+        // struttura su tutta la sagoma (facciata e tetto), non solo alla base.
+        // (Approssimazione: quote assolute — su terreni collinari il bordo alto
+        // può slittare di poco, per un tooltip è irrilevante.)
+        gHovOn=0;
+        if(!ed.active && (gApp.state==APP_PREP || gApp.state==APP_ASSAULT) &&
+           !drag_cam && !(gAimMort && gApp.state==APP_ASSAULT)){
+            if(gApp.state==APP_PREP) prep_ui_layout(SW,SH); else strikes_ui_layout(SW,SH);
+            float barY=(gApp.state==APP_PREP)?gPrepBarY:gStrikeBarY;
+            float r0[3],r1[3];
+            if(mouse_py<barY && pick_ray(vp,mouse_px,mouse_py,SW,SH,r0,r1)){
+                for(float hplane=HOVER_SCAN_TOP; hplane>=0.0f; hplane-=0.4f){
+                    float wx,wy;
+                    if(pick_ray_plane(r0,r1,hplane,&wx,&wy) &&
+                       hover_resolve(&sc,g,wx,wy,hplane)) break;
+                }
+            }
         }
         // overlay shell (title/menu/briefing/debrief + barra di fase): 2D in
         // pixel, sopra tutto, blend alpha (l'alpha viaggia in aNormal.x).

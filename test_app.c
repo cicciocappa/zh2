@@ -1,8 +1,8 @@
 /* test_app.c — headless verification of the application flow (app.c):
  * campaign parse, full state walk (title -> menu -> settings -> new game ->
- * briefing gate -> prep -> assault -> win/lose -> debrief -> next/retry),
- * continue from saved progress, save/load roundtrip, campaign completion.
- * Pure logic, no SDL. Part of `make test`.
+ * briefing gate -> deploy -> prep -> assault -> win/extract/lose -> debrief
+ * -> next/retry), continue from saved progress, save/load roundtrip,
+ * campaign completion. Pure logic, no SDL. Part of `make test`.
  */
 #include "app.h"
 #include <stdio.h>
@@ -86,7 +86,7 @@ int main(void){
     CHECK(app_input(&a, APP_IN_BACK) == APP_ACT_SAVE, "settings exit saves");
     CHECK(a.state == APP_MENU, "back to MENU");
 
-    /* ---- new game -> briefing gate -> prep -> assault ---- */
+    /* ---- new game -> briefing gate -> deploy -> prep -> assault ---- */
     a.menu_idx = APP_MENU_NEW;
     CHECK(app_input(&a, APP_IN_CONFIRM) == APP_ACT_LOAD_LEVEL, "new game loads");
     CHECK(a.state == APP_BRIEFING && a.cur == 0 && !a.level_ready, "-> BRIEFING 0");
@@ -94,28 +94,43 @@ int main(void){
     CHECK(a.state == APP_BRIEFING, "still briefing");
     app_level_ready(&a);
     CHECK(a.level_ready, "ready");
+    CHECK(app_input(&a, APP_IN_CONFIRM) == APP_ACT_START_DEPLOY, "-> deploy");
+    CHECK(a.state == APP_DEPLOY, "DEPLOY");
+    CHECK(app_input(&a, APP_IN_UP) == APP_ACT_NONE, "deploy ignores arrows");
+    CHECK(a.state == APP_DEPLOY, "still deploying");
     CHECK(app_input(&a, APP_IN_CONFIRM) == APP_ACT_START_PREP, "-> prep");
     CHECK(a.state == APP_PREP, "PREP");
     CHECK(app_input(&a, APP_IN_CONFIRM) == APP_ACT_START_ASSAULT, "-> assault");
     CHECK(a.state == APP_ASSAULT, "ASSAULT");
 
-    /* ---- win -> debrief -> next level; progress persisted ---- */
+    /* ---- win -> extract -> debrief -> next level; progress persisted ---- */
     CHECK(app_report_result(&a, 1) == APP_ACT_SAVE, "win saves");
-    CHECK(a.state == APP_DEBRIEF && a.won && a.unlocked == 1, "unlocked 1");
+    CHECK(a.state == APP_EXTRACT && a.won && a.unlocked == 1, "win -> EXTRACT, unlocked 1");
+    CHECK(app_input(&a, APP_IN_CONFIRM) == APP_ACT_NONE, "extract done");
+    CHECK(a.state == APP_DEBRIEF && a.won, "-> DEBRIEF");
     CHECK(app_input(&a, APP_IN_CONFIRM) == APP_ACT_LOAD_LEVEL, "debrief -> load");
     CHECK(a.state == APP_BRIEFING && a.cur == 1, "briefing level 1");
 
-    /* ---- lose -> retry same level ---- */
+    /* ---- lose: NO extraction, straight to debrief -> retry ---- */
     app_level_ready(&a);
+    app_input(&a, APP_IN_CONFIRM);           /* deploy  */
     app_input(&a, APP_IN_CONFIRM);           /* prep    */
     app_input(&a, APP_IN_CONFIRM);           /* assault */
+    CHECK(a.state == APP_ASSAULT, "assault again");
     CHECK(app_report_result(&a, 0) == APP_ACT_NONE, "lose: nothing to save");
     CHECK(a.state == APP_DEBRIEF && !a.won && a.unlocked == 1, "lost, unlocked stays");
     CHECK(app_input(&a, APP_IN_CONFIRM) == APP_ACT_LOAD_LEVEL, "retry loads");
     CHECK(a.cur == 1, "same level retried");
 
-    /* ---- abort to menu from prep/assault; briefing back ---- */
+    /* ---- abort to menu from deploy/prep; briefing back ---- */
     app_level_ready(&a);
+    app_input(&a, APP_IN_CONFIRM);           /* deploy */
+    CHECK(app_input(&a, APP_IN_BACK) == APP_ACT_NONE && a.state == APP_MENU,
+          "deploy ESC -> menu");
+    a.menu_idx = APP_MENU_CONTINUE;
+    app_input(&a, APP_IN_CONFIRM);           /* reload the level */
+    app_level_ready(&a);
+    app_input(&a, APP_IN_CONFIRM);           /* deploy */
     app_input(&a, APP_IN_CONFIRM);           /* prep */
     CHECK(app_input(&a, APP_IN_BACK) == APP_ACT_NONE && a.state == APP_MENU,
           "prep ESC -> menu");
@@ -134,10 +149,13 @@ int main(void){
     CHECK(app_input(&b, APP_IN_CONFIRM) == APP_ACT_LOAD_LEVEL, "continue loads");
     CHECK(b.cur == 1, "continue at unlocked level");
 
-    /* ---- campaign completion: win the last level -> menu ---- */
+    /* ---- campaign completion: win the last level -> extract -> menu ---- */
     b.cur = b.nlevels - 1; b.state = APP_ASSAULT;
     CHECK(app_report_result(&b, 1) == APP_ACT_SAVE, "last win still saves vols");
     CHECK(b.unlocked == 1, "unlocked does not overflow");
+    CHECK(b.state == APP_EXTRACT, "last win -> EXTRACT");
+    CHECK(app_input(&b, APP_IN_BACK) == APP_ACT_NONE, "extract skip via ESC");
+    CHECK(b.state == APP_DEBRIEF, "-> DEBRIEF");
     CHECK(app_input(&b, APP_IN_CONFIRM) == APP_ACT_NONE, "no next level");
     CHECK(b.state == APP_MENU && b.campaign_done, "campaign done -> menu");
 
