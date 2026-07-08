@@ -32,6 +32,23 @@ typedef enum { BT_OBESE, BT_MAN, BT_WOMAN, BT_CHILD, BT_TANK, BT_COUNT } DefBody
  * outfit/body VAT; CRAWLING also slows the agent via simp_set_vpref. */
 typedef enum { DW_NONE, DW_BLOODY, DW_MAIMED_ARM, DW_CRAWLING } DefWound;
 
+/* Turret kind (torrette 2.0, Blocco 2). LIGHT/HEAVY = the hitscan pair
+ * (heavy gibs). FLAME/ACID = cone-AoE status throwers: no ray, no tracer —
+ * each shot tick hits EVERY live agent in range within ±cone_half of the
+ * barrel that passes line of sight, dealing t->damage direct (silent, no
+ * flinch/wound roll) plus the elemental status below. Values 0/1 match the
+ * legacy `heavy` field; def_add_turret keeps kind and heavy in sync. */
+typedef enum { TUR_LIGHT = 0, TUR_HEAVY = 1, TUR_FLAME = 2, TUR_ACID = 3 }
+        DefTurretKind;
+
+/* Elemental status (FLAME/ACID hits), per-slot like wounds. BURNING ticks
+ * fire DoT until it expires (refreshed while the victim stays in the jet) —
+ * the host swaps the outfit on DEF_EV_IGNITE (14 = charred) and emits
+ * flame+smoke on the agent; ACID likewise (DEF_EV_ACID, outfit 15, green
+ * fumes). Mutually exclusive, FIRST application wins (refresh same-type
+ * only); the swapped outfit is permanent (scar), only the DoT expires. */
+typedef enum { DST_NONE = 0, DST_BURNING = 1, DST_ACID = 2 } DefStatus;
+
 typedef struct {
     float x, y;            /* position (m)                                  */
     float ang;             /* current aim direction (rad)                   */
@@ -46,7 +63,11 @@ typedef struct {
     float fire_period;     /* s between shots (light < heavy)               */
     float fire_timer;
     float damage;          /* HP per shot (light); ignored by heavy (gibs)  */
-    int   heavy;           /* 0 = light, 1 = heavy                          */
+    int   heavy;           /* 0 = light, 1 = heavy (legacy; see kind)       */
+    int   kind;            /* DefTurretKind; def_add_turret syncs heavy     */
+    float cone_half;       /* FLAME/ACID: AoE half-angle (rad, 0 = default
+                              ~12°); doubles as their fire-alignment gate   */
+    float clear_timer;     /* FLAME/ACID: internal corpse-clear cadence     */
     int   piercing;        /* light/heavy upgrade: ray pierces all on line  */
     /* set by def_update, for rendering (muzzle flash / tracer feedback):   */
     int   fired;           /* fired on the last update                      */
@@ -198,7 +219,11 @@ void def_update(DefGame *g, float dt);
  * 2 arti volanti. Mappati dall'host a vat_layer_gib_wound/_limb.
  * Core-agnostic: defense.c non tocca il renderer; l'host collega gli eventi. */
 typedef enum { DEF_EV_HIT, DEF_EV_DEATH, DEF_EV_GIB,
-               DEF_EV_WOUND_BLEED, DEF_EV_WOUND_ARM, DEF_EV_WOUND_LEGS } DefEvent;
+               DEF_EV_WOUND_BLEED, DEF_EV_WOUND_ARM, DEF_EV_WOUND_LEGS,
+               /* elemental status applied (once per victim, Blocco 2): the
+                * host swaps the outfit (IGNITE -> 14, ACID -> 15) and starts
+                * per-agent flame/fume FX by polling def_status. */
+               DEF_EV_IGNITE, DEF_EV_ACID } DefEvent;
 typedef void (*DefEventFn)(void *user, int slot, int i, DefBody body, DefEvent ev);
 void def_set_event_cb(DefGame *g, DefEventFn cb, void *user);
 
@@ -257,6 +282,7 @@ int  def_count_wound(const DefGame *g, DefWound w);
 const int     *def_hp(const DefGame *g);
 const uint8_t *def_wound(const DefGame *g);
 const uint8_t *def_body(const DefGame *g);
+const uint8_t *def_status(const DefGame *g);   /* DefStatus per slot */
 
 #ifdef __cplusplus
 }

@@ -214,9 +214,13 @@ void vat_layer_pin_variant(VatLayer *vl,int slot,int variant){
 void vat_layer_set_random_count(VatLayer *vl,int n){
     if(n<1)n=1; if(n>vl->nvar)n=vl->nvar; vl->nrandom=n; }
 /* Ferita visiva: passa l'outfit alla sua riga insanguinata (atlante 4x8,
-   outfit += 16). Idempotente. Vale per qualunque body (tank incluso). */
+   outfit += 16). Idempotente. Vale per qualunque body (tank incluso).
+   Gli outfit ELEMENTALI 14/15 (carbonizzato/sciolto, torrette 2.0) sono
+   TERMINALI: niente variante insanguinata — le righe 30/31 non sono
+   autorate (placeholder verdi/magenta negli atlanti). */
 void vat_layer_make_bloody(VatLayer *vl,int slot){
     if(slot<0||slot>=vl->max) return;
+    if(vl->outfit[slot]==14||vl->outfit[slot]==15) return;
     if(vl->outfit[slot]<16) vl->outfit[slot]=(unsigned char)(vl->outfit[slot]+16);
 }
 /* Fissa l'outfit di uno slot (atlante 4x8 = 32 celle: 0..13 puliti, +16 =

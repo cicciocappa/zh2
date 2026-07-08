@@ -179,11 +179,18 @@ static int commit_turret(DefGame *g, const PlItem *it, float cx, float cy,
     t.arc_min = facing - half; t.arc_max = facing + half;
     t.sweep_dir = 1; t.sweep_speed = 2.5f;
     t.aim_tol = DEF_AIM_TOL_STD;          /* turn-then-shoot (game turret) */
-    t.heavy = it->heavy; t.piercing = 0;
-    t.range       = it->range       > 0.0f ? it->range       : 40.0f;
-    t.fire_period = it->fire_period > 0.0f ? it->fire_period : (it->heavy ? 0.5f : 0.12f);
-    t.damage      = it->damage      > 0.0f ? it->damage
-                                           : (it->heavy ? 0.0f : 40.0f);  /* heavy: gibs, dmg ignored */
+    /* PlItem.heavy carries the full DefTurretKind (0/1 = the legacy pair,
+     * 2 = flame, 3 = acid); def_add_turret keeps kind/heavy coherent. */
+    t.kind = it->heavy; t.piercing = 0;
+    /* per-kind standard defaults (0 in the catalog = use these; the numbers
+     * move into the balance table in Blocco 3): */
+    float d_range = 40.0f, d_fp = 0.12f, d_dmg = 40.0f;
+    if      (t.kind == TUR_HEAVY) { d_fp = 0.5f;  d_dmg = 0.0f;  } /* gibs   */
+    else if (t.kind == TUR_FLAME) { d_range = 12.0f; d_fp = 0.15f; d_dmg = 6.0f; }
+    else if (t.kind == TUR_ACID)  { d_range = 18.0f; d_fp = 0.25f; d_dmg = 4.0f; }
+    t.range       = it->range       > 0.0f ? it->range       : d_range;
+    t.fire_period = it->fire_period > 0.0f ? it->fire_period : d_fp;
+    t.damage      = it->damage      > 0.0f ? it->damage      : d_dmg;
     return def_add_turret(g, &t) >= 0;
 }
 
