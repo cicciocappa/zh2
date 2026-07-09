@@ -299,6 +299,24 @@ static const FxEmitterDef GLASS_DEBRIS_DEF = {
     .wind_scale=0.15f, .ground_stop=true, .blend=FX_BLEND_ADD, .rate=20.0f,
 };
 
+// detriti del CRATERE (richiesta utente 2026-07-09): zolle scure di asfalto/
+// terra sollevate da ogni host_blast, a prescindere dai prop nel raggio (quelli
+// sputano i LORO debris via on_prop_burst). Balistici, si posano a terra;
+// piu' grossi e piu' lenti delle schegge metalliche — massa, non scintille.
+static const FxEmitterDef BLAST_DEBRIS_DEF = {
+    .count=20, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.35f, .spawn_box_z=0.35f,
+    .spawn_offset_y_min=0.0f, .spawn_offset_y_max=0.30f,
+    .speed_xy_min=1.5f, .speed_xy_max=5.5f, .speed_y_min=3.0f, .speed_y_max=7.0f,
+    .gravity=9.81f, .drag=0.25f, .lifetime_min=0.7f, .lifetime_max=1.6f,
+    .start_scale_min=0.08f, .start_scale_max=0.20f, .end_scale_min=0.04f, .end_scale_max=0.10f,
+    .start_color={0.16f,0.15f,0.13f,1.0f}, .end_color={0.11f,0.10f,0.09f,0.6f},
+    .color_variants={ {0.20f,0.18f,0.15f,1.0f},{0.13f,0.12f,0.11f,1.0f},
+                      {0.26f,0.21f,0.15f,1.0f},{0.10f,0.10f,0.10f,1.0f} },  // terra/asfalto
+    .color_variant_count=4, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.1f, .ground_stop=true, .blend=FX_BLEND_ALPHA, .rate=20.0f,
+};
+
 // esplosione (EXPLOSION_DESIGN.md §6): tre burst sovrapposti al punto di scoppio.
 // FLASH = lampo brevissimo additivo bianco-giallo che si allarga; FIREBALL =
 // palla arancio→rosso scuro con drag alto (alpha); SMOKE = colonna grigia lenta
@@ -1187,12 +1205,14 @@ static int host_blast(DefGame *g, SimP *s, const Scene *sc, const PropCatalog *c
         destruct_force(dz, sc, i, atan2f(ddy, ddx), on_prop_burst, &dc);  // via dal centro
         changed = 1;
     }
-    // FX §6: lampo + fireball al suolo, colonna di fumo poco sopra.
+    // FX §6: lampo + fireball al suolo, colonna di fumo poco sopra, zolle
+    // scure di cratere (asfalto/terra) sollevate dal punto di scoppio.
     float zg = ter_z(x, y);
     float of[3] = { x, zg + 0.4f, y }, os[3] = { x, zg + 0.9f, y };
     fx_emit(fx, of, &EXPL_FLASH_DEF,    0.0f, -1.0f);
     fx_emit(fx, of, &EXPL_FIREBALL_DEF, 0.0f, -1.0f);
     fx_emit(fx, os, &EXPL_SMOKE_DEF,    0.0f, -1.0f);
+    fx_emit(fx, of, &BLAST_DEBRIS_DEF,  0.0f, -1.0f);
     scorch_add(x, y, r * 0.6f);                     // cratere annerito (§7 v1)
     au_play(SND_BOOM);
     (void)s;
