@@ -133,6 +133,12 @@ int   def_struct_cap(void);   /* table size — line placement pre-checks room *
  * not last / not removable (core, turret-backing struct, bound/luring turret). */
 int   def_remove_structure(DefGame *g, int id);
 int   def_remove_turret(DefGame *g, int tid);
+/* Coupled LIFO teardown of a DESTRUCTIBLE turret: removes turret tid AND its
+ * backing structure in one call (each must be the LAST of its table — true for
+ * a pl_commit'd turret, which binds right after def_add_turret). Frees the
+ * emplacement wall cell; caller batches simp_terrain_commit. Returns 1, or 0
+ * if not last / unbound (use def_remove_turret) / luring. */
+int   def_remove_turret_bound(DefGame *g, int tid);
 /* Direct HP damage (explosions — EXPLOSION_DESIGN §8 — and tests). Collapse
  * behaves exactly like the siege path (cells freed, reroute, debris, loss on
  * core). No-op on invalid/collapsed ids. */
@@ -184,6 +190,10 @@ int   def_turret_disabled(const DefGame *g, int tid);
 /* 1 if structure id backs a turret — the renderer skips it in the wall mesh so
  * the turret model isn't double-drawn as a steel box. */
 int   def_struct_is_turret(const DefGame *g, int id);
+/* Turret id the agent in `slot` is contact-attacking THIS update, -1 = none.
+ * Refreshed inside def_update (contact siege): the render layer points the
+ * attack animation at the emplacement being chewed. */
+int   def_contact_turret(const DefGame *g, int slot);
 /* Tune the contact siege of turrets (a turret has few attackers vs a long wall,
  * so it needs higher per-agent DPS + wider reach to fall at a comparable rate).
  * dps = HP/s per contacting agent; reach = m beyond the emplacement half-cell.

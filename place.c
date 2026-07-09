@@ -91,9 +91,15 @@ int pl_undo_pop(Placement *p, DefGame *g, SimP *s) {
      * whole stack rather than refund entities we did not remove. */
     for (int k = 0; k < r.ntraps; k++)
         if (p->traps && !traps_remove_last(p->traps)) { u->n = 0; return 0; }
-    for (int k = 0; k < r.nturrets; k++)
-        if (!def_remove_turret(g, def_turret_count(g) - 1)) { u->n = 0; return 0; }
     int walls = 0;
+    for (int k = 0; k < r.nturrets; k++) {
+        /* placed turrets are DESTRUCTIBLE (backing structure not counted in
+         * nstructs): the coupled remove tears down both and frees the wall
+         * cell. Unbound turrets (legacy callers) take the plain path. */
+        int tid = def_turret_count(g) - 1;
+        if (def_remove_turret_bound(g, tid)) { walls = 1; continue; }
+        if (!def_remove_turret(g, tid)) { u->n = 0; return 0; }
+    }
     for (int k = 0; k < r.nstructs; k++) {
         if (!def_remove_structure(g, def_struct_count(g) - 1)) { u->n = 0; return 0; }
         walls = 1;
@@ -163,13 +169,19 @@ int pl_validate(Placement *p, DefGame *g, SimP *s) {
 
 /* ---- commit ------------------------------------------------------------- */
 
+/* Player turrets are DESTRUCTIBLE like scene turrets (they were not, so the
+ * horde never attacked them — 2026-07-08 diagnosis): standard emplacement HP,
+ * same default as vat_horde's VAT_HORDE_TURRET_HP for scene turrets. A catalog
+ * row with hp > 0 overrides it. */
+#define PL_TURRET_HP_STD 250.0f
+
 /* Turret built at the cursor, combat params from the catalog entry
  * (PREP_UI_DESIGN §2). 0 = standard default, so bare rows keep behaving
  * like the old fixed light turret. The aim arc is CENTERED on the facing
  * the player picked with the aiming drag (Placement.facing); width from
  * the catalog (it->arc_deg, 0 = 90° total). arc_min/max stay UNWRAPPED
  * (facing ± half may leave ±pi — defense.c compares bearings via wrap_pi). */
-static int commit_turret(DefGame *g, const PlItem *it, float cx, float cy,
+static int commit_turret(DefGame *g, SimP *s, const PlItem *it, float cx, float cy,
                          float facing) {
     DefTurret t = {0};
     float half = (it->arc_deg > 0.0f ? it->arc_deg : 90.0f)
@@ -191,7 +203,17 @@ static int commit_turret(DefGame *g, const PlItem *it, float cx, float cy,
     t.range       = it->range       > 0.0f ? it->range       : d_range;
     t.fire_period = it->fire_period > 0.0f ? it->fire_period : d_fp;
     t.damage      = it->damage      > 0.0f ? it->damage      : d_dmg;
-    return def_add_turret(g, &t) >= 0;
+    int tid = def_add_turret(g, &t);
+    if (tid < 0) return 0;
+    /* destructible emplacement: the cell becomes a barricade-tier wall the
+     * horde can mob (contact siege) — all-or-nothing with the turret. */
+    float hp = it->hp > 0.0f ? it->hp : PL_TURRET_HP_STD;
+    if (def_turret_make_destructible(g, tid, hp) < 0) {
+        def_remove_turret(g, tid);               /* struct table full: roll back */
+        return 0;
+    }
+    simp_terrain_commit(s);                      /* reroute around the emplacement */
+    return 1;
 }
 
 static int commit_barricade(DefGame *g, SimP *s, const PlItem *it,
@@ -395,7 +417,7 @@ int pl_commit(Placement *p, DefGame *g, SimP *s) {
     int ok = 0;
     switch (it->kind) {
         case PL_BARRICADE: ok = commit_barricade(g, s, it, p->cx, p->cy, p->rot90); break;
-        case PL_TURRET:    ok = commit_turret(g, it, p->cx, p->cy, p->facing); break;
+        case PL_TURRET:    ok = commit_turret(g, s, it, p->cx, p->cy, p->facing); break;
         case PL_BIN:       ok = simp_drag_add(s, p->cx, p->cy, it->radius, it->mass) >= 0; break;
         case PL_CAR:       ok = commit_car(s, it, p->cx, p->cy, p->rot90); break;
         case PL_TRAP:      ok = commit_trap(p->traps, it, p->cx, p->cy); break;

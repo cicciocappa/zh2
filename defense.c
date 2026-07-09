@@ -2,6 +2,7 @@
 
 #include "defense.h"
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 
 /* Body table: hp_max, radius, v_pref, mass (walker units), heavy_hits, bounty. */
@@ -109,6 +110,8 @@ struct DefGame {
     int16_t  *cell_struct;  /* gw*gh: structure id per nav cell, -1 = none   */
     int       stx0, sty0, stx1, sty1;  /* bbox of cells EVER assigned (never shrinks) */
     float    *atk_timer;    /* per slot: siege attack accumulator            */
+    int16_t  *contact_tid;  /* per slot: turret being contact-attacked THIS
+                             * update, -1 = none (render hook: attack anim)  */
     int       lost;         /* 1 once the core has collapsed                 */
     int       budget;       /* §8 placement budget                          */
     float     turret_dps;   /* contact damage HP/s per agent (def_set_turret_contact) */
@@ -140,6 +143,8 @@ DefGame *def_create(SimP *s, int cap) {
     for (size_t k = 0; k < ncell; k++) g->cell_struct[k] = -1;
     g->stx0 = g->gw; g->sty0 = g->gh; g->stx1 = -1; g->sty1 = -1;   /* empty bbox */
     g->atk_timer = (float *)calloc((size_t)cap, sizeof(float));
+    g->contact_tid = (int16_t *)malloc((size_t)cap * sizeof(int16_t));
+    for (int k = 0; k < cap; k++) g->contact_tid[k] = -1;
     g->turret_dps = TURRET_DPS_DEF;
     g->turret_reach = TURRET_REACH_DEF;
     g->lure_w = 0.0f;                       /* lure off by default (opt-in) */
@@ -152,7 +157,7 @@ void def_destroy(DefGame *g) {
     free(g->hp); free(g->body); free(g->wound); free(g->hheat); free(g->qbuf);
     free(g->status); free(g->status_t); free(g->dot_acc);
     free(g->hbuf);
-    free(g->cell_struct); free(g->atk_timer);
+    free(g->cell_struct); free(g->atk_timer); free(g->contact_tid);
     free(g);
 }
 
@@ -636,15 +641,23 @@ static void siege_update(DefGame *g, float dt) {
 static void turret_contact_update(DefGame *g, float dt) {
     SimP *s = g->s;
     float rad = simp_cell_size(s) * 0.5f + g->turret_reach;
+    /* refresh the per-slot attacker map (render hook: attack animation) */
+    memset(g->contact_tid, 0xFF, (size_t)g->cap * sizeof(int16_t));
     for (int id = 0; id < g->nturrets; id++) {
         int sid = g->turret_struct[id];
         if (sid < 0 || g->structs[sid].collapsed) continue;
         int n = simp_query_circle(s, g->turrets[id].x, g->turrets[id].y,
                                   rad, g->qbuf, g->cap, 0);
         if (n <= 0) continue;
+        for (int k = 0; k < n; k++)
+            g->contact_tid[simp_slot_of(s, g->qbuf[k])] = (int16_t)id;
         g->structs[sid].hp -= (float)n * g->turret_dps * dt;
         if (g->structs[sid].hp <= 0.0f) collapse_structure(g, sid);
     }
+}
+
+int def_contact_turret(const DefGame *g, int slot) {
+    return (slot >= 0 && slot < g->cap) ? g->contact_tid[slot] : -1;
 }
 
 void def_set_turret_contact(DefGame *g, float dps, float reach) {
@@ -748,24 +761,40 @@ int   def_struct_cap(void) { return STRUCT_CAP; }
  * batches simp_terrain_commit (one reroute per undo pop). Return 1 on
  * success, 0 if the id is not the last or the entity is not removable
  * (core, turret-backing structure, destructible-bound or luring turret). */
-int def_remove_structure(DefGame *g, int id) {
-    if (id < 0 || id != g->nstructs - 1) return 0;
-    DefStruct *st = &g->structs[id];
-    if (st->is_core || st->is_turret) return 0;
+static void struct_free_cells(DefGame *g, int id) {
     int gw = g->gw, n = gw * g->gh;
     for (int c = 0; c < n; c++)
         if (g->cell_struct[c] == (int16_t)id) {
             simp_set_wall(g->s, c % gw, c / gw, false);  /* mirrors opacity too */
             g->cell_struct[c] = -1;
         }
+}
+
+int def_remove_structure(DefGame *g, int id) {
+    if (id < 0 || id != g->nstructs - 1) return 0;
+    DefStruct *st = &g->structs[id];
+    if (st->is_core || st->is_turret) return 0;
+    struct_free_cells(g, id);
     g->nstructs--;
     return 1;
 }
 
 int def_remove_turret(DefGame *g, int tid) {
     if (tid < 0 || tid != g->nturrets - 1) return 0;
-    if (g->turret_struct[tid] >= 0) return 0;  /* bound: remove via its struct */
+    if (g->turret_struct[tid] >= 0) return 0;  /* bound: def_remove_turret_bound */
     if (g->lure_on[tid]) return 0;             /* PREP-only API: never fired   */
+    g->nturrets--;
+    return 1;
+}
+
+int def_remove_turret_bound(DefGame *g, int tid) {
+    if (tid < 0 || tid != g->nturrets - 1) return 0;
+    int sid = g->turret_struct[tid];
+    if (sid < 0 || sid != g->nstructs - 1) return 0;   /* LIFO on BOTH tables */
+    if (g->lure_on[tid]) return 0;             /* PREP-only API: never fired   */
+    struct_free_cells(g, sid);                 /* the emplacement wall cell    */
+    g->nstructs--;
+    g->turret_struct[tid] = -1;
     g->nturrets--;
     return 1;
 }

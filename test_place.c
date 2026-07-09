@@ -25,6 +25,10 @@
  *  14) MINE (PL_TRAP) — commit registers a trap (no-op with no table); params
  *                       reach the TrapDef; an agent on it detonates on_blast;
  *                       undo removes it with a full refund.
+ *  16) DESTRUCTIBLE TURRET — a placed turret is bound to a backing structure
+ *                       (is_turret, wall cell raised, HP from the row / 250
+ *                       default); the contact siege collapses it (disabled,
+ *                       cell freed); undo tears down turret+structure coupled.
  */
 #define _POSIX_C_SOURCE 199309L
 #include "place.h"
@@ -650,6 +654,78 @@ static void test_line_autoshorten(void) {
     def_destroy(g); simp_destroy(s);
 }
 
+/* ---- case 16: destructible placed turret ----------------------------------- */
+static void test_turret_destructible(void) {
+    printf("[16] destructible placed turret\n");
+    SimP *s = simp_create(GW, GH, CELL, MAXA);
+    simp_terrain_commit(s);
+    DefGame *g = def_create(s, MAXA);
+    def_set_budget(g, 1000);
+    Placement p; pl_init(&p, CAT, NCAT);
+    PlUndo u; pl_set_undo(&p, &u);
+
+    /* commit binds a backing structure and raises the emplacement wall */
+    pl_select(&p, I_TUR); pl_set_cursor(&p, 40.0f, 30.0f);
+    CHECK(pl_commit(&p, g, s), "turret should place");
+    CHECK(def_struct_count(g) == 1, "turret should create a backing structure (got %d)",
+          def_struct_count(g));
+    CHECK(def_struct_is_turret(g, 0), "backing structure should be is_turret");
+    CHECK(fabsf(def_struct_hp(g, 0) - 250.0f) < 1e-4f,
+          "bare row should get standard 250 HP (got %.1f)", (double)def_struct_hp(g, 0));
+    CHECK(simp_is_wall(s, 80, 60), "emplacement cell should be a wall");
+    CHECK(!def_turret_disabled(g, 0), "fresh turret must not be disabled");
+
+    /* undo tears down BOTH (coupled), full refund, cell freed */
+    CHECK(pl_undo_pop(&p, g, s), "turret undo should pop");
+    CHECK(def_turret_count(g) == 0 && def_struct_count(g) == 0,
+          "undo must remove turret AND backing structure (%d/%d)",
+          def_turret_count(g), def_struct_count(g));
+    CHECK(!simp_is_wall(s, 80, 60), "emplacement cell should be free after undo");
+    CHECK(def_budget(g) == 1000, "undo must refund the turret (got %d)", def_budget(g));
+
+    /* re-place, then mob it: the contact siege chips it to collapse */
+    CHECK(pl_commit(&p, g, s), "turret re-place should work");
+    def_set_turret_contact(g, 50.0f, 2.0f);      /* hot DPS: fast headless kill */
+    int packed = 0;
+    for (float yy = 28.0f; yy <= 32.0f; yy += 0.65f)
+        for (float xx = 38.0f; xx <= 42.0f; xx += 0.65f)
+            if (simp_free_at(s, xx, yy, 0.30f) && simp_spawn(s, xx, yy) >= 0) packed++;
+    CHECK(packed > 10, "should pack a mob around the turret (got %d)", packed);
+    int fell = -1, saw_contact = 0;
+    for (int step = 0; step < 1200 && fell < 0; step++) {
+        simp_step(s, DT);
+        def_update(g, DT);
+        /* render hook: some agent must be flagged as contact-attacking turret 0
+         * (drives the attack animation in the host) */
+        for (int i = 0; i < simp_count(s) && !saw_contact; i++)
+            if (def_contact_turret(g, simp_slot_of(s, i)) == 0) saw_contact = 1;
+        if (def_turret_disabled(g, 0)) fell = step;
+    }
+    CHECK(fell >= 0, "mobbed turret should collapse (still alive after 1200 steps)");
+    CHECK(saw_contact, "def_contact_turret should flag the mob during the siege");
+    /* collapsed turret: the attacker map must clear on the next update */
+    simp_step(s, DT); def_update(g, DT);
+    int still = 0;
+    for (int i = 0; i < simp_count(s); i++)
+        if (def_contact_turret(g, simp_slot_of(s, i)) == 0) still++;
+    CHECK(still == 0, "no agent may contact-attack a collapsed turret (got %d)", still);
+    CHECK(def_struct_collapsed(g, 0), "backing structure should be collapsed");
+    CHECK(!simp_is_wall(s, 80, 60), "emplacement cell should free on collapse");
+    CHECK(any_nan(s) == 0, "NaN after turret siege");
+
+    /* a row with explicit hp overrides the standard */
+    const PlItem row = { .kind = PL_TURRET, .name = "Fragile", .cost = 10,
+                         .radius = 0.5f, .hp = 60.0f };
+    Placement p2; pl_init(&p2, &row, 1);
+    pl_set_cursor(&p2, 60.0f, 45.0f);
+    CHECK(pl_commit(&p2, g, s), "hp-row turret should place");
+    int sid = def_struct_count(g) - 1;
+    CHECK(fabsf(def_struct_hp(g, sid) - 60.0f) < 1e-4f,
+          "row hp should reach the structure (got %.1f)", (double)def_struct_hp(g, sid));
+
+    def_destroy(g); simp_destroy(s);
+}
+
 int main(void) {
     test_budget();
     test_space();
@@ -666,6 +742,7 @@ int main(void) {
     test_undo();
     test_mine();
     test_line_autoshorten();
+    test_turret_destructible();
     if (fails == 0) printf("test_place: ALL PASS\n");
     else            printf("test_place: %d FAIL\n", fails);
     return fails ? 1 : 0;

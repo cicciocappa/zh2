@@ -342,6 +342,22 @@ static const FxEmitterDef EXPL_SMOKE_DEF = {
     .wind_scale=0.5f, .ground_stop=false, .blend=FX_BLEND_ALPHA, .rate=20.0f,
 };
 
+// fumo di torretta DISTRUTTA: sbuffi piccoli e continui dal rottame (emitter
+// fx_start_emitter a rate basso per TURWRECK_SMOKE_S dopo il crollo), colonna
+// sottile che sale — stessa lezione anti-occlusione: nasce già in quota e sale.
+static const FxEmitterDef TURWRECK_SMOKE_DEF = {
+    .count=2, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.20f, .spawn_box_z=0.20f,
+    .spawn_offset_y_min=0.45f, .spawn_offset_y_max=0.9f,
+    .speed_xy_min=0.1f, .speed_xy_max=0.5f, .speed_y_min=1.0f, .speed_y_max=2.0f,
+    .gravity=-0.5f, .drag=0.9f, .lifetime_min=1.2f, .lifetime_max=2.4f,
+    .start_scale_min=0.35f, .start_scale_max=0.7f, .end_scale_min=1.2f, .end_scale_max=2.0f,
+    .start_color={0.22f,0.21f,0.20f,0.55f}, .end_color={0.13f,0.12f,0.12f,0.0f},
+    .color_variants={ {0.28f,0.26f,0.24f,0.5f},{0.18f,0.17f,0.16f,0.6f},{0.33f,0.31f,0.28f,0.45f} },
+    .color_variant_count=3, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.6f, .ground_stop=false, .blend=FX_BLEND_ALPHA, .rate=5.0f,
+};
+
 // impatto a terra dello zombie che cade ma NON muore (M3.2): puff breve e basso
 // di polvere + detriti che si sprigiona radialmente dai piedi. Serve a mascherare
 // lo stacco volo->camminata (side note utente 2026-07-07). Grani beige-grigi che
@@ -860,6 +876,11 @@ static void load_prop_models(const PropCatalog *cat){
 static PropModel gMineM;
 static float gMineScale=1.0f;
 
+// torretta DISTRUTTA (assets/models/destroyed_turret.glb): il rottame che resta
+// al posto del modello vivo dopo il crollo (build_turret_mesh), stessa soup
+// 9-float. Placeholder autorabile (oggi un cubo scuro da gfx/destroyed_turret_make.py).
+static PropModel gTurWreckM;
+
 typedef struct { GLuint vao, vbo, ebo, tex; int nidx, hasTex; } Ground;
 
 // carica la base-color texture del primo materiale (uri su file o embedded nel
@@ -1336,10 +1357,32 @@ static void place_barricade(SimP *s, float x, float y, float len, float mass){
 // sieged to collapse (def_turret_disabled) vanishes. maxV = buffer cap in
 // verts. Returns vertex count.
 static AnimSys gAnim;          // envelope one-shot dei meccanismi (anim.h): rinculo torrette
+// crollo torretta -> one-shot FX (sbuffo + scintille + emitter fumo): il loop
+// per-step confronta con lo stato del frame prima. Azzerato in build_world.
+static uint8_t gTurWasDead[TUR_DRAW_CAP];
+#define TURWRECK_SMOKE_S 25.0f    // durata dell'emitter di fumo sul rottame
 static int build_turret_mesh(DefGame *g, float *buf, int maxV){
     int nt=def_turret_count(g); int c=0;
     for(int id=0;id<nt;id++){ DefTurret *t=def_turret(g,id);
-        if(def_turret_disabled(g,id)) continue;            // destroyed: gone
+        if(def_turret_disabled(g,id)){                     // destroyed: wreck
+            float ca=cosf(t->ang), sa=sinf(t->ang), zb=ter_z(t->x,t->y);
+            if(gTurWreckM.nv>0){
+                if(c+gTurWreckM.nv>maxV) break;
+                for(int k=0;k<gTurWreckM.nv;k++){          // yaw come il gun vivo
+                    const float *i9=gTurWreckM.v+(size_t)k*9; float *o=buf+(size_t)(c+k)*9;
+                    o[0]=t->x + i9[0]*ca - i9[2]*sa;
+                    o[1]=zb + i9[1];
+                    o[2]=t->y + i9[0]*sa + i9[2]*ca;
+                    o[3]=i9[3]*ca - i9[5]*sa; o[4]=i9[4]; o[5]=i9[3]*sa + i9[5]*ca;
+                    o[6]=i9[6]; o[7]=i9[7]; o[8]=i9[8]; }
+                c+=gTurWreckM.nv;
+            } else {                                       // glb assente: moncone scuro
+                if(c+36>maxV) break;
+                c=prop_box(buf,c, t->x,t->y, 0.0f,0.0f, zb,
+                           0.38f,0.38f,0.45f, ca,sa, 0.16f,0.15f,0.14f);
+            }
+            continue;
+        }
         // rinculo: envelope lineare 1->0 di anim.c, v² per il calcio secco.
         float rec=anim_value(&gAnim,ANIM_TURRET_RECOIL,id); rec*=rec;
         float ca=cosf(t->ang), sa=sinf(t->ang);
@@ -2030,6 +2073,7 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     // reach the goal beyond -> exposed turrets in a breached ring get assaulted
     // and silenced (def_turret_make_destructible). HP from env, 0 = indestructible.
     float turret_hp = getenv("VAT_HORDE_TURRET_HP")?atof(getenv("VAT_HORDE_TURRET_HP")):250.0f;
+    memset(gTurWasDead,0,sizeof gTurWasDead);         // mondo nuovo: nessun crollo visto
     // contact-siege tuning (def_set_turret_contact): 0 = keep default. Lets the
     // turrets be made tougher/weaker to the swarm at a glance, HP unchanged.
     // Reach di gioco 2.0 m (default defense 0.9): chi passa nel corridoio
@@ -2994,6 +3038,8 @@ int main(int argc, char **argv){
     load_turret_model("assets/models/heavy_turret.glb", &gTurM[1]);
     load_turret_model("assets/models/flame_turret.glb", &gTurM[2]);
     load_turret_model("assets/models/acid_turret.glb",  &gTurM[3]);
+    load_glb_soup("assets/models/destroyed_turret.glb","torretta distrutta",
+                  gTurScale,&gTurWreckM);   // rottame post-crollo (fallback moncone)
     // base container + mortaio (BASE_DESIGN §3/§5): solo parsing CPU, il
     // rendering passa dal buffer strutture (build_struct_mesh).
     load_base_model("assets/models/base_and_mortar.glb", &gBaseM);
@@ -3009,8 +3055,10 @@ int main(int argc, char **argv){
            (double)gTurScale);
     int turCap=def_turret_count(g); if(turCap<NT) turCap=NT;   // >= tracer's NT cap
     // verts/torretta: pilastrino=30, oppure la parte più grossa di un modello glb
-    int turVpe=30;
+    // (il rottame post-crollo conta anche lui: box fallback = 36)
+    int turVpe=36;
     for(int m=0;m<4;m++) if(gTurM[m].ok){ int v=gTurM[m].base.nv+gTurM[m].gun.nv; if(v>turVpe)turVpe=v; }
+    if(gTurWreckM.nv>turVpe) turVpe=gTurWreckM.nv;
     int turMaxV=turCap*turVpe;
     float *turBuf=malloc((size_t)turMaxV*9*sizeof(float));
     GLuint turVao,turVbo; glGenVertexArrays(1,&turVao);glBindVertexArray(turVao);
@@ -3859,6 +3907,29 @@ int main(int argc, char **argv){
                           fx_emit_one(&fx,o,vv,1.0f,-1.2f,1.0f,c0,c1,0.25f,0.75f,-1,0.5f,false,FX_BLEND_ALPHA);
                       }
                   } }
+                // crollo torretta (transizione viva->distrutta): sbuffo di fumo
+                // + scintille one-shot, poi un emitter continuo che fuma dal
+                // rottame per TURWRECK_SMOKE_S (il wreck resta a mesh, sopra).
+                { int nt=def_turret_count(g);
+                  if(nt>TUR_DRAW_CAP) nt=TUR_DRAW_CAP;
+                  for(int ti=0;ti<nt;ti++){
+                      int dead=def_turret_disabled(g,ti);
+                      if(dead && !gTurWasDead[ti]){ DefTurret *t=def_turret(g,ti);
+                          float o[3]={t->x, ter_z(t->x,t->y)+0.5f, t->y};
+                          fx_emit(&fx,o,&EXPL_SMOKE_DEF,0.0f,-1.0f);
+                          fx_emit(&fx,o,&SPARK_DEF,0.0f,-1.0f);
+                          fx_emit(&fx,o,&METAL_DEBRIS_DEF,0.0f,-1.0f);   // rottami radiali
+                          fx_start_emitter(&fx,o,&TURWRECK_SMOKE_DEF,TURWRECK_SMOKE_S); }
+                      gTurWasDead[ti]=(uint8_t)dead; } }
+                // zombie a contatto d'una torretta (contact siege): il danno
+                // c'era gia', ora si VEDE — latch della clip d'attacco puntata
+                // all'emplacement (def_contact_turret, fresco da def_update).
+                { int an=simp_count(s); const float *apx=simp_px(s), *apy=simp_py(s);
+                  for(int ai=0;ai<an;ai++){
+                      int aslot=simp_slot_of(s,ai);
+                      int ti=def_contact_turret(g,aslot); if(ti<0) continue;
+                      DefTurret *t=def_turret(g,ti); if(!t) continue;
+                      vat_layer_attack(vl,aslot,t->x-apx[ai],t->y-apy[ai]); } }
                 vat_layer_update(vl,s,FIXED_DT);
                 fx_update(&fx,FIXED_DT,NULL,fx_ground,NULL);   // avanza le gocce di sangue
                 Uint64 t2=SDL_GetPerformanceCounter();

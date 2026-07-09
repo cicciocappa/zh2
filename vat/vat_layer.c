@@ -266,6 +266,18 @@ void vat_layer_force_clip(VatLayer *vl,int slot,int clip_idx){
     vl->force_clip[slot]=clip_idx;
 }
 
+/* Latch ESTERNO dell'animazione d'attacco: stesso hold+decay dell'assedio
+   muri (atk[slot]), ma armato dall'host — per gli attacchi che il sensore
+   wall_pressure non vede (contact siege delle torrette). Chiamare ogni frame
+   finche' l'agente attacca, PRIMA di vat_layer_update; (dirx,diry) = verso il
+   bersaglio in coordinate mondo (0,0 = tieni l'heading corrente). */
+void vat_layer_attack(VatLayer *vl, int slot, float dirx, float diry){
+    if(slot<0||slot>=vl->max) return;
+    vl->atk[slot]=ATTACK_HOLD;
+    float l=sqrtf(dirx*dirx+diry*diry);
+    if(l>1e-4f){ vl->hx[slot]=dirx/l; vl->hy[slot]=diry/l; }
+}
+
 /* One-shot HIT flinch su un agente vivo. No-op se il body non ha clip hit
    (es. crawler) o se un flinch e' gia' in corso (i colpi ravvicinati non
    ribattono il timer all'infinito). */
