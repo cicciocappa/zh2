@@ -69,6 +69,15 @@ typedef struct {
                               ~12°); doubles as their fire-alignment gate   */
     float clear_timer;     /* FLAME/ACID: internal corpse-clear cadence     */
     int   piercing;        /* light/heavy upgrade: ray pierces all on line  */
+    /* magazine (BIOMASS_DESIGN §5). mag_size 0 = INFINITE ammo — legacy
+     * callers change by not one bit (same pattern as aim_tol <= 0). With
+     * mag_size > 0 every shot (every activation tick for FLAME/ACID, coherent
+     * with the DoT) decrements mag; at 0 the turret goes fully silent (no
+     * acquire, no sweep) for reload_s seconds, then refills on its own.
+     * reload_s <= 0 defaults to 5 s when the mag empties. def_add_turret
+     * fills mag from mag_size if the caller left it 0.                     */
+    int   mag_size, mag;
+    float reload_s, reload_t; /* reload_t = countdown in corso (0 = pronta) */
     /* set by def_update, for rendering (muzzle flash / tracer feedback):   */
     int   fired;           /* fired on the last update                      */
     float last_t;          /* hit distance of the last shot (else range)    */
@@ -94,6 +103,16 @@ SimPHandle def_spawn(DefGame *g, float x, float y, DefBody body);
 int        def_add_turret(DefGame *g, const DefTurret *t);
 DefTurret *def_turret(DefGame *g, int id);
 int        def_turret_count(const DefGame *g);
+
+/* ---- magazine (BIOMASS_DESIGN §5) ----
+ * Instant reload: refill the mag and zero the countdown — the host calls it
+ * after consuming the matching ammo item (light -> BIO_AMMO_LIGHT etc.; the
+ * kind -> item map lives in the host, defense doesn't know bio). No-op on
+ * invalid ids and mag-less (mag_size 0) turrets. */
+void  def_turret_reload_now(DefGame *g, int tid);
+/* Seconds of reload left (0 = ready to fire). For render (lowered barrel /
+ * blink) and HUD. Always 0 for mag-less turrets. */
+float def_turret_reloading(const DefGame *g, int tid);
 
 /* ---- §7 base & defeat: destructible structures ----
  *
@@ -143,6 +162,11 @@ int   def_remove_turret_bound(DefGame *g, int tid);
  * behaves exactly like the siege path (cells freed, reroute, debris, loss on
  * core). No-op on invalid/collapsed ids. */
 void  def_struct_damage(DefGame *g, int id, float dmg);
+/* Repair kit (BIOMASS_DESIGN §6): +hp, clamped to hp_max. Only NON-collapsed
+ * structures — a collapse is final (cells freed, reroute done): "repairing" a
+ * fallen wall would be a re-placement, and that is PREP business. No-op on
+ * invalid/collapsed ids and hp <= 0. */
+void  def_struct_repair(DefGame *g, int id, float hp);
 
 /* ---- explosions (EXPLOSION_DESIGN.md §3/§8) ----
  * def_blast: one event (x,y,radius r, damage dmg, impulse strength/up_ratio)

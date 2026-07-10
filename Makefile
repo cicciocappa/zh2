@@ -38,7 +38,7 @@ all: test_particles test_impulse test_dormant test_stun test_handles test_query 
      test_defense test_base test_director test_terrain test_pick test_editor \
      test_breakthrough test_props test_vat_layer test_turret_siege test_drag test_hybrid test_car \
      test_destruct test_place test_app test_anim test_cover test_prop_world test_mission test_lure \
-     test_blast test_traps test_turret_arc test_turret_types
+     test_blast test_traps test_turret_arc test_turret_types test_bio test_turret_mag
 
 # audio backend (GAME_APP_DESIGN.md): se l'utente ha scaricato miniaudio.h in
 # vat/, il target `game` suona; altrimenti backend nullo (muto), zero errori.
@@ -157,6 +157,14 @@ test_mission: test_mission.c mission.c mission.h scene.c sim_particles.c defense
 test_lure: test_lure.c sim_particles.c defense.c defense.h
 	$(CC) $(CFLAGS) -o $@ test_lure.c sim_particles.c defense.c $(LDLIBS)
 
+# economia biomassa (BIOMASS_DESIGN): convertitore (modulo bio, zero-dep)
+test_bio: test_bio.c bio.c bio.h
+	$(CC) $(CFLAGS) -o $@ test_bio.c bio.c $(LDLIBS)
+
+# caricatori torretta (BIOMASS_DESIGN §5): mag/reload + guardia legacy
+test_turret_mag: test_turret_mag.c sim_particles.c defense.c defense.h
+	$(CC) $(CFLAGS) -o $@ test_turret_mag.c sim_particles.c defense.c $(LDLIBS)
+
 # arco di mira limitato + gate ruota-poi-spara (torrette 2.0, Blocco 1)
 test_turret_arc: test_turret_arc.c sim_particles.c defense.c defense.h
 	$(CC) $(CFLAGS) -o $@ test_turret_arc.c sim_particles.c defense.c $(LDLIBS)
@@ -214,8 +222,8 @@ vat_view: vat/vat_view.c vat/glad.c vat/stb_impl.c assets/shaders/vat.vs assets/
 # Orda reale del core sim_particles resa in 3D VAT (vat_layer + vat_horde) su
 # scena vettoriale (scene.c). Ostacoli estrusi via assets/shaders/flat.vs/.fs.
 SHADERS = $(wildcard assets/shaders/*.vs) $(wildcard assets/shaders/*.fs)
-VAT_HORDE_SRC = vat/vat_horde.c vat/vat_layer.c sim_particles.c fx_particles.c scene.c defense.c place.c traps.c terrain.c props.c prop_world.c mission.c destruct.c anim.c
-VAT_HORDE_DEP = $(VAT_HORDE_SRC) audio.c audio.h vat/glad.c vat/stb_impl.c vat/cgltf_impl.c $(SHADERS) sim_particles.h fx_particles.h vat/vat_layer.h vat/vat_gl.h vat/cgltf.h terrain.h scene.h defense.h place.h traps.h props.h destruct.h anim.h
+VAT_HORDE_SRC = vat/vat_horde.c vat/vat_layer.c sim_particles.c fx_particles.c scene.c defense.c place.c traps.c terrain.c props.c prop_world.c mission.c destruct.c anim.c bio.c
+VAT_HORDE_DEP = $(VAT_HORDE_SRC) audio.c audio.h vat/glad.c vat/stb_impl.c vat/cgltf_impl.c $(SHADERS) sim_particles.h fx_particles.h vat/vat_layer.h vat/vat_gl.h vat/cgltf.h terrain.h scene.h defense.h place.h traps.h props.h destruct.h anim.h bio.h
 
 # audio.c NON è in VAT_HORDE_SRC (il target game lo compila già a parte): lo
 # aggiungiamo solo qui alla riga di link, con AUDIO_DEF, così la sandbox suona.
@@ -269,6 +277,8 @@ test: all
 	./test_lure
 	./test_turret_arc
 	./test_turret_types
+	./test_bio
+	./test_turret_mag
 	./test_blast
 	./test_traps
 	./test_cover

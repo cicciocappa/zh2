@@ -189,6 +189,11 @@ int def_add_turret(DefGame *g, const DefTurret *t) {
         g->turrets[id].kind = TUR_HEAVY;
     g->turrets[id].heavy = (g->turrets[id].kind == TUR_HEAVY);
     if (g->turrets[id].cone_half <= 0.0f) g->turrets[id].cone_half = CONE_HALF_DEF;
+    /* magazine (§5): callers set only mag_size — start full. A caller-set
+     * partial mag (tests) is respected. */
+    if (g->turrets[id].mag_size > 0 && g->turrets[id].mag <= 0 &&
+        g->turrets[id].reload_t <= 0.0f)
+        g->turrets[id].mag = g->turrets[id].mag_size;
     return id;
 }
 DefTurret *def_turret(DefGame *g, int id) {
@@ -376,11 +381,29 @@ static void status_tick(DefGame *g, float dt) {
     }
 }
 
+/* Magazine spend (§5): one round per shot / per FLAME-ACID activation tick.
+ * On the last round the reload countdown starts immediately. */
+static inline void mag_spend(DefTurret *t) {
+    if (t->mag_size <= 0) return;                  /* infinite (legacy)     */
+    if (--t->mag > 0) return;
+    t->mag = 0;
+    t->reload_t = t->reload_s > 0.0f ? t->reload_s : 5.0f;
+}
+
 static void turret_update(DefGame *g, DefTurret *t, float dt) {
     SimP *s = g->s;
     const float *px = simp_px(s), *py = simp_py(s);
     t->fired = 0;
     if (t->tracer_ttl > 0.0f) t->tracer_ttl -= dt;
+
+    /* reloading (§5): the turret is DOWN — no acquire, no sweep, no fire —
+     * until the countdown refills the mag. The lure (which follows `fired`)
+     * dies out on its own: a silent turret doesn't attract. */
+    if (t->mag_size > 0 && t->reload_t > 0.0f) {
+        t->reload_t -= dt;
+        if (t->reload_t <= 0.0f) { t->reload_t = 0.0f; t->mag = t->mag_size; }
+        return;
+    }
 
     /* muzzle offset: a DESTRUCTIBLE turret sits on its own solid cell, so a ray
      * (line of sight OR bullet) from the centre self-blocks. Start it just past
@@ -469,6 +492,7 @@ static void turret_update(DefGame *g, DefTurret *t, float dt) {
         t->fire_timer -= t->fire_period;
         g->shots++;
         t->fired = 1;                          /* host: jet FX, no tracer */
+        mag_spend(t);                          /* jet ticks count (§5)    */
         aoe_fire(g, t, g->qbuf, n, moff);
         if (t->clear_timer >= CORPSE_CLEAR_PERIOD) {
             t->clear_timer -= CORPSE_CLEAR_PERIOD;
@@ -486,6 +510,7 @@ static void turret_update(DefGame *g, DefTurret *t, float dt) {
     g->shots++;
     t->fired = 1;
     t->tracer_ttl = TRACER_TTL;
+    mag_spend(t);
 
     int max_out = t->piercing ? MAXPIERCE : 1;
     /* fire from the muzzle (offset past the emplacement cell, computed above). */
@@ -816,6 +841,30 @@ void def_struct_damage(DefGame *g, int id, float dmg) {
     if (dmg <= 0.0f) return;
     g->structs[id].hp -= dmg;
     if (g->structs[id].hp <= 0.0f) collapse_structure(g, id);
+}
+/* Repair kit (BIOMASS_DESIGN §6): clamp to hp_max, never on collapsed —
+ * a collapse is final (cells freed, reroute done). */
+void def_struct_repair(DefGame *g, int id, float hp) {
+    if (id < 0 || id >= g->nstructs || g->structs[id].collapsed) return;
+    if (hp <= 0.0f) return;
+    g->structs[id].hp += hp;
+    if (g->structs[id].hp > g->structs[id].hp_max)
+        g->structs[id].hp = g->structs[id].hp_max;
+}
+
+/* ---- magazine (BIOMASS_DESIGN §5) ---- */
+
+void def_turret_reload_now(DefGame *g, int tid) {
+    if (tid < 0 || tid >= g->nturrets) return;
+    DefTurret *t = &g->turrets[tid];
+    if (t->mag_size <= 0) return;
+    t->mag = t->mag_size;
+    t->reload_t = 0.0f;
+}
+float def_turret_reloading(const DefGame *g, int tid) {
+    if (tid < 0 || tid >= g->nturrets) return 0.0f;
+    float r = g->turrets[tid].reload_t;
+    return r > 0.0f ? r : 0.0f;
 }
 /* Direct light damage to a live agent (fall damage, future scripted hazards).
  * Handle-resolved so it survives reordering between the step and the call. */

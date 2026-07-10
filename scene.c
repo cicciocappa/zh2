@@ -82,6 +82,7 @@ int scene_load(const char *path, Scene *sc) {
     sc->cell = 0.5f;
     sc->world_w = sc->world_h = 0.0f;
     sc->mission.budget = -1.0f;            /* < 0 = not declared (host default) */
+    sc->bio_stock = -1;                    /* < 0 = not declared (host default) */
 
     char line[LINE_MAX_LEN];
     int err = 0;
@@ -218,6 +219,11 @@ int scene_load(const char *path, Scene *sc) {
                 else if (!strcmp(opt, "budget")) sc->mission.budget = (float)atof(v);
                 else { err = -2; break; }
             }
+        } else if (!strcmp(key, "biostock")) {         /* initial munition stock (BIOMASS) */
+            char *v = strtok_r(NULL, " \t", &save);
+            if (!v) { err = -2; break; }
+            sc->bio_stock = atoi(v);
+            if (sc->bio_stock < 0) sc->bio_stock = 0;
         } else if (!strcmp(key, "budget")) {           /* standalone (BLENDER_LEVEL §8) */
             char *v = strtok_r(NULL, " \t", &save);
             if (!v) { err = -2; break; }
@@ -292,6 +298,7 @@ int scene_save(const char *path, const Scene *sc) {
         fputc('\n', f);
     } else if (sc->mission.budget >= 0.0f)
         fprintf(f, "budget %g\n", (double)sc->mission.budget);
+    if (sc->bio_stock >= 0) fprintf(f, "biostock %d\n", sc->bio_stock);
     int bad = ferror(f);
     fclose(f);
     return bad ? -1 : 0;

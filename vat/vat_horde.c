@@ -43,6 +43,7 @@
 #include "editor.h"
 #include "place.h"
 #include "anim.h"
+#include "bio.h"      // economia biomassa (BIOMASS_DESIGN): usata dalla shell
 #include "audio.h"    // sia sandbox che game (la sandbox ora suona: SFX vetro/boom)
 #ifdef GAME_SHELL
 // GAME_SHELL (GAME_APP_DESIGN.md): stessa sorgente compilata come eseguibile
@@ -421,8 +422,16 @@ static void on_director_spawn(void *user, SimPHandle h, DefBody body, unsigned r
 // LEGS = mutilazione con mesh-gib 3D (arto reciso + frammenti) + sangue. Il cambio
 // body (ARM/CRAWLER) e l'outfit insanguinato li applica il poll su def_wound nel
 // loop (qui solo gli one-shot). L'insanguinamento al colpo lo fa il poll DW_BLOODY.
+#ifdef GAME_SHELL
+static void host_bio_kill(DefBody body);   // kill -> biomassa (definita con gBio)
+#endif
 static void on_def_event(void *user, int slot, int i, DefBody body, DefEvent ev){
     SpawnCtx *c=(SpawnCtx*)user; (void)body;
+#ifdef GAME_SHELL
+    // ogni kill frutta biomassa (BIOMASS_DESIGN §1) — light E gib, la resa
+    // per body la mappa host_bio_kill. DoT/blast/mine passano tutte di qui.
+    if(ev==DEF_EV_DEATH || ev==DEF_EV_GIB) host_bio_kill(body);
+#endif
     float x=simp_px(c->s)[i], y=simp_py(c->s)[i], r=simp_radius_arr(c->s)[i];
     unsigned seed=simp_handle_of(c->s,i);
     float hd=atan2f(simp_vy(c->s)[i], simp_vx(c->s)[i]);   // direzione di marcia → lato del taglio
@@ -1148,10 +1157,41 @@ static void scorch_add(float x, float y, float r) {
     if (gScorchN < SCORCH_MAX) gScorchN++;
 }
 
+// --- caricatori torretta (BIOMASS_DESIGN §5): default per kind, applicati
+// alle torrette NUOVE (scena, anello legacy, piazzamento PREP) da uno scan
+// incrementale — il core defense resta legacy (mag_size 0 = infinito). Nel
+// GAME (GAME_SHELL) i caricatori sono ON di default: sono il lato consumo
+// dell'economia biomassa. Nel sandbox vat_horde restano infiniti salvo env.
+// VAT_HORDE_MAG="light,heavy,flame,acid" (0 = infinito), VAT_HORDE_RELOAD=s.
+static int   gMagDef[4] = {0,0,0,0};
+static float gReloadDef = 5.0f;
+static int   gTurMagSeen = 0;             // torrette gia' equipaggiate
+static void host_init_mag_defaults(void){
 #ifdef GAME_SHELL
-// Attacchi speciali: colpo di mortaio (GAME_PLAN fase F, v0 PLACEHOLDER). Niente
-// animazione di lancio (la base non è ancora un'entità: prossimo step importante),
-// niente costo biomassa (fase E), UN colpo alla volta. In ASSALTO M o l'icona in
+    // colpi per caricatore ~4-6 s di fuoco continuo per kind (da tarare)
+    gMagDef[0]=40; gMagDef[1]=12; gMagDef[2]=30; gMagDef[3]=25;
+#endif
+    if(getenv("VAT_HORDE_MAG"))
+        sscanf(getenv("VAT_HORDE_MAG"),"%d,%d,%d,%d",
+               &gMagDef[0],&gMagDef[1],&gMagDef[2],&gMagDef[3]);
+    if(getenv("VAT_HORDE_RELOAD")) gReloadDef=(float)atof(getenv("VAT_HORDE_RELOAD"));
+}
+static void host_apply_mags(DefGame *g){
+    int nt=def_turret_count(g);
+    if(nt<gTurMagSeen) gTurMagSeen=nt;    // undo piazzamento: slot riusabili
+    for(int id=gTurMagSeen; id<nt; id++){
+        DefTurret *t=def_turret(g,id);
+        int mk=(t->kind>=0&&t->kind<4)?t->kind:0;
+        if(t->mag_size<=0 && gMagDef[mk]>0){
+            t->mag_size=gMagDef[mk]; t->mag=t->mag_size; t->reload_s=gReloadDef; }
+    }
+    gTurMagSeen=nt;
+}
+
+#ifdef GAME_SHELL
+// Attacchi speciali: colpo di mortaio (GAME_PLAN fase F). Dal 2026-07-10 il
+// colpo CONSUMA un item BIO_MORTAR dallo store del convertitore (BIOMASS_DESIGN
+// §12.Q2: solo colpi prodotti, si parte con lo store pieno). In ASSALTO M o l'icona in
 // barra entra in aiming (una X segue il mouse a terra); LMB programma il colpo,
 // che dopo MORTAR_DELAY esplode via host_blast sul punto mirato. Stato qui (serve
 // a build_world per il reset); barra/aiming più sotto. La formalizzazione (modulo
@@ -1421,6 +1461,9 @@ static int build_turret_mesh(DefGame *g, float *buf, int maxV){
             if(t->kind==TUR_HEAVY){ gg=0.18f; }
             else if(t->kind==TUR_FLAME){ gr=0.95f; gg=0.35f; gb=0.05f; }
             else if(t->kind==TUR_ACID){ gr=0.30f; gg=0.85f; gb=0.25f; }
+            // in RICARICA (BIOMASS §5) la canna si spegne: grigio scuro finche'
+            // il countdown non riempie il caricatore (o click = ricarica subito)
+            if(def_turret_reloading(g,id)>0.0f){ gr=gg=gb=0.22f; }
             c=tur_emit(buf,c,&tm->gun, t->x-k*ca, t->y-k*sa, zb, ca,sa,
                        gr,gg,gb);
             continue;
@@ -1429,6 +1472,7 @@ static int build_turret_mesh(DefGame *g, float *buf, int maxV){
         float cx=t->x-0.22f*rec*ca, cz=t->y-0.22f*rec*sa, hw=0.32f;
         float zb=ter_z(cx,cz), h=zb+1.6f;            // seat on terrain
         float cr=0.95f, cg=t->heavy?0.20f:0.55f, cb=0.10f;
+        if(def_turret_reloading(g,id)>0.0f){ cr=cg=cb=0.22f; }  // in ricarica
         float x0=cx-hw,x1=cx+hw,z0=cz-hw,z1=cz+hw;
 #define VT(PX,PY,PZ,NX,NY,NZ) do{float*o=buf+c*9;o[0]=PX;o[1]=PY;o[2]=PZ;\
         o[3]=NX;o[4]=NY;o[5]=NZ;o[6]=cr;o[7]=cg;o[8]=cb;c++;}while(0)
@@ -1709,6 +1753,28 @@ static struct {
 } gHeli;
 static void shell_do_act(AppAction act);          // definita più sotto
 static App gApp;                                  // stato shell (sezione GAME SHELL)
+
+// --- economia biomassa (BIOMASS_DESIGN): l'UNICO convertitore della base.
+// Stato host: modulo bio (kill -> tank -> item), targeting del kit riparazione
+// (stile pennello, §12.Q3), flash HUD alla produzione. Reset in build_world.
+static Bio  gBio;
+static int  gAimRepair = 0;               // click su struttura = ripara
+static float gBioFlash = 0.0f;            // > 0: evidenzia l'item appena uscito
+static int   gBioLastItem = -1;
+#define BIO_REPAIR_HP 250.0f              // HP per kit (manopola balance.cfg)
+// resa per body (§6: walker 1, tank 8; obeso 2 in proporzione agli HP)
+static const float BIO_YIELD[BT_COUNT] = { 2.0f, 1.0f, 1.0f, 1.0f, 8.0f };
+static const char *BIO_NAME[BIO_ITEM_COUNT] =
+    { "PROIETTILI", "PERFORANTI", "COMBUSTIB.", "ACIDO",
+      "MORTAIO", "RIPARAZ.", "UPGRADE" };
+static void on_bio_produced(void *u, int item){
+    (void)u; gBioFlash = 0.8f; gBioLastItem = item;
+    au_play(SND_MENU_MOVE);               // ping di produzione (v1)
+}
+static void host_bio_kill(DefBody body){
+    if (gApp.state != APP_ASSAULT) return;    // biomassa = valuta dell'ASSALTO
+    bio_add(&gBio, BIO_YIELD[((int)body >= 0 && body < BT_COUNT) ? body : BT_MAN]);
+}
 
 // quota a cui la BASE del container appeso tocca terra alla lz
 static float heli_alt_low(void){
@@ -2064,7 +2130,18 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
 #ifdef GAME_SHELL
     gAimMort = 0; for(int i=0;i<STRIKE_MAX;i++) gStrikes[i].on = 0;  // reset mortaio
     gHeli.active = 0; gLzHeld = 0;                                   // reset cinematica
+    // convertitore biomassa (BIOMASS_DESIGN): stato pulito + stock iniziale.
+    // §12.Q6: `biostock N` della scena = N di ogni munizione (4 ammo + colpi
+    // mortaio); omesso = 1 di ogni ammo, mortaio PIENO (§12.Q2).
+    gAimRepair = 0; gBioFlash = 0.0f; gBioLastItem = -1;
+    bio_init(&gBio);
+    bio_set_produced_cb(&gBio, on_bio_produced, NULL);
+    for(int it=BIO_AMMO_LIGHT; it<=BIO_AMMO_ACID; it++)
+        bio_set_store(&gBio, it, sc->bio_stock >= 0 ? sc->bio_stock : 1);
+    bio_set_store(&gBio, BIO_MORTAR,
+                  sc->bio_stock >= 0 ? sc->bio_stock : bio_cap(&gBio, BIO_MORTAR));
 #endif
+    gTurMagSeen = 0;                      // caricatori: ri-equipaggia le torrette
 
     // buchi del terreno (statici indistruttibili) PRIMA di prefill/base, così
     // gli agenti non nascono dentro un palazzo e il nav è già corretto.
@@ -2564,34 +2641,147 @@ static void prep_bar_draw(int SW,int SH,DefGame *g,float mpx,float mpy){
       ui_text_c(r->x+r->w*0.5f,y0+100,1.5f,"INVIO",0.6f,0.6f,0.6f,1); }
 }
 
-// ---- barra + aiming del colpo di mortaio (stato pool in cima, presso gScorch) --
+// ---- barra ASSALTO: mortaio (aiming) + convertitore biomassa (BIOMASS_DESIGN
+// §12.Q5 v1: card cliccabili = output, O cicla; contatori/costi in card;
+// serbatoio + avviso spreco in riga alta; upgrade §7 a due bottoni). Layout
+// on demand come la barra PREP (mai rect stantii).
 static UiRect gMortR; static float gStrikeBarY = 1e9f;
+static UiRect gBioCardR[BIO_ITEM_COUNT], gUpCostR, gUpCapR;
+#define BIO_CARD_W 88.0f
 static void strikes_ui_layout(int SW, int SH) {
-    (void)SW; float y0 = (float)SH - PREP_BAR_H; gStrikeBarY = y0;
+    float y0 = (float)SH - PREP_BAR_H; gStrikeBarY = y0;
     gMortR = (UiRect){ 10.0f, y0 + 36, PREP_CARD_W, PREP_CARD_H };
+    float x = 10.0f + PREP_CARD_W + 26.0f;
+    for (int i = 0; i < BIO_ITEM_COUNT; i++) {
+        gBioCardR[i] = (UiRect){ x, y0 + 36, BIO_CARD_W, PREP_CARD_H };
+        x += BIO_CARD_W + 6.0f;
+    }
+    float uw2 = ui_text_w(2, "SCORTA +1") + 16.0f;
+    gUpCapR  = (UiRect){ (float)SW - uw2 - 10.0f, y0 + 6, uw2, 22 };
+    float uw1 = ui_text_w(2, "COSTI -10%") + 16.0f;
+    gUpCostR = (UiRect){ gUpCapR.x - uw1 - 8.0f, y0 + 6, uw1, 22 };
 }
 static void strikes_bar_draw(int SW, int SH) {
     strikes_ui_layout(SW, SH);
     float y0 = gStrikeBarY;
     ui_quad(0, y0, (float)SW, PREP_BAR_H, 0.05f, 0.05f, 0.09f, 0.88f);
     ui_quad(0, y0, (float)SW, 2, 0.35f, 0.10f, 0.08f, 1);
-    const UiRect *r = &gMortR; int on = gAimMort;
-    ui_quad(r->x, r->y, r->w, r->h, on ? 0.28f : 0.12f, on ? 0.14f : 0.10f, 0.10f, 0.92f);
-    ui_quad(r->x, r->y, r->w, 2, 0.65f, 0.32f, 0.12f, 1);
-    float cx = r->x + r->w * 0.5f, cy = r->y + 24;
-    ui_quad(cx - 10, cy - 2, 20, 7, 0.35f, 0.37f, 0.35f, 1);        // piastra
-    ui_quad(cx - 2, cy - 13, 5, 12, 0.52f, 0.52f, 0.58f, 1);        // tubo
-    ui_text_c(cx, r->y + r->h - 12, 1.5f, "MORTAIO", 0.95f, 0.9f, 0.85f, 1);
-    ui_text(r->x + r->w + 18, y0 + 52, 2,
-            on ? "MIRA COL MOUSE - CLICK SINISTRO = FUOCO (RMB/M ANNULLA)"
-               : "M O CLICCA L'ICONA PER IL COLPO DI MORTAIO",
-            0.85f, 0.85f, 0.85f, 1);
+    // riga alta: serbatoio verso il costo dell'output + avviso spreco (§4)
+    { int out = bio_output(&gBio);
+      float need = bio_cost(&gBio, out), tank = bio_tank(&gBio);
+      char tt[64]; snprintf(tt, sizeof tt, "BIOMASSA %.0f/%.0f",
+                            (double)tank, (double)need);
+      ui_text(10, y0 + 9, 2, tt, 0.55f, 0.95f, 0.45f, 1);
+      float bw = 150.0f, bx = 10 + ui_text_w(2, tt) + 12;
+      ui_quad(bx, y0 + 10, bw, 12, 0.10f, 0.14f, 0.10f, 0.9f);
+      float f = need > 0 ? tank / need : 0.0f; if (f > 1) f = 1;
+      ui_quad(bx, y0 + 10, bw * f, 12, 0.30f, 0.80f, 0.30f, 1);
+      if (bio_full(&gBio))                         // lo spreco e' INFORMATO
+          ui_text(bx + bw + 16, y0 + 9, 2, "STOCCAGGIO PIENO - BIOMASSA SPRECATA",
+                  0.95f, 0.25f, 0.20f, 1);
+    }
+    // upgrade del convertitore (§7): un kit = un livello, ramo a scelta
+    { int kits = bio_count(&gBio, BIO_UPGRADE);
+      int can1 = kits > 0 && bio_can_upgrade_costs(&gBio);
+      int can2 = kits > 0 && bio_can_upgrade_caps(&gBio);
+      ui_quad(gUpCostR.x, gUpCostR.y, gUpCostR.w, gUpCostR.h, 0.14f, 0.14f, 0.20f, 0.9f);
+      ui_quad(gUpCapR.x,  gUpCapR.y,  gUpCapR.w,  gUpCapR.h,  0.14f, 0.14f, 0.20f, 0.9f);
+      float c1 = can1 ? 1.0f : 0.4f, c2 = can2 ? 1.0f : 0.4f;
+      ui_text(gUpCostR.x + 8, gUpCostR.y + 4, 2, "COSTI -10%", c1, c1, c1, 1);
+      ui_text(gUpCapR.x + 8,  gUpCapR.y + 4,  2, "SCORTA +1",  c2, c2, c2, 1);
+    }
+    // mortaio (azione di fuoco; i colpi vengono dallo store BIO_MORTAR)
+    { const UiRect *r = &gMortR; int on = gAimMort;
+      int shots = bio_count(&gBio, BIO_MORTAR);
+      ui_quad(r->x, r->y, r->w, r->h, on ? 0.28f : 0.12f, on ? 0.14f : 0.10f, 0.10f, 0.92f);
+      ui_quad(r->x, r->y, r->w, 2, 0.65f, 0.32f, 0.12f, 1);
+      float cx = r->x + r->w * 0.5f, cy = r->y + 22;
+      ui_quad(cx - 10, cy - 2, 20, 7, 0.35f, 0.37f, 0.35f, 1);      // piastra
+      ui_quad(cx - 2, cy - 13, 5, 12, 0.52f, 0.52f, 0.58f, 1);      // tubo
+      char mc[16]; snprintf(mc, sizeof mc, "%d COLPI", shots);
+      float tc = shots > 0 ? 0.95f : 0.45f;
+      ui_text_c(cx, r->y + 32, 1.5f, mc, tc, tc * 0.9f, 0.35f, 1);
+      ui_text_c(cx, r->y + r->h - 12, 1.5f, "MORTAIO (M)", 0.95f, 0.9f, 0.85f, 1);
+    }
+    // card del convertitore: click = seleziona output
+    for (int i = 0; i < BIO_ITEM_COUNT; i++) {
+        const UiRect *cr = &gBioCardR[i];
+        int sel = (bio_output(&gBio) == i);
+        int n = bio_count(&gBio, i), cap = bio_cap(&gBio, i);
+        ui_quad(cr->x, cr->y, cr->w, cr->h, 0.12f, 0.12f, 0.17f, 0.92f);
+        if (gBioFlash > 0.0f && gBioLastItem == i)      // item appena uscito
+            ui_quad(cr->x, cr->y, cr->w, cr->h, 0.30f, 0.90f, 0.35f, 0.30f * gBioFlash);
+        if (sel) { ui_quad(cr->x, cr->y, cr->w, 2, 0.30f, 0.95f, 0.35f, 1);
+                   ui_quad(cr->x, cr->y + cr->h - 2, cr->w, 2, 0.30f, 0.95f, 0.35f, 1);
+                   ui_quad(cr->x, cr->y, 2, cr->h, 0.30f, 0.95f, 0.35f, 1);
+                   ui_quad(cr->x + cr->w - 2, cr->y, 2, cr->h, 0.30f, 0.95f, 0.35f, 1); }
+        ui_text_c(cr->x + cr->w * 0.5f, cr->y + 7, 1.5f, BIO_NAME[i],
+                  0.85f, 0.85f, 0.85f, 1);
+        char cnt[16]; snprintf(cnt, sizeof cnt, "%d/%d", n, cap);
+        float tc = n > 0 ? 0.95f : 0.45f;
+        ui_text_c(cr->x + cr->w * 0.5f, cr->y + 21, 2.5f, cnt,
+                  tc, n >= cap ? 0.85f : tc, 0.40f, 1);
+        char cs[20]; snprintf(cs, sizeof cs, "%.0f BIO", (double)bio_cost(&gBio, i));
+        ui_text_c(cr->x + cr->w * 0.5f, cr->y + 46, 1.5f, cs, 0.55f, 0.75f, 0.50f, 1);
+    }
+    // riga hint contestuale in fondo alla barra
+    const char *hint =
+        gAimMort   ? "MIRA COL MOUSE - CLICK SINISTRO = FUOCO (RMB/M ANNULLA)" :
+        gAimRepair ? "CLICK SU UNA STRUTTURA = RIPARA (RMB/R ANNULLA)" :
+        "CLICK SU CARD/O = OUTPUT - CLICK SU TORRETTA = RICARICA - R RIPARA - M MORTAIO";
+    ui_text_c((float)SW * 0.5f, y0 + 101, 1, hint, 0.65f, 0.65f, 0.65f, 1);
 }
 static int strikes_ui_click(float mx, float my, int SW, int SH) {
     strikes_ui_layout(SW, SH);
     if (my < gStrikeBarY) return 0;
-    if (ui_hit(&gMortR, mx, my)) { gAimMort = !gAimMort; au_play(SND_MENU_SELECT); }
+    if (ui_hit(&gMortR, mx, my)) {
+        gAimMort = !gAimMort; if (gAimMort) gAimRepair = 0;
+        au_play(SND_MENU_SELECT); return 1; }
+    for (int i = 0; i < BIO_ITEM_COUNT; i++)
+        if (ui_hit(&gBioCardR[i], mx, my)) {        // card = seleziona output
+            bio_set_output(&gBio, i); au_play(SND_MENU_MOVE); return 1; }
+    if (ui_hit(&gUpCostR, mx, my)) {                // §7 ramo costi
+        if (bio_count(&gBio, BIO_UPGRADE) > 0 && bio_can_upgrade_costs(&gBio)) {
+            bio_take(&gBio, BIO_UPGRADE); bio_upgrade_costs(&gBio);
+            au_play(SND_MENU_SELECT);
+        } else au_play(SND_MENU_MOVE);
+        return 1; }
+    if (ui_hit(&gUpCapR, mx, my)) {                 // §7 ramo stoccaggio
+        if (bio_count(&gBio, BIO_UPGRADE) > 0 && bio_can_upgrade_caps(&gBio)) {
+            bio_take(&gBio, BIO_UPGRADE); bio_upgrade_caps(&gBio);
+            au_play(SND_MENU_SELECT);
+        } else au_play(SND_MENU_MOVE);
+        return 1; }
     return 1;                                       // sfondo barra: consumato (mai mondo)
+}
+
+// picking per il kit riparazione (§12.Q3, click): struttura NON crollata piu'
+// vicina al punto cliccato (scan celle nel raggio del click).
+static int repair_pick_struct(DefGame *g, SimP *s, float wx, float wy) {
+    float cs = simp_cell_size(s), R = 1.6f;
+    int cx0 = (int)((wx - R) / cs), cy0 = (int)((wy - R) / cs);
+    int cx1 = (int)((wx + R) / cs), cy1 = (int)((wy + R) / cs);
+    int best = -1; float bd = 1e30f;
+    for (int cy = cy0; cy <= cy1; cy++)
+        for (int cx = cx0; cx <= cx1; cx++) {
+            int sid = def_cell_struct(g, cx, cy);
+            if (sid < 0 || def_struct_collapsed(g, sid)) continue;
+            float dx = (cx + 0.5f) * cs - wx, dy = (cy + 0.5f) * cs - wy;
+            float d = dx * dx + dy * dy;
+            if (d < bd) { bd = d; best = sid; }
+        }
+    return best;
+}
+// picking per la ricarica istantanea (§12.Q4, click): torretta viva col
+// caricatore NON pieno (o in ricarica) sotto il cursore.
+static int reload_pick_turret(DefGame *g, float wx, float wy) {
+    int nt = def_turret_count(g), best = -1; float bd = 1.4f * 1.4f;
+    for (int i = 0; i < nt; i++) { DefTurret *t = def_turret(g, i);
+        if (def_turret_disabled(g, i) || t->mag_size <= 0) continue;
+        if (t->mag >= t->mag_size && def_turret_reloading(g, i) <= 0.0f) continue;
+        float dx = t->x - wx, dy = t->y - wy, d = dx * dx + dy * dy;
+        if (d < bd) { bd = d; best = i; } }
+    return best;
 }
 
 // --- hover inspect (decisione 2026-07-08): feedback su difese/strutture SENZA
@@ -3069,6 +3259,7 @@ int main(int argc, char **argv){
     if(gMortMinR<0) gMortMinR=0;
     if(gMortMaxR<gMortMinR+1.0f) gMortMaxR=gMortMinR+1.0f;
 #endif
+    host_init_mag_defaults();   // caricatori (BIOMASS §5): default kind + env
     printf("torrette 3D: light=%s heavy=%s flame=%s acid=%s (scala %.2f)\n",
            gTurM[0].ok?"ok":"pilastrino", gTurM[1].ok?"ok":"pilastrino",
            gTurM[2].ok?"ok":"pilastrino", gTurM[3].ok?"ok":"pilastrino",
@@ -3388,6 +3579,8 @@ int main(int argc, char **argv){
                                     float rd=sqrtf(rdx*rdx+rdy*rdy);
                                     if(rd<gMortMinR || rd>gMortMaxR){
                                         au_play(SND_MENU_MOVE);        // "no": fuori gittata
+                                    } else if(!bio_take(&gBio,BIO_MORTAR)){
+                                        au_play(SND_MENU_MOVE);        // "no": niente colpi in store
                                     } else {
                                         // il colpo parte dalla BOCCA del tubo (modello),
                                         // fallback centro container + BASE_H
@@ -3402,6 +3595,43 @@ int main(int argc, char **argv){
                             }
                         }
                         continue;                  // in aiming il mouse non guida la camera
+                    }
+                    if(gAimRepair){
+                        // kit riparazione attivo (BIOMASS §12.Q3, stile pennello):
+                        // LMB su una struttura = +HP consumando un kit; RMB annulla.
+                        if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
+                            if(e.button.button==SDL_BUTTON_LEFT){
+                                float wx,wy;
+                                if(pick_y0(vp,mxf,myf,SW,SH,&wx,&wy)){
+                                    int sid=repair_pick_struct(g,s,wx,wy);
+                                    if(sid>=0 && def_struct_hp(g,sid)<def_struct_hp_max(g,sid)
+                                       && bio_take(&gBio,BIO_REPAIR)){
+                                        def_struct_repair(g,sid,BIO_REPAIR_HP);
+                                        au_play(SND_MENU_SELECT);
+                                        if(bio_count(&gBio,BIO_REPAIR)<=0) gAimRepair=0;
+                                    } else au_play(SND_MENU_MOVE);   // niente kit / gia' sana
+                                }
+                            } else if(e.button.button==SDL_BUTTON_RIGHT) gAimRepair=0;
+                        }
+                        continue;             // in targeting il mouse non guida la camera
+                    }
+                    // click su una torretta col caricatore non pieno = ricarica
+                    // ISTANTANEA consumando la munizione del suo kind (§5, §12.Q4)
+                    if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN &&
+                       e.button.button==SDL_BUTTON_LEFT){
+                        float wx,wy;
+                        if(pick_y0(vp,mxf,myf,SW,SH,&wx,&wy)){
+                            int tid=reload_pick_turret(g,wx,wy);
+                            if(tid>=0){
+                                DefTurret *t=def_turret(g,tid);
+                                int item=BIO_AMMO_LIGHT+((t->kind>=0&&t->kind<4)?t->kind:0);
+                                if(bio_take(&gBio,item)){
+                                    def_turret_reload_now(g,tid);
+                                    au_play(SND_MENU_SELECT);
+                                } else au_play(SND_MENU_MOVE);       // munizione esaurita
+                                continue;   // il click era per la torretta, non pan camera
+                            }
+                        }
                     }
                 }
 #endif
@@ -3625,7 +3855,19 @@ int main(int argc, char **argv){
 #ifdef GAME_SHELL
                 case SDLK_M:  // colpo di mortaio: entra/esci dall'aiming (solo in ASSALTO)
                     if(gApp.state==APP_ASSAULT){ gAimMort=!gAimMort;
-                        if(gAimMort) au_play(SND_MENU_SELECT); }
+                        if(gAimMort){ gAimRepair=0; au_play(SND_MENU_SELECT); } }
+                    break;
+                case SDLK_O:  // convertitore: cicla l'output (BIOMASS §12.Q5 v1)
+                    if(gApp.state==APP_ASSAULT){
+                        bio_set_output(&gBio,(bio_output(&gBio)+1)%BIO_ITEM_COUNT);
+                        au_play(SND_MENU_MOVE); }
+                    break;
+                case SDLK_R:  // kit riparazione: entra/esci dal targeting (§12.Q3)
+                    if(gApp.state==APP_ASSAULT){
+                        if(!gAimRepair && bio_count(&gBio,BIO_REPAIR)<=0)
+                            au_play(SND_MENU_MOVE);          // niente kit in store
+                        else { gAimRepair=!gAimRepair; gAimMort=0;
+                               au_play(gAimRepair?SND_MENU_SELECT:SND_MENU_MOVE); } }
                     break;
 #endif
                 case SDLK_RETURN: case SDLK_KP_ENTER:  // fase A: via all'assalto
@@ -3692,7 +3934,9 @@ int main(int argc, char **argv){
         int sim_run = !ed.active && !paused;
 #ifdef GAME_SHELL
         sim_run = sim_run && (gApp.state==APP_PREP || gApp.state==APP_ASSAULT);
+        if(gBioFlash>0.0f) gBioFlash-=(float)frame_t;   // flash HUD produzione
 #endif
+        host_apply_mags(g);   // equipaggia i caricatori delle torrette nuove (§5)
         if(sim_run){
             if(blast_pending){
                 // host_blast = def_blast (danno/impulso/strutture/cadaveri, +eventi

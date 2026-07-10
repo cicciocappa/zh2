@@ -1,11 +1,18 @@
 # Biomassa — economia di partita (design tecnico)
 
-> **STATO: DA IMPLEMENTARE.** Meccanica dettata dall'utente il 2026-07-09 a
-> fine sessione (vedi anche GAME_PLAN fase E "biomassa" e Blocco 3 di
+> **STATO: IMPLEMENTATO (2026-07-10).** Meccanica dettata dall'utente il
+> 2026-07-09 (vedi anche GAME_PLAN fase E "biomassa" e Blocco 3 di
 > torrette 2.0, che questo doc assorbe in parte: i kit di upgrade prodotti
-> qui sono la valuta del pannello upgrade del Blocco 3). Doc scritto la
-> stessa sera per l'implementazione della sessione successiva. Le questioni
-> §12 vanno sciolte con l'utente prima o durante l'implementazione.
+> qui sono la valuta del pannello upgrade del Blocco 3). Moduli: `bio.h/.c`
+> (convertitore), caricatori + `def_struct_repair` in defense.c, `biostock`
+> in scene.c, wiring host in vat_horde (GAME_SHELL). Test: `test_bio`,
+> `test_turret_mag`. Questioni §12 SCIOLTE con l'utente il 2026-07-10:
+> Q1 tank PERSISTE; Q2 mortaio SOLO colpi prodotti, store parte pieno;
+> Q3 riparazione a CLICK sulla struttura (tasto R arma il kit); Q4 ricarica
+> a CLICK sulla torretta; Q5 HUD v1 = barra ASSALTO con card cliccabili +
+> tasto O che cicla l'output; Q6 `biostock N` nel `.scn`, default 1 di ogni
+> munizione (mortaio pieno). Restano per Blocco 3: balance.cfg (§9), pannello
+> upgrade torrette; droni §8 = v2.
 
 ## 1. Principio
 

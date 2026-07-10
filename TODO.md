@@ -294,8 +294,16 @@ statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
 
 ## M5b — Economia (doc separato, futuro)
 
-- [ ] Biomassa: blob alla morte (pool fisso + TTL, come i cadaveri), raccolta
-      come tasso/raggio attorno ai punti di raccolta (droni NON simulati in v1).
+- [x] **Biomassa: convertitore + caricatori — FATTO (2026-07-10,
+      BIOMASS_DESIGN.md)**: modulo `bio.c` (tank→item, cap per risorsa, spreco
+      informato, upgrade ricorsivo §7), caricatori torretta in defense
+      (`mag_size`/`reload_s`, `def_turret_reload_now`, legacy mag 0 = infinito),
+      `def_struct_repair`, `biostock` in scene, wiring completo in vat_horde
+      (kill→resa per body, mortaio a colpi prodotti, ricarica a click,
+      riparazione a click con R, barra ASSALTO col convertitore, O cicla
+      output). `test_bio` + `test_turret_mag` PASS. Il vecchio piano
+      "blob alla morte + raccolta fisica" è SUPERATO (credito al kill,
+      droni = fiction v2, §8 del doc).
 - [ ] Basi di raccolta avanzate: punti esterni alla base, goal + HP (riusano
       §7), reddito maggiore ma bersaglio dell'orda → dilemma espandi/difendi.
       Richiede l'attribuzione multi-goal del drain (questione aperta).

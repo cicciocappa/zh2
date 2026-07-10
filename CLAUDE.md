@@ -413,6 +413,27 @@ eseguibili si lanciano dalla root del progetto.
   = danno diretto pubblico (nato qui, serve a EXPLOSION_DESIGN §8).
   `test_mission` = vinta/persa/CLEAR/pool esatti/determinismo; banco
   `assets/scenes/mission_demo.scn`.
+- `bio.h` / `bio.c` — economia biomassa (BIOMASS_DESIGN.md, FATTA 2026-07-10):
+  modulo game-side zero-dep. Ogni kill frutta biomassa (resa per body,
+  host); l'UNICO convertitore la trasforma nell'output SELEZIONATO (7 item:
+  4 munizioni per kind torretta, colpo mortaio, kit riparazione, kit
+  upgrade), store cappato per risorsa (default 3), output pieno = biomassa
+  SPRECATA (`bio_full` → HUD "STOCCAGGIO PIENO"). Tank persiste al cambio
+  output. Upgrade ricorsivo §7 (`bio_upgrade_costs/caps`, floor 0.5·base /
+  tetto base+3). Lato defense: caricatori torretta (`mag_size`/`mag`/
+  `reload_s`/`reload_t` in DefTurret, mag_size 0 = infinito legacy
+  bit-identico; flame/acid scalano a tick), `def_turret_reload_now`/
+  `_reloading`, `def_struct_repair` (mai su crollate). Host (vat_horde,
+  GAME_SHELL): kill→`bio_add`, mortaio consuma BIO_MORTAR (senza colpi
+  rifiuta; store parte pieno), click su torretta = ricarica istantanea
+  (consuma la munizione del kind), R + click su struttura = riparazione
+  (+250 HP), O/card cliccabili = output, barra ASSALTO col convertitore,
+  canna grigia in ricarica; mag default per kind 40/12/30/25, reload 5 s
+  (`VAT_HORDE_MAG`/`VAT_HORDE_RELOAD`; sandbox non-shell = infiniti salvo
+  env). Scene: `biostock N` (default 1 di ogni munizione, mortaio pieno).
+  Budget $ (PREP) e biomassa (ASSALTO) NON si convertono. `test_bio` +
+  `test_turret_mag` (guardia legacy, ciclo N colpi→silenzio→ripresa,
+  reload_now, tick flame, lure spento in ricarica, determinismo).
 - `EXPLOSION_DESIGN.md` — esplosioni × mondo (DECISO 2026-07-04, da
   implementare): primitiva condivisa `def_blast` (agenti+strutture+cadaveri
   con falloff unico) + fiction host (burst/incendi/scorch/decal); risposta
