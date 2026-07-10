@@ -32,23 +32,53 @@ typedef enum { BT_OBESE, BT_MAN, BT_WOMAN, BT_CHILD, BT_TANK, BT_COUNT } DefBody
  * outfit/body VAT; CRAWLING also slows the agent via simp_set_vpref. */
 typedef enum { DW_NONE, DW_BLOODY, DW_MAIMED_ARM, DW_CRAWLING } DefWound;
 
+/* Turret kind (torrette 2.0, Blocco 2). LIGHT/HEAVY = the hitscan pair
+ * (heavy gibs). FLAME/ACID = cone-AoE status throwers: no ray, no tracer —
+ * each shot tick hits EVERY live agent in range within ±cone_half of the
+ * barrel that passes line of sight, dealing t->damage direct (silent, no
+ * flinch/wound roll) plus the elemental status below. Values 0/1 match the
+ * legacy `heavy` field; def_add_turret keeps kind and heavy in sync. */
+typedef enum { TUR_LIGHT = 0, TUR_HEAVY = 1, TUR_FLAME = 2, TUR_ACID = 3 }
+        DefTurretKind;
+
+/* Elemental status (FLAME/ACID hits), per-slot like wounds. BURNING ticks
+ * fire DoT until it expires (refreshed while the victim stays in the jet) —
+ * the host swaps the outfit on DEF_EV_IGNITE (14 = charred) and emits
+ * flame+smoke on the agent; ACID likewise (DEF_EV_ACID, outfit 15, green
+ * fumes). Mutually exclusive, FIRST application wins (refresh same-type
+ * only); the swapped outfit is permanent (scar), only the DoT expires. */
+typedef enum { DST_NONE = 0, DST_BURNING = 1, DST_ACID = 2 } DefStatus;
+
 typedef struct {
     float x, y;            /* position (m)                                  */
     float ang;             /* current aim direction (rad)                   */
     float arc_min, arc_max;/* sweep arc extents (rad, no ±pi wrap assumed)  */
     int   sweep_dir;       /* +1 / -1                                       */
     float sweep_speed;     /* rad/s (also the dwell turn rate)              */
+    float aim_tol;         /* rad: fires only when |aim error| <= this
+                              (turn-then-shoot). <= 0 = NO gate (legacy
+                              fire-while-slewing — the M5 tests are tuned on
+                              it); game turrets use DEF_AIM_TOL_STD.        */
     float range;           /* m                                             */
     float fire_period;     /* s between shots (light < heavy)               */
     float fire_timer;
     float damage;          /* HP per shot (light); ignored by heavy (gibs)  */
-    int   heavy;           /* 0 = light, 1 = heavy                          */
+    int   heavy;           /* 0 = light, 1 = heavy (legacy; see kind)       */
+    int   kind;            /* DefTurretKind; def_add_turret syncs heavy     */
+    float cone_half;       /* FLAME/ACID: AoE half-angle (rad, 0 = default
+                              ~12°); doubles as their fire-alignment gate   */
+    float clear_timer;     /* FLAME/ACID: internal corpse-clear cadence     */
     int   piercing;        /* light/heavy upgrade: ray pierces all on line  */
     /* set by def_update, for rendering (muzzle flash / tracer feedback):   */
     int   fired;           /* fired on the last update                      */
     float last_t;          /* hit distance of the last shot (else range)    */
     float tracer_ttl;      /* > 0 → draw a tracer; decays each update       */
 } DefTurret;
+
+/* Standard fire-alignment tolerance (~7°) for game turrets (placement,
+ * authored scene cones). Not applied by def_add_turret: aim_tol <= 0 keeps
+ * the legacy gate-less behaviour the M5 test scenarios are calibrated on. */
+#define DEF_AIM_TOL_STD 0.12f
 
 typedef struct DefGame DefGame;
 
@@ -103,6 +133,12 @@ int   def_struct_cap(void);   /* table size — line placement pre-checks room *
  * not last / not removable (core, turret-backing struct, bound/luring turret). */
 int   def_remove_structure(DefGame *g, int id);
 int   def_remove_turret(DefGame *g, int tid);
+/* Coupled LIFO teardown of a DESTRUCTIBLE turret: removes turret tid AND its
+ * backing structure in one call (each must be the LAST of its table — true for
+ * a pl_commit'd turret, which binds right after def_add_turret). Frees the
+ * emplacement wall cell; caller batches simp_terrain_commit. Returns 1, or 0
+ * if not last / unbound (use def_remove_turret) / luring. */
+int   def_remove_turret_bound(DefGame *g, int tid);
 /* Direct HP damage (explosions — EXPLOSION_DESIGN §8 — and tests). Collapse
  * behaves exactly like the siege path (cells freed, reroute, debris, loss on
  * core). No-op on invalid/collapsed ids. */
@@ -154,6 +190,10 @@ int   def_turret_disabled(const DefGame *g, int tid);
 /* 1 if structure id backs a turret — the renderer skips it in the wall mesh so
  * the turret model isn't double-drawn as a steel box. */
 int   def_struct_is_turret(const DefGame *g, int id);
+/* Turret id the agent in `slot` is contact-attacking THIS update, -1 = none.
+ * Refreshed inside def_update (contact siege): the render layer points the
+ * attack animation at the emplacement being chewed. */
+int   def_contact_turret(const DefGame *g, int slot);
 /* Tune the contact siege of turrets (a turret has few attackers vs a long wall,
  * so it needs higher per-agent DPS + wider reach to fall at a comparable rate).
  * dps = HP/s per contacting agent; reach = m beyond the emplacement half-cell.
@@ -189,7 +229,11 @@ void def_update(DefGame *g, float dt);
  * 2 arti volanti. Mappati dall'host a vat_layer_gib_wound/_limb.
  * Core-agnostic: defense.c non tocca il renderer; l'host collega gli eventi. */
 typedef enum { DEF_EV_HIT, DEF_EV_DEATH, DEF_EV_GIB,
-               DEF_EV_WOUND_BLEED, DEF_EV_WOUND_ARM, DEF_EV_WOUND_LEGS } DefEvent;
+               DEF_EV_WOUND_BLEED, DEF_EV_WOUND_ARM, DEF_EV_WOUND_LEGS,
+               /* elemental status applied (once per victim, Blocco 2): the
+                * host swaps the outfit (IGNITE -> 14, ACID -> 15) and starts
+                * per-agent flame/fume FX by polling def_status. */
+               DEF_EV_IGNITE, DEF_EV_ACID } DefEvent;
 typedef void (*DefEventFn)(void *user, int slot, int i, DefBody body, DefEvent ev);
 void def_set_event_cb(DefGame *g, DefEventFn cb, void *user);
 
@@ -248,6 +292,7 @@ int  def_count_wound(const DefGame *g, DefWound w);
 const int     *def_hp(const DefGame *g);
 const uint8_t *def_wound(const DefGame *g);
 const uint8_t *def_body(const DefGame *g);
+const uint8_t *def_status(const DefGame *g);   /* DefStatus per slot */
 
 #ifdef __cplusplus
 }

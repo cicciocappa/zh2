@@ -38,7 +38,7 @@ all: test_particles test_impulse test_dormant test_stun test_handles test_query 
      test_defense test_base test_director test_terrain test_pick test_editor \
      test_breakthrough test_props test_vat_layer test_turret_siege test_drag test_hybrid test_car \
      test_destruct test_place test_app test_anim test_cover test_prop_world test_mission test_lure \
-     test_blast test_traps
+     test_blast test_traps test_turret_arc test_turret_types
 
 # audio backend (GAME_APP_DESIGN.md): se l'utente ha scaricato miniaudio.h in
 # vat/, il target `game` suona; altrimenti backend nullo (muto), zero errori.
@@ -157,6 +157,14 @@ test_mission: test_mission.c mission.c mission.h scene.c sim_particles.c defense
 test_lure: test_lure.c sim_particles.c defense.c defense.h
 	$(CC) $(CFLAGS) -o $@ test_lure.c sim_particles.c defense.c $(LDLIBS)
 
+# arco di mira limitato + gate ruota-poi-spara (torrette 2.0, Blocco 1)
+test_turret_arc: test_turret_arc.c sim_particles.c defense.c defense.h
+	$(CC) $(CFLAGS) -o $@ test_turret_arc.c sim_particles.c defense.c $(LDLIBS)
+
+# torrette flame/acid: AoE conico + status elementale (torrette 2.0, Blocco 2)
+test_turret_types: test_turret_types.c sim_particles.c defense.c defense.h
+	$(CC) $(CFLAGS) -o $@ test_turret_types.c sim_particles.c defense.c $(LDLIBS)
+
 # esplosioni: primitiva def_blast (agenti/strutture/cadaveri) + danno caduta
 test_blast: test_blast.c sim_particles.c defense.c defense.h sim_particles.h
 	$(CC) $(CFLAGS) -o $@ test_blast.c sim_particles.c defense.c $(LDLIBS)
@@ -259,6 +267,8 @@ test: all
 	./test_prop_world
 	./test_mission
 	./test_lure
+	./test_turret_arc
+	./test_turret_types
 	./test_blast
 	./test_traps
 	./test_cover
@@ -273,7 +283,7 @@ clean:
 	rm -rf test_particles test_impulse test_dormant test_handles test_query \
 	       test_corpses test_corpse_pile test_types test_density_route test_jam test_blood_fear test_scene \
 	       test_siege test_turret test_defense test_base test_director test_terrain bench_sim test_pick test_editor test_breakthrough test_props test_vat_layer test_drag test_hybrid test_car test_destruct test_place \
-	       test_app test_anim test_cover test_prop_world test_mission test_lure test_blast test_traps game \
+	       test_app test_anim test_cover test_prop_world test_mission test_lure test_turret_arc test_turret_types test_blast test_traps game \
 	       sandbox sprite_view vat_view vat_horde frames *.exe vat/*.o
 
 .PHONY: all test clean

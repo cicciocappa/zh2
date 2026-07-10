@@ -2,6 +2,7 @@
 
 #include "defense.h"
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 
 /* Body table: hp_max, radius, v_pref, mass (walker units), heavy_hits, bounty. */
@@ -31,6 +32,15 @@ static const DefEnemyDef ENEMY[BT_COUNT] = {
                               * §7-bis). No physical disc (torn apart).        */
 #define MAXPIERCE  64        /* max agents a piercing shot resolves          */
 #define TURRET_CAP 256
+/* FLAME/ACID (Blocco 2): status DoT + cone defaults. Compiled numbers for
+ * now — Blocco 3 moves them into the balance table. Fire kills a default
+ * walker in ~6 s of sustained burning; acid is slower but lasts longer. */
+#define BURN_DPS   16.0f
+#define BURN_DUR    5.0f
+#define ACID_DPS   12.0f
+#define ACID_DUR    8.0f
+#define CONE_HALF_DEF 0.21f  /* rad (~12°, 24° total jet)                    */
+#define CORPSE_CLEAR_PERIOD 1.0f /* s of sustained jetting per corpse sweep  */
 /* blood-fear (CORPSE_DESIGN.md, 2026-06-25): every death stains the cell; the
  * horde's animal instinct reroutes around bloody killzones. ~4 deaths in a
  * cell saturate the cost term. Deposited where the blood decal is emitted. */
@@ -69,6 +79,9 @@ struct DefGame {
     int     *hp;        /* per slot */
     uint8_t *body;      /* per slot: DefBody */
     uint8_t *wound;     /* per slot: DefWound */
+    uint8_t *status;    /* per slot: DefStatus (FLAME/ACID DoT)             */
+    float   *status_t;  /* per slot: DoT time left (refreshed in the jet)   */
+    float   *dot_acc;   /* per slot: fractional DoT damage accumulator      */
     float   *hheat;     /* per slot: heavy hits absorbed; fractional because a
                          * shot through semi-transparent cover (ENTITY_DESIGN
                          * axis C) lands attenuated: heat += transmit */
@@ -97,6 +110,8 @@ struct DefGame {
     int16_t  *cell_struct;  /* gw*gh: structure id per nav cell, -1 = none   */
     int       stx0, sty0, stx1, sty1;  /* bbox of cells EVER assigned (never shrinks) */
     float    *atk_timer;    /* per slot: siege attack accumulator            */
+    int16_t  *contact_tid;  /* per slot: turret being contact-attacked THIS
+                             * update, -1 = none (render hook: attack anim)  */
     int       lost;         /* 1 once the core has collapsed                 */
     int       budget;       /* §8 placement budget                          */
     float     turret_dps;   /* contact damage HP/s per agent (def_set_turret_contact) */
@@ -116,6 +131,9 @@ DefGame *def_create(SimP *s, int cap) {
     g->hp    = (int *)calloc((size_t)cap, sizeof(int));
     g->body  = (uint8_t *)calloc((size_t)cap, 1);
     g->wound = (uint8_t *)calloc((size_t)cap, 1);
+    g->status   = (uint8_t *)calloc((size_t)cap, 1);
+    g->status_t = (float *)calloc((size_t)cap, sizeof(float));
+    g->dot_acc  = (float *)calloc((size_t)cap, sizeof(float));
     g->hheat = (float *)calloc((size_t)cap, sizeof(float));
     g->qbuf  = (int *)malloc((size_t)cap * sizeof(int));
     g->hbuf  = (SimPHandle *)malloc((size_t)cap * sizeof(SimPHandle));
@@ -125,6 +143,8 @@ DefGame *def_create(SimP *s, int cap) {
     for (size_t k = 0; k < ncell; k++) g->cell_struct[k] = -1;
     g->stx0 = g->gw; g->sty0 = g->gh; g->stx1 = -1; g->sty1 = -1;   /* empty bbox */
     g->atk_timer = (float *)calloc((size_t)cap, sizeof(float));
+    g->contact_tid = (int16_t *)malloc((size_t)cap * sizeof(int16_t));
+    for (int k = 0; k < cap; k++) g->contact_tid[k] = -1;
     g->turret_dps = TURRET_DPS_DEF;
     g->turret_reach = TURRET_REACH_DEF;
     g->lure_w = 0.0f;                       /* lure off by default (opt-in) */
@@ -135,8 +155,9 @@ void def_destroy(DefGame *g) {
     if (!g) return;
     for (int i = 0; i < TURRET_CAP; i++) { free(g->lure_cell[i]); free(g->lure_delta[i]); }
     free(g->hp); free(g->body); free(g->wound); free(g->hheat); free(g->qbuf);
+    free(g->status); free(g->status_t); free(g->dot_acc);
     free(g->hbuf);
-    free(g->cell_struct); free(g->atk_timer);
+    free(g->cell_struct); free(g->atk_timer); free(g->contact_tid);
     free(g);
 }
 
@@ -149,6 +170,9 @@ SimPHandle def_spawn(DefGame *g, float x, float y, DefBody body) {
     g->hp[slot] = d->hp_max;
     g->body[slot] = (uint8_t)body;
     g->wound[slot] = DW_NONE;
+    g->status[slot] = DST_NONE;
+    g->status_t[slot] = 0.0f;
+    g->dot_acc[slot] = 0.0f;
     g->hheat[slot] = 0;
     return simp_handle_of(g->s, i);
 }
@@ -159,6 +183,12 @@ int def_add_turret(DefGame *g, const DefTurret *t) {
     g->turrets[id] = *t;
     g->turret_struct[id] = -1;          /* indestructible until bound */
     if (g->turrets[id].sweep_dir == 0) g->turrets[id].sweep_dir = 1;
+    /* kind <-> heavy sync (Blocco 2): legacy callers set only heavy, new ones
+     * set only kind — either way both fields come out coherent. */
+    if (g->turrets[id].kind == TUR_LIGHT && g->turrets[id].heavy)
+        g->turrets[id].kind = TUR_HEAVY;
+    g->turrets[id].heavy = (g->turrets[id].kind == TUR_HEAVY);
+    if (g->turrets[id].cone_half <= 0.0f) g->turrets[id].cone_half = CONE_HALF_DEF;
     return id;
 }
 DefTurret *def_turret(DefGame *g, int id) {
@@ -273,6 +303,79 @@ static void apply_damage(DefGame *g, SimPHandle h, const DefTurret *t,
  * low enough that any cover worth shooting through passes. */
 #define T_ACQ 0.05f
 
+/* Apply the elemental status to a live agent (FLAME/ACID hit). First status
+ * wins (mutually exclusive, like wounds); same-type hits refresh the clock.
+ * The event fires ONCE, on application — the host swaps the outfit there. */
+static void apply_status(DefGame *g, int i, int slot, DefStatus st) {
+    if (g->status[slot] == DST_NONE) {
+        g->status[slot] = (uint8_t)st;
+        g->dot_acc[slot] = 0.0f;
+        if (g->ev_cb) g->ev_cb(g->ev_user, slot, i, (DefBody)g->body[slot],
+                               st == DST_BURNING ? DEF_EV_IGNITE : DEF_EV_ACID);
+    }
+    if (g->status[slot] == (uint8_t)st)
+        g->status_t[slot] = (st == DST_BURNING) ? BURN_DUR : ACID_DUR;
+}
+
+/* FLAME/ACID shot tick: every live agent inside range, within ±cone_half of
+ * the barrel and with line of sight takes t->damage direct (SILENT: no
+ * flinch, no wound roll — the elemental fiction replaces the impact gore)
+ * plus the status. qbuf/n come from this update's acquire query (no kill in
+ * between, indices still exact); handles first anyway (M3.4: the damage
+ * pass kills and reorders). Capped at MAXPIERCE victims per tick. */
+static void aoe_fire(DefGame *g, DefTurret *t, const int *qbuf, int n,
+                     float moff) {
+    SimP *s = g->s;
+    const float *px = simp_px(s), *py = simp_py(s);
+    int nh = 0;
+    for (int k = 0; k < n && nh < MAXPIERCE; k++) {
+        int i = qbuf[k];
+        float dx = px[i] - t->x, dy = py[i] - t->y;
+        float d = sqrtf(dx * dx + dy * dy);
+        if (d < 1e-4f) continue;
+        if (fabsf(wrap_pi(atan2f(dy, dx) - t->ang)) > t->cone_half) continue;
+        float md = d - moff;
+        if (md > 0.0f &&
+            simp_ray_transmit(s, t->x + dx / d * moff, t->y + dy / d * moff,
+                              dx / d, dy / d, md) < T_ACQ)
+            continue;                              /* a wall shields it */
+        g->rayh[nh++] = simp_handle_of(s, i);
+    }
+    DefStatus st = (t->kind == TUR_FLAME) ? DST_BURNING : DST_ACID;
+    int dmg = (int)(t->damage + 0.5f);
+    for (int k = 0; k < nh; k++) {
+        int i = simp_index_of(s, g->rayh[k]);
+        if (i < 0) continue;
+        int slot = simp_slot_of(s, i);
+        apply_status(g, i, slot, st);
+        if (dmg > 0) {
+            g->hp[slot] -= dmg;
+            if (g->hp[slot] <= 0) die_light(g, i, slot);
+        }
+    }
+}
+
+/* DoT tick for every live agent with an elemental status. Downward index
+ * scan: die_light swap-and-pops the tail, which a decreasing loop never
+ * revisits. The outfit swap is permanent (scar); only the DoT expires. */
+static void status_tick(DefGame *g, float dt) {
+    SimP *s = g->s;
+    for (int i = simp_count(s) - 1; i >= 0; i--) {
+        int slot = simp_slot_of(s, i);
+        if (g->status[slot] == DST_NONE) continue;
+        g->status_t[slot] -= dt;
+        float dps = (g->status[slot] == DST_BURNING) ? BURN_DPS : ACID_DPS;
+        g->dot_acc[slot] += dps * dt;
+        int whole = (int)g->dot_acc[slot];
+        if (whole >= 1) {
+            g->dot_acc[slot] -= (float)whole;
+            g->hp[slot] -= whole;
+            if (g->hp[slot] <= 0) { die_light(g, i, slot); continue; }
+        }
+        if (g->status_t[slot] <= 0.0f) g->status[slot] = DST_NONE;
+    }
+}
+
 static void turret_update(DefGame *g, DefTurret *t, float dt) {
     SimP *s = g->s;
     const float *px = simp_px(s), *py = simp_py(s);
@@ -313,22 +416,69 @@ static void turret_update(DefGame *g, DefTurret *t, float dt) {
         bestd2 = d2; best = i;
     }
 
+    float aim_err = 1e30f;                     /* |error| AFTER this turn step */
     if (best >= 0) {                           /* dwell: turn toward target */
         float bearing = atan2f(py[best] - t->y, px[best] - t->x);
-        float diff = wrap_pi(bearing - t->ang);
         float maxstep = t->sweep_speed * dt;
-        t->ang += (fabsf(diff) <= maxstep) ? diff
-                  : (diff > 0 ? maxstep : -maxstep);
+        if (half >= 3.13f) {
+            /* free mount (near-full arc, no stops): wrapped shortest path —
+             * targets straddling the ±pi seam must not trigger long slews.
+             * ang deliberately NOT re-wrapped (it may drift past ±pi until
+             * the sweep clamp catches it): bit-identical to the pre-arc-gate
+             * behaviour the M5 scenarios (test_lure) are calibrated on. */
+            float diff = wrap_pi(bearing - t->ang);
+            t->ang += (fabsf(diff) <= maxstep) ? diff
+                      : (diff > 0 ? maxstep : -maxstep);
+            aim_err = fabsf(wrap_pi(bearing - t->ang));
+        } else {
+            /* limited mount: chase the target's angle in the UNWRAPPED arc
+             * frame (the acquire filter guarantees wrap_pi(bearing-cx) is
+             * within ±half, so goal lies in [arc_min, arc_max] like t->ang) —
+             * when the wrapped shortest path crosses the stops, the barrel
+             * slews the long way around INSIDE the arc instead of pinning. */
+            float goal = cx + wrap_pi(bearing - cx);
+            float diff = goal - t->ang;
+            t->ang += (fabsf(diff) <= maxstep) ? diff
+                      : (diff > 0 ? maxstep : -maxstep);
+            aim_err = fabsf(goal - t->ang);
+        }
     } else {                                   /* sweep the arc */
         t->ang += (float)t->sweep_dir * t->sweep_speed * dt;
         if (t->ang > t->arc_max) { t->ang = t->arc_max; t->sweep_dir = -1; }
         if (t->ang < t->arc_min) { t->ang = t->arc_min; t->sweep_dir =  1; }
     }
 
-    /* fire only with a target (free bullets, no waste on empty arc) */
+    /* fire only with a target IN THE SIGHTS (turn-then-shoot): hold fire while
+     * the barrel is still slewing, with the timer primed so the shot leaves the
+     * instant alignment is reached (no waste on empty arc either).
+     * aim_tol <= 0 = legacy gate-less turret (defense.h); the FLAME/ACID jet
+     * gates on its own cone (a target anywhere in the jet is a hit). */
     t->fire_timer += dt;
-    if (best < 0) {
+    int aoe = (t->kind == TUR_FLAME || t->kind == TUR_ACID);
+    float tol = aoe ? t->cone_half : t->aim_tol;
+    if (best < 0 || (tol > 0.0f && aim_err > tol)) {
         if (t->fire_timer > t->fire_period) t->fire_timer = t->fire_period;
+        return;
+    }
+    if (aoe) {
+        /* sustained jetting time drives the periodic corpse sweep: fire and
+         * acid eat the piles in the cone (GUIDA fase C) — two discs covering
+         * the middle and the far end of the jet. */
+        t->clear_timer += dt;
+        if (t->fire_timer < t->fire_period) return;
+        t->fire_timer -= t->fire_period;
+        g->shots++;
+        t->fired = 1;                          /* host: jet FX, no tracer */
+        aoe_fire(g, t, g->qbuf, n, moff);
+        if (t->clear_timer >= CORPSE_CLEAR_PERIOD) {
+            t->clear_timer -= CORPSE_CLEAR_PERIOD;
+            float cw = t->range * tanf(t->cone_half) + 0.6f;
+            float ca = cosf(t->ang), sa = sinf(t->ang);
+            simp_corpse_clear(s, t->x + ca * t->range * 0.45f,
+                                 t->y + sa * t->range * 0.45f, cw * 0.6f);
+            simp_corpse_clear(s, t->x + ca * t->range * 0.85f,
+                                 t->y + sa * t->range * 0.85f, cw);
+        }
         return;
     }
     if (t->fire_timer < t->fire_period) return;
@@ -491,15 +641,23 @@ static void siege_update(DefGame *g, float dt) {
 static void turret_contact_update(DefGame *g, float dt) {
     SimP *s = g->s;
     float rad = simp_cell_size(s) * 0.5f + g->turret_reach;
+    /* refresh the per-slot attacker map (render hook: attack animation) */
+    memset(g->contact_tid, 0xFF, (size_t)g->cap * sizeof(int16_t));
     for (int id = 0; id < g->nturrets; id++) {
         int sid = g->turret_struct[id];
         if (sid < 0 || g->structs[sid].collapsed) continue;
         int n = simp_query_circle(s, g->turrets[id].x, g->turrets[id].y,
                                   rad, g->qbuf, g->cap, 0);
         if (n <= 0) continue;
+        for (int k = 0; k < n; k++)
+            g->contact_tid[simp_slot_of(s, g->qbuf[k])] = (int16_t)id;
         g->structs[sid].hp -= (float)n * g->turret_dps * dt;
         if (g->structs[sid].hp <= 0.0f) collapse_structure(g, sid);
     }
+}
+
+int def_contact_turret(const DefGame *g, int slot) {
+    return (slot >= 0 && slot < g->cap) ? g->contact_tid[slot] : -1;
 }
 
 void def_set_turret_contact(DefGame *g, float dps, float reach) {
@@ -603,24 +761,40 @@ int   def_struct_cap(void) { return STRUCT_CAP; }
  * batches simp_terrain_commit (one reroute per undo pop). Return 1 on
  * success, 0 if the id is not the last or the entity is not removable
  * (core, turret-backing structure, destructible-bound or luring turret). */
-int def_remove_structure(DefGame *g, int id) {
-    if (id < 0 || id != g->nstructs - 1) return 0;
-    DefStruct *st = &g->structs[id];
-    if (st->is_core || st->is_turret) return 0;
+static void struct_free_cells(DefGame *g, int id) {
     int gw = g->gw, n = gw * g->gh;
     for (int c = 0; c < n; c++)
         if (g->cell_struct[c] == (int16_t)id) {
             simp_set_wall(g->s, c % gw, c / gw, false);  /* mirrors opacity too */
             g->cell_struct[c] = -1;
         }
+}
+
+int def_remove_structure(DefGame *g, int id) {
+    if (id < 0 || id != g->nstructs - 1) return 0;
+    DefStruct *st = &g->structs[id];
+    if (st->is_core || st->is_turret) return 0;
+    struct_free_cells(g, id);
     g->nstructs--;
     return 1;
 }
 
 int def_remove_turret(DefGame *g, int tid) {
     if (tid < 0 || tid != g->nturrets - 1) return 0;
-    if (g->turret_struct[tid] >= 0) return 0;  /* bound: remove via its struct */
+    if (g->turret_struct[tid] >= 0) return 0;  /* bound: def_remove_turret_bound */
     if (g->lure_on[tid]) return 0;             /* PREP-only API: never fired   */
+    g->nturrets--;
+    return 1;
+}
+
+int def_remove_turret_bound(DefGame *g, int tid) {
+    if (tid < 0 || tid != g->nturrets - 1) return 0;
+    int sid = g->turret_struct[tid];
+    if (sid < 0 || sid != g->nstructs - 1) return 0;   /* LIFO on BOTH tables */
+    if (g->lure_on[tid]) return 0;             /* PREP-only API: never fired   */
+    struct_free_cells(g, sid);                 /* the emplacement wall cell    */
+    g->nstructs--;
+    g->turret_struct[tid] = -1;
     g->nturrets--;
     return 1;
 }
@@ -731,6 +905,7 @@ void def_update(DefGame *g, float dt) {
         if (def_turret_disabled(g, id)) { g->turrets[id].fired = 0; continue; }
         turret_update(g, &g->turrets[id], dt);
     }
+    status_tick(g, dt);          /* elemental DoT (FLAME/ACID, Blocco 2) */
     siege_update(g, dt);
     turret_contact_update(g, dt);
     lure_update(g, dt);          /* after turret_update: reads fresh 'fired' */
@@ -858,3 +1033,4 @@ int def_count_wound(const DefGame *g, DefWound w) {
 const int     *def_hp(const DefGame *g)    { return g->hp; }
 const uint8_t *def_wound(const DefGame *g) { return g->wound; }
 const uint8_t *def_body(const DefGame *g)  { return g->body; }
+const uint8_t *def_status(const DefGame *g){ return g->status; }

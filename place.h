@@ -42,7 +42,7 @@ typedef struct {
     int         cost;     /* budget units                                    */
     float       w, h;     /* footprint (m), axis-aligned; CAR: w = rod length */
     float       radius;   /* disc radius for bin/car free-space probe        */
-    float       hp;       /* barricade HP                                    */
+    float       hp;       /* barricade HP; turret emplacement HP (0 = 250)   */
     float       mass;     /* draggable mass (bin/car) / barricade debris mass */
     /* turret combat params (0 = standard: range 40, light 0.12s/40HP,
      * heavy 0.5s/gib). heavy uses defense's slow gibbing shot. */
@@ -60,6 +60,9 @@ typedef struct {
     float       strength;    /* blast impulse strength                        */
     float       up_ratio;    /* blast impulse loft                            */
     float       arm_delay;   /* s before the mine can fire                    */
+    /* turret aim arc: TOTAL width in degrees, centered on the facing the
+     * player picks at placement (Placement.facing). 0 = default (90°). */
+    float       arc_deg;
 } PlItem;
 
 /* Host veto: return 1 if (wx,wy) sits on an immovable static (palazzo/roccia).
@@ -90,6 +93,9 @@ typedef struct {
     int    sel;                      /* selected catalog index               */
     float  cx, cy;                   /* cursor in world meters               */
     int    rot90;                    /* 0..3 orientation (barricade/car)     */
+    float  facing;                   /* turret aim-arc centre (rad, world +x
+                                        = 0, CCW); host sets it via the
+                                        place-then-drag aiming gesture       */
     int    valid;                    /* commit allowed here? (pl_validate)   */
     int    reason;                   /* PlReason of the last validate        */
     PlBlockedFn blocked; void *blocked_user;
@@ -150,9 +156,11 @@ int  pl_line_commit(Placement *p, DefGame *g, SimP *s,
 
 /* Place the selected item: re-runs pl_validate (cheap, no mutation) and refuses
  * if not affordable/valid here, else deducts budget (def_spend) and materializes
- * (simp_drag_add / def_add_turret / def_add_structure+cells+commit). Spends ONLY
- * on a successful create. Returns 1 if placed. Self-contained — safe to call on a
- * click without trusting the cached p->valid. */
+ * (simp_drag_add / def_add_turret+make_destructible / def_add_structure+cells+
+ * commit). Turrets come out DESTRUCTIBLE like scene turrets (the horde mobs
+ * them via the contact siege); emplacement HP from the row (0 = standard 250).
+ * Spends ONLY on a successful create. Returns 1 if placed. Self-contained —
+ * safe to call on a click without trusting the cached p->valid. */
 int  pl_commit(Placement *p, DefGame *g, SimP *s);
 
 #ifdef __cplusplus

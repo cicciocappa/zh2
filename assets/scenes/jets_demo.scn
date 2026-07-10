@@ -1,0 +1,22 @@
+# jets_demo — banco per le torrette FLAME/ACID (torrette 2.0, Blocco 2).
+# Fiume di zombie ovest->est; a metà campo un lanciafiamme e una lancia-acido
+# con CONO autorato verso ovest (facing 180°, arco 90°): si vedono il getto,
+# gli incendiati (outfit 14 + fuoco/fumo addosso), i corrosi (outfit 15 +
+# fumi verdi) e la pulizia delle pile di cadaveri nel cono.
+#
+#   VAT_HORDE_RATE=6 ./vat_horde assets/scenes/jets_demo.scn
+#
+# turret: x y [range] [kind] [hp] [facing_deg] [arc_deg]
+#   kind: 0 leggera, 1 pesante, 2 FIAMME, 3 ACIDO
+
+cell 0.5
+world 60 40
+
+goal 56 17 3 6
+
+# fiume: banda di spawn a ovest
+spawn 1 14 2 12
+
+# lanciafiamme a nord del corridoio, acido a sud, coni verso ovest
+turret 30 15 12 2 300 180 90
+turret 30 25 18 3 300 180 90

@@ -59,6 +59,43 @@ static float shad[MAXA*4];     // ground shadow instances: xyz center + radius
 #define EDOVL_MAXV 8192        // vertici max dell'overlay editor (rects+poly+cursore)
 static float edovl[EDOVL_MAXV*9];
 
+// gesto di mira delle torrette (piazzamento DIREZIONALE): LMB tiene = ancora la
+// posizione, trascina = orienta il cono, rilascia = piazza. Stato condiviso tra
+// gestione eventi e blocco ghost del frame (entrambe le build, shell e nuda).
+static int   gTAimOn=0;
+static float gTAimX=0.0f, gTAimY=0.0f;   // ancora (posizione della torretta)
+static float gTAimFacing=0.0f;           // ultima direzione valida del drag
+
+// settore di mira nell'overlay flat (ghost di piazzamento / hover su torretta):
+// due bordi radiali + arco sul raggio esterno + lancetta di direzione.
+static int push_aim_cone(float *buf, int v, int maxv, float x, float y,
+                         float facing, float half, float R,
+                         float r, float g, float b){
+    if(half>=3.1f){                       // arco pieno: solo l'anello di gittata
+        const int NSEG=64;
+        for(int k=0;k<NSEG && v+6<=maxv;k++){
+            float a0=(float)k*6.2831853f/NSEG, a1=(float)(k+1)*6.2831853f/NSEG;
+            v=ed_push_bar(buf,v,x+cosf(a0)*R,y+sinf(a0)*R,
+                          x+cosf(a1)*R,y+sinf(a1)*R,0.30f,r,g,b);
+        }
+        return v;
+    }
+    int nseg=(int)(half*2.0f/0.12f)+1; if(nseg<4)nseg=4; if(nseg>64)nseg=64;
+    if(v+6<=maxv) v=ed_push_bar(buf,v,x,y,x+cosf(facing-half)*R,
+                                y+sinf(facing-half)*R,0.30f,r,g,b);
+    if(v+6<=maxv) v=ed_push_bar(buf,v,x,y,x+cosf(facing+half)*R,
+                                y+sinf(facing+half)*R,0.30f,r,g,b);
+    for(int k=0;k<nseg && v+6<=maxv;k++){
+        float a0=facing-half+2.0f*half*(float)k/(float)nseg;
+        float a1=facing-half+2.0f*half*(float)(k+1)/(float)nseg;
+        v=ed_push_bar(buf,v,x+cosf(a0)*R,y+sinf(a0)*R,
+                      x+cosf(a1)*R,y+sinf(a1)*R,0.30f,r,g,b);
+    }
+    if(v+6<=maxv) v=ed_push_bar(buf,v,x,y,x+cosf(facing)*R*0.35f,
+                                y+sinf(facing)*R*0.35f,0.16f,r,g,b);
+    return v;
+}
+
 // I body type disponibili (asset bakati in vat/assets/). Texture placeholder: la
 // skirt non ha ancora il _diffuse.png -> rende flat-shaded (tintata), corretto.
 // Gli ULTIMI due (crawler, tank) sono body "di gioco": non assegnati a caso, solo
@@ -161,6 +198,48 @@ static const FxEmitterDef MUZZLE_FLASH_HVY_DEF = {
     .color_variant_count=0, .sprite_first=-1, .sprite_last=-1,
     .wind_scale=0.0f, .ground_stop=false, .blend=FX_BLEND_ADD, .rate=20.0f,
 };
+// getto del lanciafiamme (torrette 2.0): lingue additive che corrono lungo il
+// cono di tiro (direzione = t->ang, half_angle stretto in fx_emit), si gonfiano
+// e salgono un filo mentre sfumano dal giallo al rosso scuro. Emesso a ogni
+// tick di fuoco (fire_period ~0.15 s) -> con vita ~0.8 s il getto è continuo.
+static const FxEmitterDef FLAME_JET_DEF = {
+    .count=9, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.08f, .spawn_box_z=0.08f,
+    .spawn_offset_y_min=-0.06f, .spawn_offset_y_max=0.06f,
+    .speed_xy_min=11.0f, .speed_xy_max=16.0f, .speed_y_min=0.2f, .speed_y_max=1.2f,
+    .gravity=-1.5f, .drag=0.5f, .lifetime_min=0.55f, .lifetime_max=0.85f,
+    .start_scale_min=0.22f, .start_scale_max=0.38f, .end_scale_min=0.55f, .end_scale_max=0.95f,
+    .start_color={1.0f,0.75f,0.20f,0.95f}, .end_color={0.85f,0.10f,0.02f,0.0f},
+    .color_variants={ {1.0f,0.85f,0.30f,0.95f},{1.0f,0.60f,0.10f,0.95f},{0.95f,0.45f,0.08f,0.9f} },
+    .color_variant_count=3, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.15f, .ground_stop=false, .blend=FX_BLEND_ADD, .rate=20.0f,
+};
+// fumo del getto: poche palle alpha scure che restano dietro le fiamme e salgono.
+static const FxEmitterDef FLAME_JET_SMOKE_DEF = {
+    .count=2, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.10f, .spawn_box_z=0.10f,
+    .spawn_offset_y_min=0.0f, .spawn_offset_y_max=0.15f,
+    .speed_xy_min=6.0f, .speed_xy_max=10.0f, .speed_y_min=0.6f, .speed_y_max=1.6f,
+    .gravity=-1.2f, .drag=1.2f, .lifetime_min=0.9f, .lifetime_max=1.5f,
+    .start_scale_min=0.30f, .start_scale_max=0.50f, .end_scale_min=0.9f, .end_scale_max=1.4f,
+    .start_color={0.16f,0.14f,0.12f,0.38f}, .end_color={0.10f,0.10f,0.10f,0.0f},
+    .color_variant_count=0, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.5f, .ground_stop=false, .blend=FX_BLEND_ALPHA, .rate=20.0f,
+};
+// getto d'acido: gocce verdi in arco balistico che si posano a terra (splash),
+// alpha (liquido, non luce). Piu' veloce e teso del lanciafiamme (range 18 m).
+static const FxEmitterDef ACID_JET_DEF = {
+    .count=8, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.05f, .spawn_box_z=0.05f,
+    .spawn_offset_y_min=-0.04f, .spawn_offset_y_max=0.06f,
+    .speed_xy_min=15.0f, .speed_xy_max=20.0f, .speed_y_min=0.8f, .speed_y_max=2.0f,
+    .gravity=6.0f, .drag=0.15f, .lifetime_min=0.7f, .lifetime_max=1.1f,
+    .start_scale_min=0.10f, .start_scale_max=0.18f, .end_scale_min=0.06f, .end_scale_max=0.10f,
+    .start_color={0.45f,0.95f,0.20f,0.9f}, .end_color={0.20f,0.55f,0.10f,0.35f},
+    .color_variants={ {0.50f,1.0f,0.25f,0.9f},{0.35f,0.85f,0.15f,0.9f},{0.55f,0.95f,0.35f,0.85f} },
+    .color_variant_count=3, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.1f, .ground_stop=true, .blend=FX_BLEND_ALPHA, .rate=20.0f,
+};
 // scintilla d'impatto: schegge brillanti che rimbalzano verso il tiratore, un
 // filo di gravità, additive. Emessa quando lo streak raggiunge il bersaglio.
 static const FxEmitterDef SPARK_DEF = {
@@ -220,6 +299,24 @@ static const FxEmitterDef GLASS_DEBRIS_DEF = {
     .wind_scale=0.15f, .ground_stop=true, .blend=FX_BLEND_ADD, .rate=20.0f,
 };
 
+// detriti del CRATERE (richiesta utente 2026-07-09): zolle scure di asfalto/
+// terra sollevate da ogni host_blast, a prescindere dai prop nel raggio (quelli
+// sputano i LORO debris via on_prop_burst). Balistici, si posano a terra;
+// piu' grossi e piu' lenti delle schegge metalliche — massa, non scintille.
+static const FxEmitterDef BLAST_DEBRIS_DEF = {
+    .count=40, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.35f, .spawn_box_z=0.35f,
+    .spawn_offset_y_min=0.10f, .spawn_offset_y_max=0.50f,
+    .speed_xy_min=3.5f, .speed_xy_max=9.0f, .speed_y_min=4.5f, .speed_y_max=9.5f,
+    .gravity=9.81f, .drag=0.20f, .lifetime_min=1.1f, .lifetime_max=2.0f,
+    .start_scale_min=0.34f, .start_scale_max=0.62f, .end_scale_min=0.16f, .end_scale_max=0.28f,
+    .start_color={0.33f,0.27f,0.19f,1.0f}, .end_color={0.18f,0.16f,0.13f,0.7f},
+    .color_variants={ {0.40f,0.32f,0.21f,1.0f},{0.22f,0.19f,0.15f,1.0f},
+                      {0.45f,0.36f,0.24f,1.0f},{0.16f,0.15f,0.14f,1.0f} },  // terra/asfalto
+    .color_variant_count=4, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.1f, .ground_stop=true, .blend=FX_BLEND_ALPHA, .rate=20.0f,
+};
+
 // esplosione (EXPLOSION_DESIGN.md §6): tre burst sovrapposti al punto di scoppio.
 // FLASH = lampo brevissimo additivo bianco-giallo che si allarga; FIREBALL =
 // palla arancio→rosso scuro con drag alto (alpha); SMOKE = colonna grigia lenta
@@ -261,6 +358,22 @@ static const FxEmitterDef EXPL_SMOKE_DEF = {
     .color_variants={ {0.34f,0.32f,0.30f,0.8f},{0.24f,0.23f,0.22f,0.85f},{0.40f,0.37f,0.34f,0.7f} },
     .color_variant_count=3, .sprite_first=-1, .sprite_last=-1,
     .wind_scale=0.5f, .ground_stop=false, .blend=FX_BLEND_ALPHA, .rate=20.0f,
+};
+
+// fumo di torretta DISTRUTTA: sbuffi piccoli e continui dal rottame (emitter
+// fx_start_emitter a rate basso per TURWRECK_SMOKE_S dopo il crollo), colonna
+// sottile che sale — stessa lezione anti-occlusione: nasce già in quota e sale.
+static const FxEmitterDef TURWRECK_SMOKE_DEF = {
+    .count=2, .shape=FX_EMIT_POINT,
+    .spawn_radius=0.20f, .spawn_box_z=0.20f,
+    .spawn_offset_y_min=0.45f, .spawn_offset_y_max=0.9f,
+    .speed_xy_min=0.1f, .speed_xy_max=0.5f, .speed_y_min=1.0f, .speed_y_max=2.0f,
+    .gravity=-0.5f, .drag=0.9f, .lifetime_min=1.2f, .lifetime_max=2.4f,
+    .start_scale_min=0.35f, .start_scale_max=0.7f, .end_scale_min=1.2f, .end_scale_max=2.0f,
+    .start_color={0.22f,0.21f,0.20f,0.55f}, .end_color={0.13f,0.12f,0.12f,0.0f},
+    .color_variants={ {0.28f,0.26f,0.24f,0.5f},{0.18f,0.17f,0.16f,0.6f},{0.33f,0.31f,0.28f,0.45f} },
+    .color_variant_count=3, .sprite_first=-1, .sprite_last=-1,
+    .wind_scale=0.6f, .ground_stop=false, .blend=FX_BLEND_ALPHA, .rate=5.0f,
 };
 
 // impatto a terra dello zombie che cade ma NON muore (M3.2): puff breve e basso
@@ -334,6 +447,10 @@ static void on_def_event(void *user, int slot, int i, DefBody body, DefEvent ev)
         vat_layer_maim_legs(c->vl, slot, x, y, r, hd, seed^0x2u);
         float ol[3]={x, ter_z(x,y)+0.6f, y};                   // schizzo più basso (anca)
         fx_emit(c->fx, ol, &BLOOD_DEF, 0.0f, -1.0f); }
+    else if(ev==DEF_EV_IGNITE)                                  /* preso fuoco: outfit carbonizzato */
+        vat_layer_set_outfit(c->vl, slot, 14);                  /* il fuoco addosso lo fa il poll */
+    else if(ev==DEF_EV_ACID)                                    /* corroso: outfit sciolto */
+        vat_layer_set_outfit(c->vl, slot, 15);
 }
 
 // Benchmark prefill: popola il campo a `target` agenti su un lattice jitterato
@@ -433,7 +550,7 @@ static void gib_model(mat4 m, float tx,float ty,float tz,
 #define TUR_DRAW_CAP 256          // mirrors defense.c TURRET_CAP (runtime placement)
 typedef struct { float *v; int nv; } TurPart;       // nv verts * 6 floats (pos+nrm)
 typedef struct { TurPart base, gun; float muzzle_h, muzzle_x; int ok; } TurretModel;
-static TurretModel gTurM[2];                        // [0]=light, [1]=heavy
+static TurretModel gTurM[4];                        // indexed by DefTurretKind
 static float gTurScale = TURRET_SCALE_DEF;
 
 static int tur_read_part(cgltf_node *nd, TurPart *out, float sc){
@@ -623,11 +740,11 @@ static int ter_blocked(float x, float y){ return gTerOn && terrain_hole(&gTer, x
 // --- piazzamento a runtime (PLACEMENT_DESIGN.md): catalogo + veto static ---
 static int pl_blocked_host(void *u, float x, float y){ (void)u; return ter_blocked(x,y); }
 static const PlItem PL_CAT[] = {
-    /* kind        name          cost   w     h    radius  hp     mass   combat: 0 = default | trap: 0 */
-    { PL_BARRICADE, "Barricata",   50,  4.0f, 1.0f, 0.0f, 300.0f, 30.0f, 0, 0,0,0, 0, 0,0,0,0,0,0 },  /* mass>0 = detriti al crollo */
-    { PL_TURRET,    "Torretta",   100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 0, 0,0,0, 0, 0,0,0,0,0,0 },
-    { PL_BIN,       "Cassonetto",  20,  0.0f, 0.0f, 0.6f,   0.0f, 12.0f, 0, 0,0,0, 0, 0,0,0,0,0,0 },
-    { PL_CAR,       "Auto",        60,  3.0f, 0.0f, 0.6f,   0.0f, 20.0f, 0, 0,0,0, 0, 0,0,0,0,0,0 },
+    /* kind        name          cost   w     h    radius  hp     mass   combat: 0 = default | trap: 0 | arc (0 = 90°) */
+    { PL_BARRICADE, "Barricata",   50,  4.0f, 1.0f, 0.0f, 300.0f, 30.0f, 0, 0,0,0, 0, 0,0,0,0,0,0, 0 },  /* mass>0 = detriti al crollo */
+    { PL_TURRET,    "Torretta",   100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 0, 0,0,0, 0, 0,0,0,0,0,0, 0 },
+    { PL_BIN,       "Cassonetto",  20,  0.0f, 0.0f, 0.6f,   0.0f, 12.0f, 0, 0,0,0, 0, 0,0,0,0,0,0, 0 },
+    { PL_CAR,       "Auto",        60,  3.0f, 0.0f, 0.6f,   0.0f, 20.0f, 0, 0,0,0, 0, 0,0,0,0,0,0, 0 },
 };
 #define PL_NCAT ((int)(sizeof(PL_CAT)/sizeof(PL_CAT[0])))
 
@@ -638,14 +755,17 @@ static const PlItem PL_CAT[] = {
 // cancellata è il cover semi-trasparente dell'asse C: opacità 0.3, le torrette
 // sparano attraverso (test_cover). Parametri combat a 0 = default di place.c.
 static const PlItem PL_CAT_GAME[] = {
-    /* kind        name          cost   w     h    radius  hp     mass   heavy range per dmg  opac  trap: trig blastR dmg str up arm */
-    { PL_TURRET,    "Leggera",    100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 0,    0,0,0,         0,    0,0,0,0,0,0 },
-    { PL_TURRET,    "Pesante",    250,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 1,    0,0,0,         0,    0,0,0,0,0,0 },
-    { PL_BARRICADE, "Barricata",   12,  2.5f, 1.0f, 0.0f, 300.0f, 30.0f, 0,    0,0,0,         0,    0,0,0,0,0,0 },
-    { PL_BARRICADE, "Cancellata",  20,  2.5f, 1.0f, 0.0f, 200.0f, 15.0f, 0,    0,0,0,         0.3f, 0,0,0,0,0,0 },
+    /* kind        name          cost   w     h    radius  hp     mass   kind° range per dmg  opac  trap: trig blastR dmg str up arm | arc°
+     * (la colonna "heavy" porta l'intero DefTurretKind: 0/1 legacy, 2 fiamme, 3 acido) */
+    { PL_TURRET,    "Leggera",    100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 0,    0,0,0,         0,    0,0,0,0,0,0,  90.0f },
+    { PL_TURRET,    "Pesante",    250,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 1,    0,0,0,         0,    0,0,0,0,0,0,  90.0f },
+    { PL_TURRET,    "Fiamme",     180,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 2,    0,0,0,         0,    0,0,0,0,0,0,  90.0f },
+    { PL_TURRET,    "Acido",      220,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 3,    0,0,0,         0,    0,0,0,0,0,0,  90.0f },
+    { PL_BARRICADE, "Barricata",   12,  2.5f, 1.0f, 0.0f, 300.0f, 30.0f, 0,    0,0,0,         0,    0,0,0,0,0,0,  0 },
+    { PL_BARRICADE, "Cancellata",  20,  2.5f, 1.0f, 0.0f, 200.0f, 15.0f, 0,    0,0,0,         0.3f, 0,0,0,0,0,0,  0 },
     /* MINA (GAME_PLAN fase D): one-shot a pressione. trigger 1.2 m, blast R 6 /
      * dmg 150, loft 22/0.6, arm 1 s (non ti esplode in mano al piazzamento). */
-    { PL_TRAP,      "Mina",        40,  0.0f, 0.0f, 0.3f,   0.0f,  0.0f, 0,    0,0,0,         0,    1.2f,6.0f,150.0f,22.0f,0.6f,1.0f },
+    { PL_TRAP,      "Mina",        40,  0.0f, 0.0f, 0.3f,   0.0f,  0.0f, 0,    0,0,0,         0,    1.2f,6.0f,150.0f,22.0f,0.6f,1.0f, 0 },
 };
 #define PL_NCAT_GAME ((int)(sizeof(PL_CAT_GAME)/sizeof(PL_CAT_GAME[0])))
 
@@ -773,6 +893,11 @@ static void load_prop_models(const PropCatalog *cat){
 // solo modello statico stampato a terra per ogni trappola viva (build_mine_mesh).
 static PropModel gMineM;
 static float gMineScale=1.0f;
+
+// torretta DISTRUTTA (assets/models/destroyed_turret.glb): il rottame che resta
+// al posto del modello vivo dopo il crollo (build_turret_mesh), stessa soup
+// 9-float. Placeholder autorabile (oggi un cubo scuro da gfx/destroyed_turret_make.py).
+static PropModel gTurWreckM;
 
 typedef struct { GLuint vao, vbo, ebo, tex; int nidx, hasTex; } Ground;
 
@@ -1080,12 +1205,14 @@ static int host_blast(DefGame *g, SimP *s, const Scene *sc, const PropCatalog *c
         destruct_force(dz, sc, i, atan2f(ddy, ddx), on_prop_burst, &dc);  // via dal centro
         changed = 1;
     }
-    // FX §6: lampo + fireball al suolo, colonna di fumo poco sopra.
+    // FX §6: lampo + fireball al suolo, colonna di fumo poco sopra, zolle
+    // scure di cratere (asfalto/terra) sollevate dal punto di scoppio.
     float zg = ter_z(x, y);
     float of[3] = { x, zg + 0.4f, y }, os[3] = { x, zg + 0.9f, y };
     fx_emit(fx, of, &EXPL_FLASH_DEF,    0.0f, -1.0f);
     fx_emit(fx, of, &EXPL_FIREBALL_DEF, 0.0f, -1.0f);
     fx_emit(fx, os, &EXPL_SMOKE_DEF,    0.0f, -1.0f);
+    fx_emit(fx, of, &BLAST_DEBRIS_DEF,  0.0f, -1.0f);
     scorch_add(x, y, r * 0.6f);                     // cratere annerito (§7 v1)
     au_play(SND_BOOM);
     (void)s;
@@ -1250,14 +1377,37 @@ static void place_barricade(SimP *s, float x, float y, float len, float mass){
 // sieged to collapse (def_turret_disabled) vanishes. maxV = buffer cap in
 // verts. Returns vertex count.
 static AnimSys gAnim;          // envelope one-shot dei meccanismi (anim.h): rinculo torrette
+// crollo torretta -> one-shot FX (sbuffo + scintille + emitter fumo): il loop
+// per-step confronta con lo stato del frame prima. Azzerato in build_world.
+static uint8_t gTurWasDead[TUR_DRAW_CAP];
+#define TURWRECK_SMOKE_S 25.0f    // durata dell'emitter di fumo sul rottame
 static int build_turret_mesh(DefGame *g, float *buf, int maxV){
     int nt=def_turret_count(g); int c=0;
     for(int id=0;id<nt;id++){ DefTurret *t=def_turret(g,id);
-        if(def_turret_disabled(g,id)) continue;            // destroyed: gone
+        if(def_turret_disabled(g,id)){                     // destroyed: wreck
+            float ca=cosf(t->ang), sa=sinf(t->ang), zb=ter_z(t->x,t->y);
+            if(gTurWreckM.nv>0){
+                if(c+gTurWreckM.nv>maxV) break;
+                for(int k=0;k<gTurWreckM.nv;k++){          // yaw come il gun vivo
+                    const float *i9=gTurWreckM.v+(size_t)k*9; float *o=buf+(size_t)(c+k)*9;
+                    o[0]=t->x + i9[0]*ca - i9[2]*sa;
+                    o[1]=zb + i9[1];
+                    o[2]=t->y + i9[0]*sa + i9[2]*ca;
+                    o[3]=i9[3]*ca - i9[5]*sa; o[4]=i9[4]; o[5]=i9[3]*sa + i9[5]*ca;
+                    o[6]=i9[6]; o[7]=i9[7]; o[8]=i9[8]; }
+                c+=gTurWreckM.nv;
+            } else {                                       // glb assente: moncone scuro
+                if(c+36>maxV) break;
+                c=prop_box(buf,c, t->x,t->y, 0.0f,0.0f, zb,
+                           0.38f,0.38f,0.45f, ca,sa, 0.16f,0.15f,0.14f);
+            }
+            continue;
+        }
         // rinculo: envelope lineare 1->0 di anim.c, v² per il calcio secco.
         float rec=anim_value(&gAnim,ANIM_TURRET_RECOIL,id); rec*=rec;
         float ca=cosf(t->ang), sa=sinf(t->ang);
-        TurretModel *tm=&gTurM[t->heavy?1:0];
+        int mk=(t->kind>=0&&t->kind<4)?t->kind:0;
+        TurretModel *tm=&gTurM[mk];
         if(tm->ok){
             if(c + tm->base.nv + tm->gun.nv > maxV) break;
             float zb=ter_z(t->x,t->y);
@@ -1265,7 +1415,12 @@ static int build_turret_mesh(DefGame *g, float *buf, int maxV){
             c=tur_emit(buf,c,&tm->base, t->x,t->y, zb, 1.0f,0.0f,
                        0.42f,0.44f,0.48f);
             float k=0.20f*gTurScale*rec;
-            float gr=0.95f, gg=t->heavy?0.18f:0.55f, gb=0.10f;
+            // canna tinta per tipo: leggera gialla, pesante rossa,
+            // fiamme arancio, acido verde
+            float gr=0.95f, gg=0.55f, gb=0.10f;
+            if(t->kind==TUR_HEAVY){ gg=0.18f; }
+            else if(t->kind==TUR_FLAME){ gr=0.95f; gg=0.35f; gb=0.05f; }
+            else if(t->kind==TUR_ACID){ gr=0.30f; gg=0.85f; gb=0.25f; }
             c=tur_emit(buf,c,&tm->gun, t->x-k*ca, t->y-k*sa, zb, ca,sa,
                        gr,gg,gb);
             continue;
@@ -1938,6 +2093,7 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     // reach the goal beyond -> exposed turrets in a breached ring get assaulted
     // and silenced (def_turret_make_destructible). HP from env, 0 = indestructible.
     float turret_hp = getenv("VAT_HORDE_TURRET_HP")?atof(getenv("VAT_HORDE_TURRET_HP")):250.0f;
+    memset(gTurWasDead,0,sizeof gTurWasDead);         // mondo nuovo: nessun crollo visto
     // contact-siege tuning (def_set_turret_contact): 0 = keep default. Lets the
     // turrets be made tougher/weaker to the swarm at a glance, HP unchanged.
     // Reach di gioco 2.0 m (default defense 0.9): chi passa nel corridoio
@@ -1955,11 +2111,21 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     if(designed){
         for(int k=0;k<sc->n_turret;k++){ const SceneTurret *st=&sc->turret[k];
             DefTurret t={0};
-            t.x=st->x; t.y=st->y; t.ang=0.0f;
-            t.arc_min=-3.1416f; t.arc_max=3.1416f;        // full sweep: engage anything in range
+            t.x=st->x; t.y=st->y;
+            if(st->arc_deg>0.0f){                         // authored aim cone
+                float fc=st->facing_deg*(3.14159265f/180.0f);
+                float ha=st->arc_deg*(3.14159265f/360.0f);
+                t.ang=fc; t.arc_min=fc-ha; t.arc_max=fc+ha;
+                t.aim_tol=DEF_AIM_TOL_STD;                // turn-then-shoot
+            } else {                                      // legacy: full sweep
+                t.ang=0.0f; t.arc_min=-3.1416f; t.arc_max=3.1416f;
+            }
             t.sweep_dir=1; t.sweep_speed=3.0f; t.range=st->range;
-            t.heavy=st->heavy; t.piercing=0;
-            t.fire_period=st->heavy?0.5f:0.10f; t.damage=st->heavy?0.0f:55.0f;
+            // la colonna heavy della scena porta l'intero kind (0/1/2/3)
+            t.kind=st->heavy; t.piercing=0;
+            if(t.kind==TUR_FLAME){ t.fire_period=0.15f; t.damage=6.0f; }
+            else if(t.kind==TUR_ACID){ t.fire_period=0.25f; t.damage=4.0f; }
+            else { t.fire_period=st->heavy?0.5f:0.10f; t.damage=st->heavy?0.0f:55.0f; }
             if(getenv("VAT_HORDE_TFIRE")) t.fire_period=atof(getenv("VAT_HORDE_TFIRE"));
             if(getenv("VAT_HORDE_TDMG"))  t.damage=atof(getenv("VAT_HORDE_TDMG"));
             int tid=def_add_turret(g,&t);
@@ -2274,7 +2440,12 @@ static void prep_ui_layout(int SW,int SH){
 static void prep_icon(const PlItem *it,float cx,float cy,float dim){
     float a=dim;
     if(it->kind==PL_TURRET){
-        float r=it->heavy?0.85f:0.55f, g=it->heavy?0.45f:0.75f, b=it->heavy?0.20f:0.90f;
+        // tinta per tipo: leggera azzurra, pesante arancio, fiamme rosso
+        // fuoco, acido verde (stessa mappa cromatica delle canne 3D)
+        float r=0.55f,g=0.75f,b=0.90f;
+        if(it->heavy==1){ r=0.85f;g=0.45f;b=0.20f; }
+        else if(it->heavy==2){ r=0.95f;g=0.35f;b=0.08f; }
+        else if(it->heavy==3){ r=0.35f;g=0.85f;b=0.25f; }
         ui_quad(cx-9,cy-7,18,14,r*0.5f,g*0.5f,b*0.5f,a);          // base
         ui_quad(cx-2,cy-15,4,10,r,g,b,a);                          // canna
     } else if(it->kind==PL_TRAP){                                  // mina
@@ -2291,11 +2462,18 @@ static void prep_icon(const PlItem *it,float cx,float cy,float dim){
 // pannello info: 1-2 stat leggibili per la voce selezionata (§3)
 static void prep_info_lines(const PlItem *it,char *l1,int n1,char *l2,int n2){
     if(it->kind==PL_TURRET){
-        float rng=it->range>0?it->range:40.0f;
-        float per=it->fire_period>0?it->fire_period:(it->heavy?0.5f:0.12f);
-        snprintf(l1,n1,"%s - %d$",it->heavy?"TORRETTA PESANTE":"TORRETTA LEGGERA",it->cost);
-        snprintf(l2,n2,"GITTATA %.0f M - %.1f COLPI/S%s",(double)rng,1.0/per,
-                 it->heavy?" - SMEMBRA":"");
+        // default per tipo allineati a place.c commit_turret
+        static const char *tn[4]={"TORRETTA LEGGERA","TORRETTA PESANTE",
+                                  "LANCIAFIAMME","LANCIA ACIDO"};
+        static const float td[4][2]={{40.0f,0.12f},{40.0f,0.5f},
+                                     {12.0f,0.15f},{18.0f,0.25f}};
+        int k=(it->heavy>=0&&it->heavy<4)?it->heavy:0;
+        float rng=it->range>0?it->range:td[k][0];
+        float per=it->fire_period>0?it->fire_period:td[k][1];
+        snprintf(l1,n1,"%s - %d$",tn[k],it->cost);
+        const char *fx = (k==1)?" - SMEMBRA":(k==2)?" - INCENDIA (AREA)"
+                         :(k==3)?" - SCIOGLIE (AREA)":"";
+        snprintf(l2,n2,"GITTATA %.0f M - %.1f COLPI/S%s",(double)rng,1.0/per,fx);
     } else if(it->kind==PL_TRAP){
         snprintf(l1,n1,"MINA - %d$",it->cost);
         snprintf(l2,n2,"ESPLODE AL CONTATTO - RAGGIO %.0f M",
@@ -2427,6 +2605,7 @@ static int strikes_ui_click(float mx, float my, int SW, int SH) {
 // costo irrilevante, niente raycast contro le mesh.
 static int gHovOn=0; static char gHovLabel[64];
 static float gHovHp=0, gHovHpMax=0;     // hp_max<=0 = senza barra (indistruttibile)
+static int gHovTurret=-1;               // torretta sotto il cursore -> cono a terra
 #define HOVER_TURRET_H 1.9f             // altezza cliccabile della torretta
 #define HOVER_STRUCT_H 2.8f             // muri/barriere/nucleo (H del render)
 #define HOVER_SCAN_TOP 8.0f             // quota massima scandita (prop alti)
@@ -2439,12 +2618,15 @@ static int hover_resolve(const Scene *sc, DefGame *g, float wx, float wy, float 
             float dx=t->x-wx, dy=t->y-wy, d=dx*dx+dy*dy;
             if(d<bd){ bd=d; best=i; } }
         if(best>=0){ DefTurret *t=def_turret(g,best);
-            snprintf(gHovLabel,sizeof gHovLabel,"Torretta %s",t->heavy?"pesante":"leggera");
+            { static const char *kn[4]={"leggera","pesante","lanciafiamme","acido"};
+              snprintf(gHovLabel,sizeof gHovLabel,"Torretta %s",
+                       kn[(t->kind>=0&&t->kind<4)?t->kind:0]); }
             gHovHp=gHovHpMax=0;                   // indistruttibile: solo il nome
             int cx=(int)(t->x/sc->cell), cy=(int)(t->y/sc->cell);
             int sid=def_cell_struct(g,cx,cy);
             if(sid>=0 && def_struct_is_turret(g,sid)){
                 gHovHp=def_struct_hp(g,sid); gHovHpMax=def_struct_hp_max(g,sid); }
+            gHovTurret=best;
             gHovOn=1; return 1; } }
     int cx=(int)(wx/sc->cell), cy=(int)(wy/sc->cell);
     int id=def_cell_struct(g,cx,cy);
@@ -2874,6 +3056,10 @@ int main(int argc, char **argv){
     { const char *bv=getenv("VAT_HORDE_BULLET_V"); if(bv) gBulletV=atof(bv); }
     load_turret_model("assets/models/light_turret.glb", &gTurM[0]);
     load_turret_model("assets/models/heavy_turret.glb", &gTurM[1]);
+    load_turret_model("assets/models/flame_turret.glb", &gTurM[2]);
+    load_turret_model("assets/models/acid_turret.glb",  &gTurM[3]);
+    load_glb_soup("assets/models/destroyed_turret.glb","torretta distrutta",
+                  gTurScale,&gTurWreckM);   // rottame post-crollo (fallback moncone)
     // base container + mortaio (BASE_DESIGN §3/§5): solo parsing CPU, il
     // rendering passa dal buffer strutture (build_struct_mesh).
     load_base_model("assets/models/base_and_mortar.glb", &gBaseM);
@@ -2883,12 +3069,16 @@ int main(int argc, char **argv){
     if(gMortMinR<0) gMortMinR=0;
     if(gMortMaxR<gMortMinR+1.0f) gMortMaxR=gMortMinR+1.0f;
 #endif
-    printf("torrette 3D: light=%s heavy=%s (scala %.2f)\n",
-           gTurM[0].ok?"ok":"pilastrino", gTurM[1].ok?"ok":"pilastrino", (double)gTurScale);
+    printf("torrette 3D: light=%s heavy=%s flame=%s acid=%s (scala %.2f)\n",
+           gTurM[0].ok?"ok":"pilastrino", gTurM[1].ok?"ok":"pilastrino",
+           gTurM[2].ok?"ok":"pilastrino", gTurM[3].ok?"ok":"pilastrino",
+           (double)gTurScale);
     int turCap=def_turret_count(g); if(turCap<NT) turCap=NT;   // >= tracer's NT cap
     // verts/torretta: pilastrino=30, oppure la parte più grossa di un modello glb
-    int turVpe=30;
-    for(int m=0;m<2;m++) if(gTurM[m].ok){ int v=gTurM[m].base.nv+gTurM[m].gun.nv; if(v>turVpe)turVpe=v; }
+    // (il rottame post-crollo conta anche lui: box fallback = 36)
+    int turVpe=36;
+    for(int m=0;m<4;m++) if(gTurM[m].ok){ int v=gTurM[m].base.nv+gTurM[m].gun.nv; if(v>turVpe)turVpe=v; }
+    if(gTurWreckM.nv>turVpe) turVpe=gTurWreckM.nv;
     int turMaxV=turCap*turVpe;
     float *turBuf=malloc((size_t)turMaxV*9*sizeof(float));
     GLuint turVao,turVbo; glGenVertexArrays(1,&turVao);glBindVertexArray(turVao);
@@ -3036,8 +3226,11 @@ int main(int argc, char **argv){
                     if(fr<0) fr=0;                        // posa mancante (raro/crawler): cella inerte
                     int col=v*VAT_CORPSE_NPOSE+p;
                     for(int o=0;o<nout;o++){
-                        // riga o = outfit base; bake con la versione INSANGUINATA (o+16)
-                        float one[14]={0,0,0, 0, 1.0f, (float)fr,(float)fr,0, (float)(o+16), 0.55f,0.5f,0.5f, 0,0};
+                        // riga o = outfit base; bake con la versione INSANGUINATA
+                        // (o+16), TRANNE gli elementali 14/15 (carbonizzato/
+                        // sciolto): terminali, righe 30/31 non autorate.
+                        int bo=(o==14||o==15)?o:o+16;
+                        float one[14]={0,0,0, 0, 1.0f, (float)fr,(float)fr,0, (float)bo, 0.55f,0.5f,0.5f, 0,0};
                         glViewport(col*CORPSE_CELL,o*CORPSE_CELL,CORPSE_CELL,CORPSE_CELL);
                         glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferSubData(GL_ARRAY_BUFFER,0,14*sizeof(float),one);
                         glDrawElementsInstanced(GL_TRIANGLES,A[v].ni,GL_UNSIGNED_SHORT,0,1);
@@ -3227,7 +3420,7 @@ int main(int argc, char **argv){
                 if(plc.active && !ed.active){
                     // fase A: fuori PREP il piazzamento si chiude da solo
                     if(gMissionOn && !mission_placement_open(&gMission)){
-                        plc.active=0;
+                        plc.active=0; gTAimOn=0;
 #ifdef GAME_SHELL
                         plineOn=0; plineChain=0;   // esistono solo nella shell
 #endif
@@ -3276,6 +3469,29 @@ int main(int argc, char **argv){
                         continue;
                     }
 #endif
+                    // torrette: piazzamento DIREZIONALE — LMB (su punto valido)
+                    // ancora la posizione, il drag orienta il cono di mira,
+                    // il rilascio piazza con quel facing (Placement.facing).
+                    // RMB = annulla il gesto in corso, o esce dal piazzamento.
+                    { const PlItem *tsel=pl_selected(&plc);
+                      if(tsel && tsel->kind==PL_TURRET){
+                        if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
+                            if(e.button.button==SDL_BUTTON_LEFT){
+                                if(pl_validate(&plc,g,s)){
+                                    gTAimOn=1; gTAimX=plc.cx; gTAimY=plc.cy; }
+                            } else if(e.button.button==SDL_BUTTON_RIGHT){
+                                if(gTAimOn) gTAimOn=0; else plc.active=0; }
+                        } else if(e.type==SDL_EVENT_MOUSE_BUTTON_UP &&
+                                  e.button.button==SDL_BUTTON_LEFT && gTAimOn){
+                            float dx=plc.cx-gTAimX, dy=plc.cy-gTAimY;
+                            if(dx*dx+dy*dy>=0.09f) gTAimFacing=atan2f(dy,dx);
+                            pl_set_cursor(&plc,gTAimX,gTAimY);  // commit all'ANCORA
+                            plc.facing=gTAimFacing;
+                            if(pl_commit(&plc,g,s)) gStructOn=1;
+                            gTAimOn=0;
+                        }
+                        continue;
+                      } }
                     if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
                         if(e.button.button==SDL_BUTTON_LEFT){ if(pl_commit(&plc,g,s)) gStructOn=1; }
                         else if(e.button.button==SDL_BUTTON_RIGHT){ plc.active=0; }
@@ -3420,7 +3636,7 @@ int main(int argc, char **argv){
                 case SDLK_P:    // piazzamento runtime: attiva/disattiva (budget di prova se 0)
                     if(gMissionOn && !mission_placement_open(&gMission)){
                         printf("placement: solo in PREP (fase A)\n"); break; }
-                    plc.active=!plc.active;
+                    plc.active=!plc.active; gTAimOn=0;
                     if(plc.active && def_budget(g)<=0){ def_set_budget(g,99999); printf("placement ON (budget di prova)\n"); }
                     break;
 #ifdef GAME_SHELL
@@ -3607,15 +3823,26 @@ int main(int argc, char **argv){
                 { int nt=def_turret_count(g);
                   for(int ti=0;ti<nt;ti++){ DefTurret *t=def_turret(g,ti);
                       if(!t->fired || def_turret_disabled(g,ti)) continue;
-                      anim_fire(&gAnim,ANIM_TURRET_RECOIL,ti,0.12f);
                       float ca=cosf(t->ang), sa=sinf(t->ang);
-                      TurretModel *tm=&gTurM[t->heavy?1:0];
+                      int mk=(t->kind>=0&&t->kind<4)?t->kind:0;
+                      TurretModel *tm=&gTurM[mk];
                       float mh=tm->ok?tm->muzzle_h:0.9f, mx=tm->ok?tm->muzzle_x:0.0f;
                       float ox=t->x+ca*mx, oz=t->y+sa*mx, oy=mh+ter_z(t->x,t->y);
-                      float ex=t->x+ca*t->last_t, ez=t->y+sa*t->last_t, ey=mh+ter_z(ex,ez);
-                      tracer_spawn(ox,oy,oz, ex,ey,ez, t->heavy);
                       float mo[3]={ox,oy,oz};
-                      fx_emit(&fx,mo, t->heavy?&MUZZLE_FLASH_HVY_DEF:&MUZZLE_FLASH_DEF, t->ang, 0.35f);
+                      if(t->kind==TUR_FLAME){
+                          // getto continuo: niente tracer, rinculo appena accennato
+                          anim_fire(&gAnim,ANIM_TURRET_RECOIL,ti,0.04f);
+                          fx_emit(&fx,mo,&FLAME_JET_DEF,t->ang,t->cone_half);
+                          fx_emit(&fx,mo,&FLAME_JET_SMOKE_DEF,t->ang,t->cone_half*1.3f);
+                      } else if(t->kind==TUR_ACID){
+                          anim_fire(&gAnim,ANIM_TURRET_RECOIL,ti,0.05f);
+                          fx_emit(&fx,mo,&ACID_JET_DEF,t->ang,t->cone_half);
+                      } else {
+                          anim_fire(&gAnim,ANIM_TURRET_RECOIL,ti,0.12f);
+                          float ex=t->x+ca*t->last_t, ez=t->y+sa*t->last_t, ey=mh+ter_z(ex,ez);
+                          tracer_spawn(ox,oy,oz, ex,ey,ez, t->heavy);
+                          fx_emit(&fx,mo, t->heavy?&MUZZLE_FLASH_HVY_DEF:&MUZZLE_FLASH_DEF, t->ang, 0.35f);
+                      }
                   } }
                 anim_update(&gAnim,FIXED_DT);
                 tracer_step(&fx,FIXED_DT);          // avanza gli streak, scintilla all'arrivo
@@ -3670,6 +3897,59 @@ int main(int argc, char **argv){
                       // mutilazione non emette HIT/stun (vedi defense.c apply_damage).
                       if(wnd[slot]==DW_CRAWLING)        vat_layer_set_variant(vl,slot,CRAWLER_VAR);
                       else if(wnd[slot]==DW_MAIMED_ARM) vat_layer_set_variant(vl,slot,ARM_VAR); } }
+                // incendiati/corrosi (torrette 2.0, Blocco 2): fuoco+fumo (o
+                // fumi verdi acidi) ADDOSSO agli agenti con status elementale,
+                // stile heli (fx_emit_one, zero stato persistente). Ogni agente
+                // emette 1 volta ogni 4 step (~15 Hz): pool FX sotto controllo
+                // anche con centinaia di roghi. Jitter pseudo-random da hash
+                // slot+frame (gli FX sono solo visivi, niente RNG di sim).
+                { const uint8_t *stt=def_status(g); int nn=simp_count(s);
+                  static unsigned stFrame=0; stFrame++;
+                  for(int i=0;i<nn;i++){ int slot=simp_slot_of(s,i);
+                      if(stt[slot]==DST_NONE) continue;
+                      if(((unsigned)slot+stFrame)&3u) continue;
+                      float x=simp_px(s)[i], y=simp_py(s)[i];
+                      unsigned hsh=(unsigned)slot*2654435761u ^ stFrame*0x9E3779B9u;
+                      float jx=((float)(hsh&255u)/255.0f-0.5f)*0.35f;
+                      float jy=((float)((hsh>>8)&255u)/255.0f-0.5f)*0.35f;
+                      float o[3]={x+jx, ter_z(x,y)+0.5f+((float)((hsh>>16)&255u)/255.0f)*0.9f, y+jy};
+                      float vv[3]={jx*2.0f, 1.6f, jy*2.0f};
+                      if(stt[slot]==DST_BURNING){
+                          float c0[4]={1.0f,0.70f,0.18f,0.9f}, c1[4]={0.85f,0.10f,0.02f,0.0f};
+                          fx_emit_one(&fx,o,vv,0.45f,-2.0f,0.8f,c0,c1,0.28f,0.55f,-1,0.2f,false,FX_BLEND_ADD);
+                          if(((hsh>>20)&7u)==0){               // sbuffo di fumo saltuario
+                              float s0[4]={0.15f,0.13f,0.12f,0.35f}, s1[4]={0.10f,0.10f,0.10f,0.0f};
+                              float sv[3]={jx, 1.2f, jy};
+                              fx_emit_one(&fx,o,sv,1.4f,-1.0f,1.0f,s0,s1,0.35f,1.0f,-1,0.6f,false,FX_BLEND_ALPHA);
+                          }
+                      } else {                                 // DST_ACID: fumi verdi
+                          float c0[4]={0.35f,0.85f,0.20f,0.45f}, c1[4]={0.15f,0.45f,0.10f,0.0f};
+                          fx_emit_one(&fx,o,vv,1.0f,-1.2f,1.0f,c0,c1,0.25f,0.75f,-1,0.5f,false,FX_BLEND_ALPHA);
+                      }
+                  } }
+                // crollo torretta (transizione viva->distrutta): sbuffo di fumo
+                // + scintille one-shot, poi un emitter continuo che fuma dal
+                // rottame per TURWRECK_SMOKE_S (il wreck resta a mesh, sopra).
+                { int nt=def_turret_count(g);
+                  if(nt>TUR_DRAW_CAP) nt=TUR_DRAW_CAP;
+                  for(int ti=0;ti<nt;ti++){
+                      int dead=def_turret_disabled(g,ti);
+                      if(dead && !gTurWasDead[ti]){ DefTurret *t=def_turret(g,ti);
+                          float o[3]={t->x, ter_z(t->x,t->y)+0.5f, t->y};
+                          fx_emit(&fx,o,&EXPL_SMOKE_DEF,0.0f,-1.0f);
+                          fx_emit(&fx,o,&SPARK_DEF,0.0f,-1.0f);
+                          fx_emit(&fx,o,&METAL_DEBRIS_DEF,0.0f,-1.0f);   // rottami radiali
+                          fx_start_emitter(&fx,o,&TURWRECK_SMOKE_DEF,TURWRECK_SMOKE_S); }
+                      gTurWasDead[ti]=(uint8_t)dead; } }
+                // zombie a contatto d'una torretta (contact siege): il danno
+                // c'era gia', ora si VEDE — latch della clip d'attacco puntata
+                // all'emplacement (def_contact_turret, fresco da def_update).
+                { int an=simp_count(s); const float *apx=simp_px(s), *apy=simp_py(s);
+                  for(int ai=0;ai<an;ai++){
+                      int aslot=simp_slot_of(s,ai);
+                      int ti=def_contact_turret(g,aslot); if(ti<0) continue;
+                      DefTurret *t=def_turret(g,ti); if(!t) continue;
+                      vat_layer_attack(vl,aslot,t->x-apx[ai],t->y-apy[ai]); } }
                 vat_layer_update(vl,s,FIXED_DT);
                 fx_update(&fx,FIXED_DT,NULL,fx_ground,NULL);   // avanza le gocce di sangue
                 Uint64 t2=SDL_GetPerformanceCounter();
@@ -3930,21 +4210,31 @@ int main(int argc, char **argv){
             } else
 #endif
             {
-                pl_validate(&plc,g,s);                      // colore fresco ogni frame
+                // durante il gesto di mira il ghost resta inchiodato all'ANCORA
+                // (il cursore è a fine drag): posizione e validate vanno lì.
+                float ax=plc.cx, ay=plc.cy;
+                if(gTAimOn && it && it->kind==PL_TURRET){
+                    ax=gTAimX; ay=gTAimY;
+                    float dx=plc.cx-ax, dy=plc.cy-ay;
+                    if(dx*dx+dy*dy>=0.09f) gTAimFacing=atan2f(dy,dx);
+                    float sx=plc.cx, sy=plc.cy;
+                    pl_set_cursor(&plc,ax,ay); pl_validate(&plc,g,s);
+                    pl_set_cursor(&plc,sx,sy);
+                } else pl_validate(&plc,g,s);               // colore fresco ogni frame
                 float r = it ? fmaxf(0.5f, 0.5f*fmaxf(it->w,fmaxf(it->h,it->radius*2.0f))) : 0.6f;
                 float cr = plc.valid?0.20f:0.95f, cg = plc.valid?0.90f:0.18f, cb=0.18f;
-                ov = ed_push_marker(edovl,0,plc.cx,plc.cy,r, cr,cg,cb);
-#ifdef GAME_SHELL
-                if(it && it->kind==PL_TURRET){              // cerchio di gittata (§8)
-                    float R=it->range>0.0f?it->range:40.0f;
-                    const int NSEG=64;
-                    for(int k=0;k<NSEG && ov+6<=EDOVL_MAXV;k++){
-                        float a0=(float)k*6.2831853f/NSEG, a1=(float)(k+1)*6.2831853f/NSEG;
-                        ov=ed_push_bar(edovl,ov,plc.cx+cosf(a0)*R,plc.cy+sinf(a0)*R,
-                                       plc.cx+cosf(a1)*R,plc.cy+sinf(a1)*R,0.3f,cr,cg,cb);
-                    }
+                ov = ed_push_marker(edovl,0,ax,ay,r, cr,cg,cb);
+                if(it && it->kind==PL_TURRET){
+                    // cono di mira (facing±half): segue il drag; prima del
+                    // gesto mostra l'ultima direzione usata. Raggio = gittata
+                    // (default per tipo, allineato a place.c commit_turret).
+                    float R=it->range;
+                    if(R<=0.0f) R=(it->heavy==2)?12.0f:(it->heavy==3)?18.0f:40.0f;
+                    float half=(it->arc_deg>0.0f?it->arc_deg:90.0f)
+                               *(3.14159265f/360.0f);
+                    ov=push_aim_cone(edovl,ov,EDOVL_MAXV,ax,ay,
+                                     gTAimFacing,half,R,cr,cg,cb);
                 }
-#endif
             }
             if(ov){ glDisable(GL_DEPTH_TEST);
                 glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
@@ -3990,7 +4280,7 @@ int main(int argc, char **argv){
         // struttura su tutta la sagoma (facciata e tetto), non solo alla base.
         // (Approssimazione: quote assolute — su terreni collinari il bordo alto
         // può slittare di poco, per un tooltip è irrilevante.)
-        gHovOn=0;
+        gHovOn=0; gHovTurret=-1;
         if(!ed.active && (gApp.state==APP_PREP || gApp.state==APP_ASSAULT) &&
            !drag_cam && !(gAimMort && gApp.state==APP_ASSAULT)){
             if(gApp.state==APP_PREP) prep_ui_layout(SW,SH); else strikes_ui_layout(SW,SH);
@@ -4002,6 +4292,23 @@ int main(int argc, char **argv){
                     if(pick_ray_plane(r0,r1,hplane,&wx,&wy) &&
                        hover_resolve(&sc,g,wx,wy,hplane)) break;
                 }
+            }
+        }
+        // cono di mira della torretta sotto il cursore (ambra, depth off):
+        // rende leggibile a colpo d'occhio arco e gittata delle difese piazzate.
+        if(gHovTurret>=0 && !plc.active){
+            DefTurret *ht=def_turret(g,gHovTurret);
+            if(ht){
+                float fc=0.5f*(ht->arc_min+ht->arc_max);
+                float half=0.5f*(ht->arc_max-ht->arc_min);
+                int ov=push_aim_cone(edovl,0,EDOVL_MAXV,ht->x,ht->y,
+                                     fc,half,ht->range,0.95f,0.70f,0.15f);
+                if(ov){ glDisable(GL_DEPTH_TEST);
+                    glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
+                    glBindVertexArray(ovVao);glBindBuffer(GL_ARRAY_BUFFER,ovVbo);
+                    glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)ov*9*sizeof(float),edovl);
+                    glDrawArrays(GL_TRIANGLES,0,ov);
+                    glEnable(GL_DEPTH_TEST); }
             }
         }
         // overlay shell (title/menu/briefing/debrief + barra di fase): 2D in

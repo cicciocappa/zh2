@@ -214,9 +214,13 @@ void vat_layer_pin_variant(VatLayer *vl,int slot,int variant){
 void vat_layer_set_random_count(VatLayer *vl,int n){
     if(n<1)n=1; if(n>vl->nvar)n=vl->nvar; vl->nrandom=n; }
 /* Ferita visiva: passa l'outfit alla sua riga insanguinata (atlante 4x8,
-   outfit += 16). Idempotente. Vale per qualunque body (tank incluso). */
+   outfit += 16). Idempotente. Vale per qualunque body (tank incluso).
+   Gli outfit ELEMENTALI 14/15 (carbonizzato/sciolto, torrette 2.0) sono
+   TERMINALI: niente variante insanguinata — le righe 30/31 non sono
+   autorate (placeholder verdi/magenta negli atlanti). */
 void vat_layer_make_bloody(VatLayer *vl,int slot){
     if(slot<0||slot>=vl->max) return;
+    if(vl->outfit[slot]==14||vl->outfit[slot]==15) return;
     if(vl->outfit[slot]<16) vl->outfit[slot]=(unsigned char)(vl->outfit[slot]+16);
 }
 /* Fissa l'outfit di uno slot (atlante 4x8 = 32 celle: 0..13 puliti, +16 =
@@ -260,6 +264,18 @@ void vat_layer_force_clip(VatLayer *vl,int slot,int clip_idx){
     if(clip_idx<0){ vl->force_clip[slot]=-1; return; }
     if(clip_idx>=vl->m[vl->var[slot]].nclips) return;
     vl->force_clip[slot]=clip_idx;
+}
+
+/* Latch ESTERNO dell'animazione d'attacco: stesso hold+decay dell'assedio
+   muri (atk[slot]), ma armato dall'host — per gli attacchi che il sensore
+   wall_pressure non vede (contact siege delle torrette). Chiamare ogni frame
+   finche' l'agente attacca, PRIMA di vat_layer_update; (dirx,diry) = verso il
+   bersaglio in coordinate mondo (0,0 = tieni l'heading corrente). */
+void vat_layer_attack(VatLayer *vl, int slot, float dirx, float diry){
+    if(slot<0||slot>=vl->max) return;
+    vl->atk[slot]=ATTACK_HOLD;
+    float l=sqrtf(dirx*dirx+diry*diry);
+    if(l>1e-4f){ vl->hx[slot]=dirx/l; vl->hy[slot]=diry/l; }
 }
 
 /* One-shot HIT flinch su un agente vivo. No-op se il body non ha clip hit

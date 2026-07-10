@@ -1,10 +1,11 @@
 /* test_vat_layer.c — headless verification of the VAT render-layer animation
- * bookkeeping (M6): the HIT one-shot overlay and the DEATH decedent pool. No GL
- * (vat_layer.c only needs sim_particles.h); a synthetic meta decouples it from
- * the baked assets. ATTACK (wall_pressure-driven) is verified visually.
+ * bookkeeping (M6): the HIT one-shot overlay, the external ATTACK latch
+ * (vat_layer_attack — the wall_pressure-driven path is verified visually) and
+ * the DEATH decedent pool. No GL (vat_layer.c only needs sim_particles.h); a
+ * synthetic meta decouples it from the baked assets.
  *
  * Clip layout of the synthetic meta (frames are global VAT rows):
- *   walk  [ 0..10)  idle [10..20)  hit [20..30)  death [30..40)
+ *   walk [0..10)  idle [10..20)  hit [20..30)  death [30..40)  attack [40..50)
  */
 #include "vat/vat_layer.h"
 #include "sim_particles.h"
@@ -19,11 +20,12 @@ static int in_range(float f, int lo, int hi){ return f>=lo && f<hi; }
 int main(void){
     FILE *f=fopen(META,"w");
     if(!f){ printf("FAIL (tmp)\n"); return 1; }
-    fputs("texW=64\ntexH=64\nrowsPerFrame=1\nfps=30\nscale=1\ntotalFrames=40\n"
+    fputs("texW=64\ntexH=64\nrowsPerFrame=1\nfps=30\nscale=1\ntotalFrames=50\n"
           "clip=walk startFrame=0 numFrames=10 duration_s=1 stride_m=1\n"
           "clip=idle startFrame=10 numFrames=10 duration_s=1 stride_m=0\n"
           "clip=hit startFrame=20 numFrames=10 duration_s=0.5 stride_m=0\n"
-          "clip=death startFrame=30 numFrames=10 duration_s=1 stride_m=0\n", f);
+          "clip=death startFrame=30 numFrames=10 duration_s=1 stride_m=0\n"
+          "clip=attack startFrame=40 numFrames=10 duration_s=1 stride_m=0\n", f);
     fclose(f);
 
     int ok=1;
@@ -56,6 +58,24 @@ int main(void){
     int resume_ok = c==1 && in_range(buf[5],0,20);
     printf("hit resumed: gA=%.0f | %s\n", (double)buf[5], resume_ok?"ok":"BAD");
     ok = ok && resume_ok;
+
+    /* --- ATTACK latch (external, vat_layer_attack): the attack clip plays
+     * while the host re-arms it each frame, then decays back (ATTACK_HOLD
+     * 1 s) to locomotion once the host stops calling. --- */
+    for(int k=0;k<30;k++){                       /* > BLEND_DUR: fade completes */
+        vat_layer_attack(vl,slot,1.0f,0.0f);
+        vat_layer_update(vl,s,dt);
+    }
+    c=vat_layer_fill_variant(vl,s,0,buf,64);
+    int atk_ok = c==1 && in_range(buf[5],40,50);
+    printf("attack latched: gA=%.0f | %s\n", (double)buf[5], atk_ok?"ok":"BAD");
+    ok = ok && atk_ok;
+
+    for(int k=0;k<90;k++) vat_layer_update(vl,s,dt);   /* > hold+blend: released */
+    c=vat_layer_fill_variant(vl,s,0,buf,64);
+    int rel_ok = c==1 && in_range(buf[5],0,20);
+    printf("attack released: gA=%.0f | %s\n", (double)buf[5], rel_ok?"ok":"BAD");
+    ok = ok && rel_ok;
 
     /* --- DEATH decedent: persists after the sim agent is gone --- */
     vat_layer_die(vl,slot,5,5,0.30f);
