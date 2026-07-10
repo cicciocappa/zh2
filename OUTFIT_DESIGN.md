@@ -58,24 +58,41 @@
 
 ## 3. I pezzi da costruire
 
-1. **Audit UV** (LO FA L'UTENTE, in corso): per ogni corpo verificare quale
-   file ha le UV giuste; ricordare che conta l'FBX del bake VAT. Annotare
-   qui l'esito per corpo.
-2. **Canale UV "proj" per modello** (una tantum, ~10 min/corpo, in
-   Blender): secondo UV layer — facce rivolte in avanti (per normale) →
-   Project From View da camera orto frontale; facce posteriori → idem dal
-   retro. Salvato nel file del modello (o creato al volo dallo script §3.4
-   via proiezione per normale: da decidere all'implementazione).
-3. **`gfx/outfit_template.py`** (headless): renderizza fronte+retro orto
-   del corpo come outline/silhouette PNG → il template su cui si collagia
-   in GIMP (torso/gambe leggibili invece di isole UV sparse).
-4. **`gfx/outfit_bake.py`** (headless, il cuore): input = modello (FBX
-   rigged, la fonte di verità) + `fronte.png` + `retro.png`; materiale che
-   campiona i collage via UV "proj" con maschera per normale (overlap
-   sfumato fronte/retro ai fianchi), **Emit-bake** sul canale UV vero →
-   `outfit_XX.png`. Bake a 2× + downscale, margine/dilation attivo.
-   Batch: stesso design → tutti i corpi in un colpo (+ modelli maimed con
-   layer sangue). Blender portatile: `~/Scaricati/blender-5.1.0-linux-x64/`
+1. **Audit UV** (FATTO, esito 2026-07-10): `fem_version_obese_uvfix.blend`
+   è la versione corretta della femmina obesa; tutti gli altri `.blend` da
+   texturizzare (man obese, children, i 2 maimed) hanno la UV map corretta.
+   Gli FBX rigged restano la fonte di verità (coincidono col bake VAT):
+   il tool parte dagli FBX.
+2. **Canale UV "proj" per modello** — RISOLTO: generato AL VOLO da
+   `outfit_bake.py` (`gfx/outfit_common.py`, layer `proj_front`/`proj_back`
+   da coordinate world in rest pose), niente lavoro manuale per corpo.
+   L'inquadratura (`Framing`) è condivisa con `outfit_template.py`: quel
+   che dipingi sul template atterra sul corpo pixel-per-pixel.
+3. **`gfx/outfit_template.py`** — FATTO (v1, 2026-07-10): render Workbench
+   fronte+retro (rest pose, cavity+outline, sfondo alpha, default 1024²).
+   Il retro è "il personaggio girato": la manica dipinta a sinistra in
+   entrambe le viste resta sullo stesso braccio.
+4. **`gfx/outfit_bake.py`** — FATTO (v1 + batch, 2026-07-10): UV proj al
+   volo, maschera per normale con overlap sfumato (`--soft`, default 0.25),
+   Emit-bake Cycles sul canale UV vero (bake a 2× + downscale, margin
+   dilation), `--blood-front/--blood-back` = layer sangue alpha-over per i
+   maimed e le varianti +16, `--preview` = render fronte/retro col tile
+   bakato (verifica a occhio). Verificato su femmina obesa E children con
+   collage sintetico a bande: colori giusti fronte/retro, marker sul
+   braccio al pixel giusto, stesso design → stesse altezze relative sui
+   due corpi. PRIMO COLLAGE VERO (tuta blu, femmina obesa) verificato
+   dall'utente: convincente. **Batch** (`--designs dir --out-dir dir`, un
+   solo lancio Blender per corpo): scansiona `NN_fronte.png`+`NN_retro.png`
+   (NN = indice tile 00..13) → `outfit_NN.png`; se la cartella ha anche
+   `sangue_fronte.png`+`sangue_retro.png` (RGBA, dipinto una volta sul
+   template) baka anche la variante insanguinata `outfit_NN+16.png`.
+   Tile bit-identici al bake singolo (regressione verificata). I collage
+   SORGENTE vivono versionati in `gfx/outfit_src/<corpo>/` (gfx/out/ è
+   gitignored). Atlas finale: `vat/atlas_tiles.py join
+   gfx/out/outfits_<corpo> assets/zombies/zombie_<corpo>_diffuse.png`.
+   Tile 14/15 (carbonizzato/corroso): come design `14_`/`15_` oppure tile
+   fatti a mano copiati nella out-dir prima del join (i loro insanguinati
+   sono 30/31). Blender portatile: `~/Scaricati/blender-5.1.0-linux-x64/`
    (su questo pc; sull'altro verificare il path).
 5. **`gfx/outfit_grade.py`** (PIL/ImageMagick): grading globale finale su
    tutte le diffuse (desaturazione X%, scurimento Y%). La "manopola del
@@ -90,20 +107,22 @@
 
 ## 5. Ordine di lavoro alla ripresa
 
-1. Esito audit UV dell'utente (§3.1) → si sa quali corpi sono a posto.
-2. `outfit_bake.py` con banco di prova la **femmina obesa** (il corpo che
-   serve adesso, e quello col .blend divergente: bakare dall'FBX lo prova).
-3. Template (§3.3) e primo design condiviso proiettato su 2-3 corpi →
-   **verifica visiva dell'utente** (regola di progetto).
-4. Batch dei 14 design sui corpi mancanti (obesi, children) + maimed con
-   sangue (§2.4).
-5. Grading globale (§3.5) per ultimo.
+1. ~~Audit UV~~ · ~~`outfit_bake.py` su femmina obesa~~ · ~~template +
+   primo collage vero verificato dall'utente~~ — FATTI (2026-07-10).
+   Precisazione utente: i design NON si condividono tra corpi — ogni
+   corpo avrà i suoi 14 collage (il batch resta capace di riusarli).
+2. L'utente crea i restanti 13 collage della femmina obesa
+   (`gfx/outfit_src/fem_obese/NN_fronte/retro.png`) + il layer
+   `sangue_fronte/retro.png`; ritocchi finali (macchie, strappi) a mano
+   sui collage o sui tile. Batch → 28 tile → +14/15 speciali → join atlas.
+3. Stessa trafila per gli altri corpi (man obese, children, tank, maimed).
+4. Grading globale (§3.5) per ultimo.
 
 ## 6. Questioni aperte
 
-- Dove vivono esattamente gli FBX rigged per corpo (in `blend/`?) e quali
-  hanno le UV corrette → esito audit utente.
-- UV "proj" salvata nei file vs generata al volo dallo script (§3.2).
+- ~~Dove vivono gli FBX rigged e quali hanno le UV corrette~~ → audit
+  chiuso (§3.1): FBX rigged in `blend/`, tutti a posto.
+- ~~UV "proj" salvata nei file vs generata al volo~~ → al volo (§3.2).
 - I 3 set già fatti a mano (maschio/femmina/gonna) restano in spazio UV
   nativo: convivono col nuovo flusso senza modifiche; eventualmente si
   RI-generano col tool solo se un giorno serve uniformarli.
