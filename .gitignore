@@ -77,3 +77,4 @@ test_traps
 progress.txt
 # audio single-header (lo scarica l'utente)
 vat/miniaudio.h
+*.blend1
