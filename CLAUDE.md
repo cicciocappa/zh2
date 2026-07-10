@@ -434,6 +434,14 @@ eseguibili si lanciano dalla root del progetto.
   Budget $ (PREP) e biomassa (ASSALTO) NON si convertono. `test_bio` +
   `test_turret_mag` (guardia legacy, ciclo N colpi→silenzio→ripresa,
   reload_now, tick flame, lure spento in ricarica, determinismo).
+- `OUTFIT_DESIGN.md` — pipeline texture outfit zombie a BAKE DI PROIEZIONE
+  (DECISO 2026-07-10, da implementare): basta dipingere a mano nello spazio
+  UV scomodo — collage fronte/retro su sagoma + `gfx/outfit_bake.py`
+  (Blender headless, Emit-bake su UV vere, bersaglio = FBX rigged del bake
+  VAT) → stesso design su tutti i corpi in batch; maimed = stessi design
+  stessi indici + layer sangue (continuità di colore nello swap); grading
+  finale a script. L'utente sta facendo l'audit UV dei file. Piano e
+  decisioni nel doc.
 - `EXPLOSION_DESIGN.md` — esplosioni × mondo (DECISO 2026-07-04, da
   implementare): primitiva condivisa `def_blast` (agenti+strutture+cadaveri
   con falloff unico) + fiction host (burst/incendi/scorch/decal); risposta
