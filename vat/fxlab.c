@@ -11,9 +11,12 @@
 // Effetti (sull'agente vivo): [ ] = cambia body · O = insanguina · H = colpo
 //   (flinch) · M = mutila→crawler · G = schizzo (gib piccolo) · K = morte
 //   (cadavere+decal) · B = morte esplosiva (gib grande) · R = respawn · SPACE
-//   pausa · C = camera libera/ortho · T = texture on/off · ESC = esci.
+//   pausa · C = camera libera/ortho · T = texture on/off · P = relight normale
+//   sagoma · I = sagoma DECAL/RING-IMPOSTOR snap/blend (CORPSE_DESIGN §10.8) ·
+//   0 = elevazione di gioco (0.40) · ESC = esci.
 // Headless: FXLAB_SHOT="<frame>" ./fxlab -> N step, screenshot fxlab_shot.bmp,
-//   esce. FXLAB_CAM="cx,cz,hh,az,el" per fissare la camera.
+//   esce. FXLAB_CAM="cx,cz,hh,az,el" per fissare la camera. FXLAB_IMP=0/1/2
+//   imposta la modalita' sagoma.
 #include <SDL3/SDL.h>
 #include "vat_gl.h"
 #include "vat_layer.h"
@@ -57,6 +60,78 @@ typedef struct { GLuint vao, texP, texN, texD; int ni, hasTex; const VatMeta *M;
 typedef struct { GLuint vao, vbo, ebo, tex; int nidx, hasTex; } Ground;
 
 static float inst[MAXSLOT*14];   /* 12 base + 2 tumble (pitch,roll) */
+
+// BAKE anello impostor sagome-cadavere (CORPSE_DESIGN §10.8, esperimento): N
+// viste azimutali del modello in posa di morte (heading 0) a elevazione fissa
+// RING_EL (= la camera di gioco vincolata), ortho ±RING_HALF centrata su
+// (0, RING_LOOKY, 0). Griglia: colonna = var*NPOSE+posa (come l'atlante
+// top-down), riga = vista k (camera ad azimuth k·2π/N, stessa convenzione della
+// camera runtime: eye = ctr + (sin az, ., cos az)). ALBEDO bakato per UN SOLO
+// outfit (riga insanguinata o+16) e ribakato al volo al cambio outfit (N·cols
+// draw da ~322 tri: costo nullo); NORMAL world a heading 0, outfit-indipendente,
+// bakata una volta. Il relight per heading avviene in corpse_imp.fs.
+#define RINGVIEWS  16       // NON scendere: validato a occhio a 16 (2026-07-12)
+#define RING_CELL  64       // risparmio qui, non sulle viste (idem)
+#define RING_HALF  1.15f     // = CORPSE_HALF del decal piatto
+#define RING_LOOKY 0.35f     // look-at sopra i piedi: centra il corpo disteso nella cella
+#define RING_EL    0.40f     // = GAME_CAM_EL di vat_horde (elevazione di gioco)
+static void ring_bake(Asset *A, int nvar, GLuint bi, GLuint bakeProg,
+                      GLint uVPb, GLint uTSb, GLint uRPFb, GLint uHasb, GLint uModeb,
+                      GLuint ringAlb, GLuint ringNrm, int outfitRow,
+                      int do_albedo, int do_normal){
+    static const char *POSE_PFX[VAT_CORPSE_NPOSE]={"dying","death"};
+    int W=RING_CELL*nvar*VAT_CORPSE_NPOSE, H=RING_CELL*RINGVIEWS;
+    glUseProgram(bakeProg);
+    glUniform1i(glGetUniformLocation(bakeProg,"texPos"),0);
+    glUniform1i(glGetUniformLocation(bakeProg,"texNorm"),1);
+    glUniform1i(glGetUniformLocation(bakeProg,"texDiff"),2);
+    glDisable(GL_BLEND);
+    for(int pass=0;pass<2;pass++){
+        if(pass==0 && !do_albedo) continue;
+        if(pass==1 && !do_normal) continue;
+        GLuint dst = pass?ringNrm:ringAlb;
+        GLuint fbo,depth; glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,dst,0);
+        glGenRenderbuffers(1,&depth);glBindRenderbuffer(GL_RENDERBUFFER,depth);
+        glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_COMPONENT24,W,H);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_RENDERBUFFER,depth);
+        glClearColor(0,0,0,0); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+        glUniform1i(uModeb,pass);
+        for(int k=0;k<RINGVIEWS;k++){
+            float phi=(float)k*6.28318530718f/(float)RINGVIEWS;
+            mat4 cproj,cview,cvp;
+            m_ortho(cproj,-RING_HALF,RING_HALF,-RING_HALF,RING_HALF,-10,10);
+            float rctr[3]={0,RING_LOOKY,0},rup[3]={0,1,0};
+            float reye[3]={rctr[0]+6.0f*cosf(RING_EL)*sinf(phi),
+                           rctr[1]+6.0f*sinf(RING_EL),
+                           rctr[2]+6.0f*cosf(RING_EL)*cosf(phi)};
+            m_lookat(cview,reye,rctr,rup); m_mul(cvp,cproj,cview);
+            glUniformMatrix4fv(uVPb,1,GL_FALSE,cvp);
+            for(int v=0;v<nvar;v++){
+                const VatMeta *M=A[v].M;
+                glUniform2f(uTSb,(float)M->texW,(float)M->texH);glUniform1f(uRPFb,(float)M->rowsPerFrame);
+                glUniform1i(uHasb,A[v].hasTex);
+                glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,A[v].texP);
+                glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,A[v].texN);
+                glActiveTexture(GL_TEXTURE2);glBindTexture(GL_TEXTURE_2D,A[v].texD);
+                glBindVertexArray(A[v].vao);
+                for(int p=0;p<VAT_CORPSE_NPOSE;p++){
+                    int fr=-1;
+                    for(int ci=0;ci<M->nclips;ci++) if(!strncmp(M->clip[ci].name,POSE_PFX[p],5)){
+                        fr=M->clip[ci].startFrame+M->clip[ci].numFrames-1; break; }
+                    if(fr<0) fr=0;   // posa mancante (es. crawler): cella inerte
+                    float one[14]={0,0,0, 0, 1.0f, (float)fr,(float)fr,0, (float)outfitRow, 0.55f,0.5f,0.5f, 0,0};
+                    glViewport((v*VAT_CORPSE_NPOSE+p)*RING_CELL,k*RING_CELL,RING_CELL,RING_CELL);
+                    glBindBuffer(GL_ARRAY_BUFFER,bi);glBufferSubData(GL_ARRAY_BUFFER,0,14*sizeof(float),one);
+                    glDrawElementsInstanced(GL_TRIANGLES,A[v].ni,GL_UNSIGNED_SHORT,0,1);
+                }
+            }
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER,0);
+        glDeleteRenderbuffers(1,&depth);glDeleteFramebuffers(1,&fbo);
+    }
+    glBindVertexArray(0);
+}
 
 // terreno (heightmap render-only) + offset mondo: il footprint del glb può stare
 // a coord negative (origin del .zhm); trasliamo tutto in coord >=0 per la sim e
@@ -540,6 +615,26 @@ int main(int argc, char **argv){
     int normal_lit=0;   // toggle `P`: relighting per-pixel della sagoma (anti-piattume)
     { const char*ne=getenv("FXLAB_NORMAL"); if(ne) normal_lit=atoi(ne); }
 
+    // ring impostor (CORPSE_DESIGN §10.8, toggle `I`): anello di RINGVIEWS viste
+    // a elevazione di gioco al posto del decal piatto. Riusa VAO+instance buffer
+    // del decal (stesso layout: pos+heading, half, colonna, outfit).
+    GLuint riProg=vg_shader("assets/shaders/corpse_imp.vs","assets/shaders/corpse_imp.fs");
+    GLint uVPri=glGetUniformLocation(riProg,"uVP"), uRightRi=glGetUniformLocation(riProg,"uRight"),
+          uUp2Ri=glGetUniformLocation(riProg,"uUp2"), uToCamRi=glGetUniformLocation(riProg,"uToCam"),
+          uLookYRi=glGetUniformLocation(riProg,"uLookY"), uCamAzRi=glGetUniformLocation(riProg,"uCamAz"),
+          uNColsRi=glGetUniformLocation(riProg,"uNCols"), uNViewRi=glGetUniformLocation(riProg,"uNView"),
+          uNOutRi=glGetUniformLocation(riProg,"uNOut"), uBlendRi=glGetUniformLocation(riProg,"uBlendViews");
+    GLuint ringAlb=0, ringNrm=0;
+    int imp_mode=0;      // 0 = decal piatto, 1 = ring snap, 2 = ring blend (env FXLAB_IMP)
+    int ring_outfit=-1;  // riga outfit bakata nell'anello (ribake al cambio)
+    { const char*ie=getenv("FXLAB_IMP"); if(ie) imp_mode=atoi(ie)%3; }
+    { int Wr=RING_CELL*corpseNCols, Hr=RING_CELL*RINGVIEWS;
+      GLuint *rt[2]={&ringAlb,&ringNrm};
+      for(int t=0;t<2;t++){ glGenTextures(1,rt[t]);glBindTexture(GL_TEXTURE_2D,*rt[t]);
+          glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,Wr,Hr,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+          glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+          glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE); } }
+
     // gib (box balistici), flat shader.
 #define GIBMAX 512
     static float gibparam[GIBMAX*10];
@@ -682,6 +777,23 @@ int main(int argc, char **argv){
             glDeleteRenderbuffers(1,&depth);glDeleteFramebuffers(1,&fbo);
         }
     }
+    // anello impostor: bake iniziale (outfit 0 insanguinato = riga 16)
+    ring_bake(A,NVAR,bi,bakeProg,uVPb,uTSb,uRPFb,uHasb,uModeb,ringAlb,ringNrm,16,1,1);
+    ring_outfit=16;
+    // debug: FXLAB_RING_ATLAS=1 dumpa l'anello (alpha 0 -> magenta) e esce
+    if(getenv("FXLAB_RING_ATLAS")){
+        int Wr=RING_CELL*corpseNCols, Hr=RING_CELL*RINGVIEWS;
+        unsigned char *px=malloc((size_t)Wr*Hr*4), *rgb=malloc((size_t)Wr*Hr*3);
+        GLuint rt2[2]={ringAlb,ringNrm}; const char *nm[2]={"ring_alb.bmp","ring_nrm.bmp"};
+        for(int t=0;t<2;t++){
+            glBindTexture(GL_TEXTURE_2D,rt2[t]);
+            glGetTexImage(GL_TEXTURE_2D,0,GL_RGBA,GL_UNSIGNED_BYTE,px);
+            for(int i=0;i<Wr*Hr;i++){ if(px[i*4+3]<8){rgb[i*3]=255;rgb[i*3+1]=0;rgb[i*3+2]=255;}
+                else{rgb[i*3]=px[i*4];rgb[i*3+1]=px[i*4+1];rgb[i*3+2]=px[i*4+2];} }
+            vg_save_bmp(nm[t],Wr,Hr,rgb); printf("[fxlab] %s (%dx%d)\n",nm[t],Wr,Hr);
+        }
+        free(px);free(rgb); return 0;
+    }
 
     // UI immediate-mode (nuklear): pannello body/outfit/effetti.
     NkGL nk; nkgl_init(&nk);
@@ -699,6 +811,9 @@ int main(int argc, char **argv){
     // verifica headless degli FX: FXLAB_FX=N -> al frame N esplode l'agente (gib
     // grande + cadavere + decal), così uno screenshot successivo mostra i pool.
     int fx_frame = getenv("FXLAB_FX") ? atoi(getenv("FXLAB_FX")) : -1; int fx_done=0;
+    // FXLAB_DIE=N -> morte NORMALE al frame N (decedente mesh -> sagoma): per la
+    // verifica headless della sagoma/impostor. Stampa la posizione di morte.
+    int fx_die = getenv("FXLAB_DIE") ? atoi(getenv("FXLAB_DIE")) : -1; int fx_die_done=0;
     int fx_clip = getenv("FXLAB_CLIP") ? atoi(getenv("FXLAB_CLIP")) : -2;  // -2=off: forza una clip (verifica headless override)
     int fx_hit = getenv("FXLAB_HIT") ? atoi(getenv("FXLAB_HIT")) : -1; int fx_hit_done=0; // trigga un hit (verifica crossfade)
     int fx_body = getenv("FXLAB_BODY") ? atoi(getenv("FXLAB_BODY")) : -1;  // pin variante (verifica headless)
@@ -729,6 +844,9 @@ int main(int argc, char **argv){
                 else if(k==SDLK_C) cam_free=!cam_free;
                 else if(k==SDLK_T) useTex=!useTex;
                 else if(k==SDLK_P){ normal_lit=!normal_lit; printf("[fxlab] sagoma-cadavere: %s\n", normal_lit?"NORMAL (relight per-pixel)":"FLAT (bake congelato)"); }
+                else if(k==SDLK_I){ imp_mode=(imp_mode+1)%3; printf("[fxlab] sagoma-cadavere: %s\n",
+                    imp_mode==0?"DECAL PIATTO":(imp_mode==1?"RING IMPOSTOR (snap)":"RING IMPOSTOR (blend 2 viste)")); }
+                else if(k==SDLK_0){ el=RING_EL; printf("[fxlab] camera: elevazione di gioco (%.2f rad)\n",(double)RING_EL); }
                 else if(k==SDLK_LEFTBRACKET && liveSlot>=0){ cur_var=(cur_var+NVAR-1)%NVAR; vat_layer_set_variant(vl,liveSlot,cur_var); }
                 else if(k==SDLK_RIGHTBRACKET && liveSlot>=0){ cur_var=(cur_var+1)%NVAR; vat_layer_set_variant(vl,liveSlot,cur_var); }
                 else if(k==SDLK_O && liveSlot>=0) vat_layer_make_bloody(vl,liveSlot);
@@ -768,6 +886,13 @@ int main(int argc, char **argv){
         if(ui_on) nk_input_end(&nk.ctx);
         if(el<0.08f)el=0.08f; if(el>1.50f)el=1.50f;
 
+        // ring impostor: ribake dell'albedo se l'outfit selezionato e' cambiato
+        // (la sagoma e' sempre la versione insanguinata, come il decal piatto)
+        if(imp_mode>0 && ring_outfit!=ui_outfit+16){
+            ring_bake(A,NVAR,bi,bakeProg,uVPb,uTSb,uRPFb,uHasb,uModeb,ringAlb,ringNrm,ui_outfit+16,1,0);
+            ring_outfit=ui_outfit+16;
+        }
+
         // --- driver scriptato + sim
         if(!paused){
             acc_t += (double)(SDL_GetPerformanceCounter()-prev)/pf;
@@ -798,6 +923,13 @@ int main(int argc, char **argv){
                     float o[3]={gx, ter_z(gx,gy)+1.0f, gy}; fx_emit(&fx,o,&BLOOD_BURST_DEF,0.0f,-1.0f);
                     simp_kill(s,li); respawn_t=1e9f; }
                 fx_done=1; }
+            if(fx_die>=0 && !fx_die_done && frame>=fx_die){ int li=simp_index_of(s,ah);
+                if(li>=0){ int sl=simp_slot_of(s,li);
+                    float gx=simp_px(s)[li],gy=simp_py(s)[li];
+                    printf("[fxlab] FXLAB_DIE @ frame %d: pos (%.2f, %.2f)\n",frame,gx,gy);
+                    vat_layer_die(vl,sl,gx,gy,simp_radius_arr(s)[li]);
+                    simp_kill(s,li); respawn_t=1e9f; }
+                fx_die_done=1; }
             if(fx_clip!=-2){ int li=simp_index_of(s,ah); if(li>=0) vat_layer_force_clip(vl,simp_slot_of(s,li),fx_clip); }
             if(fx_body>=0){ int li=simp_index_of(s,ah); if(li>=0) vat_layer_set_variant(vl,simp_slot_of(s,li),fx_body); }
             if(fx_out>=0){ int li=simp_index_of(s,ah); if(li>=0) vat_layer_set_outfit(vl,simp_slot_of(s,li),fx_out); }
@@ -935,18 +1067,50 @@ int main(int argc, char **argv){
               glDrawArraysInstanced(GL_TRIANGLE_FAN,0,SHADN,nd);
               glDepthMask(GL_TRUE);glDisable(GL_BLEND); } }
 
-        // sagome-cadavere persistenti (quad orientati)
+        // sagome-cadavere persistenti: decal piatto a terra, o ring impostor (I)
         { int nq=vat_layer_fill_corpse_decals(vl,cdecraw,CORPSEDECMAX);
-          for(int i=0;i<nq;i++){ float *r=cdecraw+i*6,*o=cdecinst+i*7;
-              o[0]=r[0]; o[1]=ter_z(r[0],r[1])+0.05f; o[2]=r[1]; o[3]=r[2];   // pos+heading
-              o[4]=CORPSE_HALF*r[3]; o[5]=r[4]; o[6]=r[5]; }                   // half, colonna, outfit
-          if(nq){ glUseProgram(cdProg);glUniformMatrix4fv(uVPcd,1,GL_FALSE,vp);
+          if(nq && imp_mode==0){
+              for(int i=0;i<nq;i++){ float *r=cdecraw+i*6,*o=cdecinst+i*7;
+                  o[0]=r[0]; o[1]=ter_z(r[0],r[1])+0.05f; o[2]=r[1]; o[3]=r[2];   // pos+heading
+                  o[4]=CORPSE_HALF*r[3]; o[5]=r[4]; o[6]=r[5]; }                   // half, colonna, outfit
+              glUseProgram(cdProg);glUniformMatrix4fv(uVPcd,1,GL_FALSE,vp);
               glUniform1f(uNColsCd,(float)corpseNCols); glUniform1f(uNOutCd,(float)corpseNOut);
               glUniform1i(uNormLitCd,normal_lit);
               glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,corpseAlb);
               glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,corpseNrm);
               glUniform1i(glGetUniformLocation(cdProg,"uAlbedo"),0);
               glUniform1i(glGetUniformLocation(cdProg,"uNormal"),1);
+              glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);
+              glBindVertexArray(cdVao);glBindBuffer(GL_ARRAY_BUFFER,cdInst);
+              glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)nq*7*sizeof(float),cdecinst);
+              glDrawArraysInstanced(GL_TRIANGLES,0,6,nq);
+              glDepthMask(GL_TRUE);glDisable(GL_BLEND); }
+          else if(nq){
+              // impostor: ancora a TERRA (la quota del centro-bake la aggiunge il VS)
+              for(int i=0;i<nq;i++){ float *r=cdecraw+i*6,*o=cdecinst+i*7;
+                  o[0]=r[0]; o[1]=ter_z(r[0],r[1]); o[2]=r[1]; o[3]=r[2];
+                  o[4]=CORPSE_HALF*r[3]; o[5]=r[4]; o[6]=r[5]; }
+              // basi del piano di vista: right orizzontale, up2 = right x fwd
+              // (right e fwd sono ortonormali -> up2 gia' unitario)
+              float fwd[3]={ctr[0]-eye[0],ctr[1]-eye[1],ctr[2]-eye[2]};
+              float fl=sqrtf(fwd[0]*fwd[0]+fwd[1]*fwd[1]+fwd[2]*fwd[2]);
+              fwd[0]/=fl; fwd[1]/=fl; fwd[2]/=fl;
+              float rgt[3]={cosf(az),0.0f,-sinf(az)};
+              float up2[3]={ rgt[1]*fwd[2]-rgt[2]*fwd[1],
+                             rgt[2]*fwd[0]-rgt[0]*fwd[2],
+                             rgt[0]*fwd[1]-rgt[1]*fwd[0] };
+              glUseProgram(riProg);glUniformMatrix4fv(uVPri,1,GL_FALSE,vp);
+              glUniform3f(uRightRi,rgt[0],rgt[1],rgt[2]);
+              glUniform3f(uUp2Ri,up2[0],up2[1],up2[2]);
+              glUniform3f(uToCamRi,-fwd[0],-fwd[1],-fwd[2]);
+              glUniform1f(uLookYRi,RING_LOOKY); glUniform1f(uCamAzRi,az);
+              glUniform1f(uNColsRi,(float)corpseNCols); glUniform1f(uNViewRi,(float)RINGVIEWS);
+              glUniform1f(uNOutRi,1.0f);   // anello a outfit singolo (ribake al cambio)
+              glUniform1i(uBlendRi, imp_mode==2);
+              glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,ringAlb);
+              glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,ringNrm);
+              glUniform1i(glGetUniformLocation(riProg,"uAlbedo"),0);
+              glUniform1i(glGetUniformLocation(riProg,"uNormal"),1);
               glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);
               glBindVertexArray(cdVao);glBindBuffer(GL_ARRAY_BUFFER,cdInst);
               glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)nq*7*sizeof(float),cdecinst);

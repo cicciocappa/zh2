@@ -598,3 +598,77 @@ slavata (sprite biancastro) — minore, riguarda i body atipici; (ii) la posa ba
 è sempre l'ultimo frame di `dying`, mentre il decedente vivo può mostrare `death`
 (scelta random per-corpo): micro-incoerenza all'istante della transizione, entrambe
 pose distese; (iii) varietà di posa (più frame/cluster) e fade lento opzionale.
+
+### 10.8 Ring impostor della sagoma — VALIDATO A OCCHIO dall'utente (2026-07-12): è la strada
+
+> **Verdetto (2026-07-12, dopo giudizio visivo in fxlab):** differenza notevole
+> rispetto al decal piatto — il ring impostor è la rappresentazione persistente
+> del cadavere. **16 viste NON negoziabili** (non scendere a 8); la leva di
+> risparmio, se serve, è la **risoluzione della cella** (128 → 96/64), non il
+> numero di viste. Prossimo passo: migrazione in `vat_horde` (tier mesh →
+> impostor su TTL/zoom).
+
+**Contesto.** Con la camera di GIOCO vincolata (decisione 2026-07-08 in
+`vat_horde`: elevazione FISSA `GAME_CAM_EL` 0.40, yaw libero, ortografica, zoom
+clampato) l'insieme delle direzioni di vista reali è un **anello 1D di azimuth**
+a elevazione costante. Un octahedral impostor pieno (dominio 2D di viste,
+pensato per camere libere) sprecherebbe ~90% dell'atlante su elevazioni mai
+viste: la forma giusta qui è il **ring impostor** — N viste azimutali bakate
+all'elevazione di gioco. Sostituisce l'esperimento normal-map di §10.7 in
+roadmap: la normal dà solo shading, il ring dà la **silhouette per azimuth**
+(la parallasse mancante di §10.1, l'artefatto vero del decal piatto).
+
+**Nota ortografica (corretta dall'utente):** in proiezione orto la distanza
+dalla camera NON cambia i pixel — la transizione mesh→impostor→(eventuale decal
+al tier minimo) va decisa su **tier di zoom e/o TTL**, mai su distanza.
+
+**Implementazione fxlab (2026-07-12):**
+- `ring_bake()` in `fxlab.c`: 16 viste × cella 128 px, griglia colonne =
+  var×NPOSE+posa (come §10.7), righe = vista k (camera a azimuth k·2π/16,
+  elevazione `RING_EL` 0.40, ortho ±`RING_HALF` 1.15 centrata su
+  (0, `RING_LOOKY` 0.35, 0)). Due texture: ALBEDO (outfit corrente, riga
+  insanguinata o+16, **ribakata al volo al cambio outfit** — 16×18 draw da
+  ~322 tri, costo nullo) + NORMALE world a heading 0 per vista
+  (outfit-indipendente, bakata una volta). Il lit bakato sarebbe sbagliato per
+  cadaveri ruotati (il sole gli girerebbe attorno): relight per-pixel in
+  `corpse_imp.fs` ruotando la normale per heading, sole NW world-fixed, come
+  il modo NORMAL di §10.7.
+- Selezione vista: `world = Ry(heading)·model` ⇒ azimuth camera nel model
+  frame = `az_cam − heading`; riga = quella vista (snap) o crossfade delle 2
+  adiacenti (`corpse_imp.vs`). In ortho la vista è globale per frame; gli
+  heading random per-corpo desincronizzano gli scatti di vista.
+- Quad billboard nel piano di vista (right/up2 della camera), ancorato a
+  terra + `RING_LOOKY`, spinto verso la camera di 0.6 m (in orto non sposta i
+  pixel, solo la profondità: niente z-fight col terreno). Blend, no
+  depth-write: i corpi (30–40 cm) non occludono mai i vivi — errore accettato v1.
+- Toggle `I` in fxlab: DECAL PIATTO / RING snap / RING blend; `0` = elevazione
+  di gioco; env `FXLAB_IMP=0/1/2`, `FXLAB_DIE=N` (morte normale headless),
+  `FXLAB_RING_ATLAS=1` (dump anello).
+- **Verificato headless**: silhouette/orientamento/posa dell'impostor
+  combaciano con la mesh decedente a due azimuth (Δ90°), rotazione coerente
+  col mondo; parità col decal piatto sulla cella verde della variante child
+  (asset issue nota §10.7-i, non del ring).
+
+**Memoria** (outfit singolo): 18 col × 16 viste × 128² RGBA ≈ 19 MB × 2
+texture. Ogni outfit in più moltiplica solo l'ALBEDO. Decisione outfit
+(2026-07-12): i CADAVERI convergono a **2-3 outfit neutri desaturati**
+(fango+sangue; transizione di colore giocata nella fase MESH del decedente,
+dai colori vivi al neutro) → il moltiplicatore outfit resta piccolo per
+costruzione, e la continuità visiva allo swap mesh→impostor è garantita.
+Manopole qualità: cella (128→192/256 se il close-up lo chiede — lo zoom di
+gioco verrà ulteriormente ristretto), viste (16→8 col blend), celle
+rettangolari (~2.7× di risparmio, il corpo disteso è largo e basso), BC1/BC3.
+
+**Anti-tappeto (deciso 2026-07-12):** per rompere il "tappeto di cadaveri
+tutti nella stessa posa" l'utente authorerà 2 brevi **settle animations**
+(partono dall'ultimo frame di dying/death, arrivano a una posa leggermente
+diversa in pochi frame), giocate nella fase MESH del decedente prima dello
+swap a impostor → pose finali ×2-3 = colonne d'atlante in più, costo lineare
+piccolo. Insieme a heading random + colori neutri, il timbro sparisce.
+
+**Aperto:** (a) pendii — l'elevazione effettiva cambia col terreno inclinato;
+se stona, 2-3 anelli di elevazione attorno a 0.40 (= ottaedrico ridotto);
+(b) migrazione in `vat_horde` col tier: mesh (fresco/TTL) → ring impostor
+(persistente) → eventuale decal piatto solo al tier di zoom minimo;
+(c) in gioco il bake per-outfit può andare offline (estensione della pipeline
+sprite_render/outfit_bake) e compresso.
