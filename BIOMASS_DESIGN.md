@@ -1,229 +1,242 @@
 # Biomassa — economia di partita (design tecnico)
 
-> **STATO: IMPLEMENTATO (2026-07-10).** Meccanica dettata dall'utente il
-> 2026-07-09 (vedi anche GAME_PLAN fase E "biomassa" e Blocco 3 di
-> torrette 2.0, che questo doc assorbe in parte: i kit di upgrade prodotti
-> qui sono la valuta del pannello upgrade del Blocco 3). Moduli: `bio.h/.c`
-> (convertitore), caricatori + `def_struct_repair` in defense.c, `biostock`
-> in scene.c, wiring host in vat_horde (GAME_SHELL). Test: `test_bio`,
-> `test_turret_mag`. Questioni §12 SCIOLTE con l'utente il 2026-07-10:
-> Q1 tank PERSISTE; Q2 mortaio SOLO colpi prodotti, store parte pieno;
-> Q3 riparazione a CLICK sulla struttura (tasto R arma il kit); Q4 ricarica
-> a CLICK sulla torretta; Q5 HUD v1 = barra ASSALTO con card cliccabili +
-> tasto O che cicla l'output; Q6 `biostock N` nel `.scn`, default 1 di ogni
-> munizione (mortaio pieno). Restano per Blocco 3: balance.cfg (§9), pannello
-> upgrade torrette; droni §8 = v2.
+> **STATO: v2 RIDISEGNATA 2026-07-12, da implementare.** La v1 (convertitore
+> a output selezionabile + store per item, dettata il 2026-07-09 e
+> implementata il 2026-07-10) è nel codice e funziona (`bio.c`, caricatori
+> defense, wiring host, `test_bio`, `test_turret_mag`) ma la sua UX è
+> bocciata sul campo: barra d'assalto affollata (azioni del giocatore
+> mescolate alle card di produzione) e il convertitore a output fisso
+> obbliga a sorvegliare lo spreco proprio mentre l'attenzione deve stare
+> sull'orda — micromanagement nel momento sbagliato. La v2 elimina il
+> convertitore: **biomassa = valuta unica, spesa diretta a domanda**.
+> Le parti v1 che SOPRAVVIVONO invariate: caricatori torretta (§5 v1 →
+> qui §5, con default più severi), `def_struct_repair`, rese per body,
+> separazione budget $ / biomassa. Il §13 elenca cosa si smonta.
 
-## 1. Principio
+## 1. Principio (v2)
 
-Ogni zombie ucciso frutta **biomassa**. La biomassa confluisce nell'UNICO
-**convertitore** della base, il cui output è selezionabile dal giocatore in
-qualsiasi momento: kit di riparazione, kit di upgrade, munizioni per
-torrette (4 tipi), colpi di mortaio — estensibile. Lo stoccaggio è
-**cappato per risorsa** (default 3): se il convertitore produce una risorsa
-già al massimo, la biomassa in arrivo è **sprecata**. La pressione di gioco
-è tutta lì: non esiste accumulo passivo, il giocatore deve gestire l'output
-mentre difende.
+Ogni zombie ucciso frutta **biomassa**, che confluisce in un unico
+**serbatoio** con capienza massima (default **500**). A serbatoio pieno i
+kill vanno **sprecati**: la pressione a spendere durante l'assalto resta,
+ma è tutta su UN numero leggibile a colpo d'occhio — niente più output da
+selezionare, niente store per item, niente previsione ("che munizione mi
+servirà tra 30 secondi?").
 
-Le torrette hanno **munizioni infinite ma caricatore limitato**: svuotato
-il caricatore restano inattive per qualche secondo (ricarica automatica).
-Le munizioni prodotte dal convertitore servono a **ricaricare all'istante**
-(azzerano il tempo di ricarica). Il mortaio consuma i colpi prodotti.
+La biomassa si spende **direttamente sulle azioni**, nel momento del
+bisogno:
 
-Due valute, due fasi: il **budget** ($) resta la valuta del PIAZZAMENTO in
-PREP; la **biomassa** è la valuta DURANTE l'assalto. Non si convertono.
+- **MORTAIO** — un colpo costa N biomassa (niente scorte di colpi);
+- **RIPARA** — 1 biomassa = 1 HP su una struttura danneggiata;
+- **REGOLA** — riorienta la direzione principale di una torretta
+  (verbo di gameplay NUOVO: oggi il facing è inchiodato al piazzamento);
+- **ricarica istantanea** — click su una torretta in ricarica = caricatore
+  pieno subito, a costo per kind.
 
-Tutti i parametri (rese, costi, cap, caricatori, tempi) sono **manopole di
-`balance.cfg`** (Blocco 3) e in parte **upgradabili in partita** (§7),
-incluso il convertitore stesso: l'upgrade ricorsivo "100 kill per un kit,
-il kit migliora la conversione, il prossimo ne costa 90" è voluto.
+Gli **upgrade escono dall'assalto**: si comprano a FINE LIVELLO (debrief)
+con la biomassa residua del serbatoio — incluso l'upgrade della capienza
+del serbatoio stesso. Questo crea la tensione strategica voluta: ogni
+colpo di mortaio e ogni riparazione hanno un costo-opportunità (biomassa
+che non diventerà upgrade). Si gioca la partita tattica in assalto e la
+partita strategica nel momento calmo.
 
-## 2. Cosa esiste già (inventario)
+Due valute, due fasi, come in v1: il **budget** ($) resta la valuta del
+PIAZZAMENTO in PREP; la **biomassa** è la valuta dell'assalto (e del
+debrief). Non si convertono.
 
-| Pezzo | Dove | Stato |
-|---|---|---|
-| Kill con corpo/tipo noti | eventi `DEF_EV_DEATH`/`DEF_EV_GIB` (slot, body) + `g->kills` | FATTO — l'host li ascolta già per gib/sangue: la resa per body si aggancia lì |
-| Bounty per kill | GAME_PLAN fase E (mai implementata) | ASSORBITA da questo doc |
-| Torrette con tipo | `DefTurretKind` 0/1/2/3 (light/heavy/flame/acid) | FATTO — mappa 1:1 sui 4 tipi di munizione |
-| Loop di fuoco per torretta | `def_update` (period, `fired`) | FATTO — il caricatore si decrementa lì |
-| Torrette silenziabili | `def_turret_disabled` (crollo) | FATTO — la ricarica è un secondo motivo di silenzio, stesso pattern per il render |
-| Riparazione strutture | `def_struct_damage` (solo danno) | manca il verso opposto (`def_struct_repair`, §10) |
-| Mortaio | BASE_DESIGN §3 (`gStrikes`, GAME_SHELL) | FATTO — oggi spara gratis, prenderà i colpi dallo store |
-| Upgrade torrette (5 assi) | Blocco 3 (deciso, non implementato) | i kit prodotti qui ne diventano la valuta |
-| Cadaveri: TTL + rimozione | pool `simp_corpse` (TTL) + decal | FATTO — i droni (§8) sono SOLO fiction sopra la rimozione che già avviene |
-| balance.cfg hot-reload | Blocco 3 (deciso, non implementato) | tutte le manopole §9 ci finiscono |
+## 2. Cosa cambia rispetto alla v1
 
-Il core sim NON chiede nessuna API nuova. Defense chiede il caricatore
-(§5) e la riparazione; l'economia è un modulo nuovo game-side (§3).
+| Pezzo v1 | Destino v2 |
+|---|---|
+| Convertitore (output selezionato, soglie, `BioProducedFn`) | **ELIMINATO** |
+| Store per item + cap 3 + "STOCCAGGIO PIENO" | **ELIMINATI** (il buffer è il serbatoio) |
+| 7 card cliccabili + tasto O in barra | **ELIMINATI** → 3 pulsanti-verbo (§4) |
+| Item `BIO_AMMO_*` / `BIO_MORTAR` / `BIO_REPAIR` / `BIO_UPGRADE` | **ELIMINATI** → costi diretti in biomassa (§6) |
+| Upgrade ricorsivo in assalto (§7 v1, kit) | **SPOSTATO** al debrief (§7), curva a costi crescenti |
+| Serbatoio (tank) | RESTA, promosso a valuta unica; guadagna il CAP (500) |
+| Rese per body (walker 1, tank 8, obeso 2…) | RESTANO |
+| Caricatori torretta (`mag_size/mag/reload_s/reload_t`) | RESTANO, `reload_s` default 5 → **12 s** (§5) |
+| `def_turret_reload_now` / `def_turret_reloading` | RESTANO (la ricarica manuale li usa pari pari) |
+| `def_struct_repair` | RESTA (la modalità RIPARA lo chiama a flusso) |
+| `biostock N` nel `.scn` | **SOSTITUITO** da `biotank` (§8) |
+| Droni (fiction raccolta, §8 v1) | RESTANO v2+ (invariati: credito al kill, scenografia) |
 
-## 3. Architettura: `bio.c` + caricatori in defense + wiring host
+## 3. Il serbatoio
 
-Tre livelli, come il resto del gioco:
+    tank += resa[body]     a ogni kill, clamp a tank_cap (oltre = SPRECO)
+    tank -= costo          a ogni azione (rifiutata se tank < costo)
 
-- **`bio.h`/`bio.c`** (modulo game-side NUOVO, zero-dep come mission/traps,
-  niente defense/FX dentro): lo stato dell'economia — output selezionato,
-  serbatoio di biomassa grezza, store per item, costi/cap/livelli upgrade.
-  Deterministico, testabile headless. Non sa cosa sia una torretta: parla a
-  item astratti (§6).
-- **defense.c**: il CARICATORE per torretta (§5) + `def_struct_repair`. La
-  verità di gioco resta qui, come per HP e assedio.
-- **host (`vat_horde`)**: il wiring — evento kill → `bio_add(resa[body])`;
-  tasto/click "ricarica ora" → `bio_take(munizione del kind)` →
-  `def_turret_reload_now`; mortaio → `bio_take(BIO_MORTAR)` prima di
-  sparare; kit riparazione → `def_struct_repair`; HUD del convertitore;
-  fiction droni (§8, v2).
+- `tank_cap` default 500, upgradabile al debrief (§7).
+- HUD: barra/numero del serbatoio sempre visibile in assalto; quando un
+  kill viene sprecato (tank al cap) la barra lampeggia — lo spreco resta
+  INFORMATO come in v1, ma non chiede nessuna azione correttiva oltre a
+  "spendi".
+- La biomassa parte da `biotank start` della scena (default 0) e NON si
+  azzera tra PREP e assalto (in PREP semplicemente non arrivano kill).
 
-## 4. Il convertitore
+## 4. La barra d'assalto: solo verbi
 
-Un solo stato, poche regole:
+La riga dei comandi mostra SOLO le azioni del giocatore, ognuna un
+pulsante con costo/stato:
 
-    tank += resa           a ogni kill (se lo store dell'output NON è pieno;
-                           pieno = biomassa SPRECATA, regola utente)
-    tank >= costo[output]  → tank -= costo, store[output] += 1 (istantaneo)
+    [ MORTAIO (M) — 40 bio ]  [ RIPARA (R) — 1 bio/HP ]  [ REGOLA (V) ]
+    [ serbatoio: ███████░░ 340/500 ]
 
-- Il **serbatoio è biomassa grezza**: al cambio di output il progresso
-  RESTA (è lo stesso serbatoio che alimenta la macchina) — proposta §12.Q1.
-- Niente componente temporale in v1: la conversione scatta al superamento
-  della soglia. (Un tempo di lavorazione — e quindi una coda visibile — si
-  può aggiungere dopo, è una manopola in più; i droni §8 daranno comunque
-  latenza percepita alla raccolta.)
-- Lo spreco è INFORMATO: l'HUD mostra "STOCCAGGIO PIENO" quando l'output
-  selezionato è al cap (il giocatore sta buttando biomassa e deve saperlo).
-- Callback `BioProducedFn(item)` per l'host: suono/flash quando esce un
-  item (come gli eventi defense).
+Ogni verbo è una **modalità esclusiva** (attivarne una spegne le altre),
+si esce con RMB o col tasto/click di toggle — pattern già rodato dal
+mortaio v1. In modalità il puntatore cambia **icona disegnata accanto al
+cursore** (quad/glifi del layer UI, niente pipeline asset né SDL cursor):
 
-## 5. Caricatori torretta (defense.c)
+- **MORTAIO** (tasto M): come oggi — X di mira, anelli di gittata, LMB
+  programma il colpo. Unica differenza: al click riuscito `bio_take(costo)`
+  invece del colpo da store; senza biomassa il click rifiuta (suono "no").
+- **RIPARA** (tasto R): icona martello. Il bersaglio si risolve con
+  l'hover-inspect (piani di quota: prende torrette e muri su tutta la
+  sagoma, fix 2026-07-12). **Tieni premuto LMB su una struttura
+  danneggiata → flusso continuo biomassa→HP** a `repair_rate` (default
+  100 HP/s), 1 bio = 1 HP; si ferma da solo a `hp_max`, a serbatoio vuoto,
+  o al rilascio. Il flusso (invece del click one-shot) rende la spesa
+  granulare: con serbatoio 500 e torrette da 250 HP una riparazione piena
+  è mezzo serbatoio, il giocatore deve poter dosare. Mai su strutture
+  crollate (regola v1 invariata: il crollo è definitivo).
+- **REGOLA** (tasto V): icona a V (evoca il cono). Click su una torretta
+  → il cono di mira appare ancorato alla torretta e segue il mouse (stesso
+  gesto e stesso codice del piazzamento direzionale: drag orienta,
+  rilascio committa il nuovo facing; RMB annulla). Gratis in v1 (manopola
+  `adjust_cost` se in taratura girare le torrette gratis si rivelasse
+  troppo forte). Il cono di direzione vive SOLO qui e nel piazzamento:
+  l'hover-inspect non lo mostra più (tolto 2026-07-12, era rumore).
 
-`DefTurret` guadagna quattro campi, tutti con default legacy-safe:
+Fuori da ogni modalità, il click sul mondo resta camera (pan/rotate) con
+un'eccezione: **click su torretta in ricarica = ricarica istantanea**
+(§5) — nessuna modalità dedicata, il bersaglio è autoevidente per via
+della barra di reload.
 
-    mag_size   colpi per caricatore; 0 = INFINITO (legacy: tutti i test M5
-               e le scene esistenti non cambiano di un bit, stesso pattern
-               di aim_tol<=0)
-    mag        colpi rimasti (init = mag_size)
-    reload_s   secondi di inattività a caricatore vuoto (default 5)
-    reload_t   countdown in corso (0 = pronta)
+## 5. Ricarica torrette: la penalità che dà senso alla spesa
 
-Nel loop di fuoco di `def_update`: ogni COLPO decrementa `mag` (per
-flame/acid il "colpo" è l'attivazione a `fire_period` — il getto conta a
-tick, coerente col DoT); `mag == 0` → la torretta NON acquisisce/spara e
-`reload_t = reload_s`; a countdown finito `mag = mag_size`. Il lure (che
-segue `fired`) si spegne da solo durante la ricarica — giusto così: la
-torretta muta non attira.
+Il ciclo v1 (caricatore → 5 s di silenzio → pieno) rendeva la ricarica
+manuale INUTILE: il giocatore non fa in tempo a cliccare che la torretta
+si è già ricaricata da sola. La v2 la rende una decisione:
 
-API nuove:
+- `reload_s` default **12 s** (per kind, in balance.cfg — comunque
+  "molto più di 10": la finestra deve far MALE, una torretta muta per 12
+  secondi sotto pressione è una breccia che si apre).
+- **Barra di reload automatica** sopra la torretta in ricarica:
+  world-space, appare SOLO durante la ricarica e sparisce a caricatore
+  pieno. (La decisione 2026-07-08 contro le barre HP world-space resta
+  valida: quella era informazione permanente e ingombrante, questa è
+  transitoria e actionable.) Il giocatore vede quanto manca e decide:
+  quasi piena → aspetto gratis; appena iniziata e l'orda preme → pago.
+- **Click sulla torretta in ricarica** = `bio_take(costo_kind)` →
+  `def_turret_reload_now` (API v1 invariate). Costi per kind: light 25,
+  heavy 35, flame 30, acid 30 (i numeri della tabella item v1, che erano
+  già "costo in biomassa di una ricarica" — cambia solo che spariscono
+  gli item intermedi).
+- La canna grigia/abbassata durante la ricarica (render v1) resta; il
+  lure spento in ricarica resta (la torretta muta non attira).
 
-    def_turret_reload_now(g, tid)   ricarica ISTANTANEA (l'host la chiama
-                                    dopo aver consumato l'item giusto)
-    def_turret_reloading(g, tid)    secondi restanti (0 = pronta) — per il
-                                    render (canna abbassata/lampeggio) e HUD
+## 6. Costi (default, da tarare in sandbox)
 
-Munizione per kind: light → PROIETTILI, heavy → PROIETTILI PESANTI,
-flame → COMBUSTIBILE, acid → ACIDO. La mappa vive nell'host (bio non
-conosce i kind).
+| Azione | Costo default (biomassa) |
+|---|---|
+| Colpo di mortaio | 40 |
+| Riparazione | 1 / HP (`repair_rate` 100 HP/s in mantenimento) |
+| Ricarica light / heavy / flame / acid | 25 / 35 / 30 / 30 |
+| Regola direzione | 0 (manopola `adjust_cost`) |
 
-## 6. Gli item
+Rese per body invariate dalla v1: walker/runner 1, obeso 2, tank 8
+(tabella per `DefBody` in balance.cfg). Tutti i numeri sono manopole §9.
 
-| Item | Effetto | Costo default (biomassa) | Cap |
-|---|---|---|---|
-| `BIO_AMMO_LIGHT` | ricarica istantanea di una torretta light | 25 | 3 |
-| `BIO_AMMO_HEAVY` | idem, heavy | 35 | 3 |
-| `BIO_AMMO_FUEL` | idem, flame | 30 | 3 |
-| `BIO_AMMO_ACID` | idem, acid | 30 | 3 |
-| `BIO_MORTAR` | un colpo di mortaio | 40 | 3 |
-| `BIO_REPAIR` | kit riparazione: +HP a una struttura | 60 | 3 |
-| `BIO_UPGRADE` | kit upgrade: valuta del pannello Blocco 3 | 100 | 3 |
+## 7. Upgrade a fine livello (debrief)
 
-Resa per body (default, da tarare): walker/runner 1, tank 8 (in
-proporzione agli HP; tabella per `DefBody` in balance.cfg). Numeri tutti
-"default accettabili da tarare in sandbox", come da tradizione (EXPLOSION
-§10.4).
+Al debrief di un livello VINTO, la biomassa residua nel serbatoio si
+spende in un pannello upgrade. Ci vanno:
 
-Riparazione (v1): `def_struct_repair(g, id, hp)` — clampa a `hp_max`,
-**solo strutture NON crollate** (un crollo è definitivo: celle già
-liberate, reroute già avvenuto — "riparare" un muro caduto sarebbe un
-re-piazzamento, e quello è mestiere della PREP). Il targeting UI è §12.Q3.
+- **capienza serbatoio** +100 per acquisto (la meta-risorsa: più margine
+  di manovra al livello dopo);
+- gli assi torrette del Blocco 3 (già decisi, il pannello è lo stesso —
+  la valuta passa dai kit `BIO_UPGRADE` alla biomassa residua).
 
-## 7. Upgrade ricorsivo (la curva)
+Curva a **costi crescenti** (es. serbatoio: 150, poi ×1.5 a livello, in
+balance.cfg) — l'inverso della curva v1 (che scontava): qui la risorsa
+arriva a fiumi e la curva deve frenare, non premiare. La v1 aveva
+floor/tetto anti-degenerazione; qui il freno è la crescita del costo.
 
-I kit `BIO_UPGRADE` si spendono sul pannello torrette del Blocco 3 (5 assi,
-già deciso) E sul convertitore stesso. Upgrade del convertitore (uno per
-kit, livelli successivi):
+Cosa comprano gli acquisti e come persistono lungo la campagna
+(campaign.txt, GAME_APP_DESIGN) è la questione aperta Q2 (§12).
 
-    costo[item] *= k_conv      (default 0.9)     con FLOOR a 0.5·costo_base
-    cap[item]   += 1           (ramo alternativo)  con TETTO a cap_base+3
+## 8. Scene e balance
 
-Il floor/tetto evitano la degenerazione a fine partita (conversione quasi
-gratis = economia rotta); la scelta del ramo (costi vs stoccaggio) è del
-giocatore. Livelli e moltiplicatori in balance.cfg.
+- `.scn`: `biostock N` (v1) **deprecato** — parsato e ignorato con
+  warning, per non rompere le scene esistenti. Nuovo:
 
-## 8. Droni (fiction, v2 — non blocca nulla)
+      biotank [start] [cap]     biomassa iniziale e capienza (default 0, 500)
 
-Il credito biomassa avviene AL KILL, istantaneo (§4): i droni sono pura
-scenografia della raccolta, senza effetto di gioco. Un pool piccolo di
-drone-billboard (o box 3D stile gib) che partono dalla base verso i
-cadaveri freschi, "aspirano" (il cadavere/decal svanisce — la rimozione
-fisica c'è già: TTL del pool corpse) e tornano. NON tocca `danger` (il
-sangue resta e decade da solo, coerente con blood-fear) e NON altera il
-ruolo ostacolo dei cadaveri appena creati (i droni puntano quelli vicini a
-scadenza TTL). Se in futuro si vorrà biomassa legata alla raccolta FISICA
-(rischio/rendimento: cadaveri lontani = biomassa persa), è un cambio di
-regola in bio.c, non di architettura — annotato, non v1.
+- `balance.cfg` (Blocco 3), sezione `[biomass]` v2: rese per body,
+  `tank_cap`, costi azione (mortaio, ricariche per kind, `repair_rate`,
+  `adjust_cost`), curva upgrade (base e moltiplicatore per voce);
+  `[turret]` tiene `mag_size`/`reload_s` per kind (default 12 s).
 
-## 9. balance.cfg (Blocco 3)
-
-Sezione `[biomass]`: rese per body, costi per item, cap per item,
-`k_conv`+floor, cap upgrade stoccaggio; sezione `[turret]` esistente del
-Blocco 3 guadagna `mag_size`/`reload_s` per kind. Hot-reload = si tara a
-occhio in partita, che è il punto del Blocco 3.
-
-## 10. API nuove (tutte game-side)
+## 9. API (game-side; core sim: zero API nuove)
 
 | API | Dove | Note |
 |---|---|---|
-| modulo `bio.h/.c` (`bio_init/set_output/add/take/count/cost/cap/upgrade`) | NUOVO | §4/§6/§7; callback produced; zero-dep |
-| campi `mag_size/mag/reload_s/reload_t` in DefTurret | defense.c | §5; `mag_size 0` = legacy bit-identico |
-| `def_turret_reload_now(g, tid)` | defense.c | ricarica istantanea |
-| `def_turret_reloading(g, tid)` | defense.c | per render/HUD |
-| `def_struct_repair(g, id, hp)` | defense.c | clamp a hp_max, no su crollate |
-| wiring kill→bio, ricarica, mortaio→store, HUD convertitore | vat_horde | §3 |
-| droni | vat_horde | §8, v2, pura fiction |
+| `bio.h/.c` v2: `bio_init(start,cap)`, `bio_add` (ritorna lo sprecato, per il flash HUD), `bio_take(n)`, `bio_tank/cap` | riscrittura | via output/store/item/upgrade-ricorsivo; il modulo resta zero-dep e deterministico |
+| `def_turret_set_facing(g,tid,ang)` | defense.c | REGOLA: trasla `arc_min/arc_max` mantenendo l'ampiezza; `ang` diventa il nuovo centro. La torretta ri-acquisisce da sola |
+| caricatori + `reload_now`/`reloading` + `def_struct_repair` | defense.c | INVARIATI dalla v1 |
+| host: 3 pulsanti-verbo, cursori-icona, riparazione a mantenimento, barra reload world-space, click-ricarica, pannello upgrade nel debrief | vat_horde | §4/§5/§7; si smonta la UI card (§13) |
 
-Core sim: **zero API nuove**.
+## 10. Piano di verifica
 
-## 11. Piano di verifica
+- `test_bio` riscritto (più corto della v1): (1) add accumula e clampa al
+  cap, ritorna lo sprecato esatto; (2) take scala e rifiuta sotto zero;
+  (3) determinismo.
+- `test_turret_mag`: già copre il ciclo colpi→silenzio→ripresa,
+  `reload_now`, tick flame, lure spento, guardia legacy `mag_size 0` —
+  resta valido pari pari (cambia solo il default di `reload_s` nelle
+  scene, non nel test). Caso NUOVO: `def_turret_set_facing` — ampiezza
+  arco conservata, acquisizione nel nuovo settore, determinismo.
+- Banco visivo (scena assalto, caricatori corti): barra di reload che
+  appare/sparisce; click-ricarica che costa; mortaio che rifiuta a
+  serbatoio scarso; riparazione a mantenimento che dosa e si ferma a
+  hp_max; REGOLA che gira una torretta e il fuoco segue; flash di spreco
+  a serbatoio pieno; debrief con pannello upgrade.
 
-- `test_bio.c` (headless): (1) rese — N kill accumulano nel tank, soglia →
-  item, tank scalato del costo esatto; (2) spreco — store al cap + kill →
-  tank invariato (biomassa persa), HUD-flag esposto; (3) cambio output a
-  metà progresso — tank persiste, il nuovo item esce al SUO costo; (4)
-  take — consuma 1, a zero rifiuta; (5) upgrade — costo scende con k_conv,
-  si ferma al floor; ramo cap sale e si ferma al tetto; (6) determinismo —
-  stessa sequenza ⇒ stesso stato.
-- `test_turret_mag` (o caso nuovo in test_defense): (1) mag_size 0 =
-  comportamento legacy INVARIATO (guardia di regressione, confronto
-  kill-count su scenario M5 esistente); (2) mag N → N colpi poi silenzio
-  per reload_s esatti, poi riprende; (3) `reload_now` azzera il countdown e
-  riempie; (4) flame/acid decrementano a tick; (5) il lure si spegne
-  durante la ricarica; (6) determinismo.
-- Banco visivo: scena assalto con 2 torrette a caricatore corto — si
-  osserva il ciclo fuoco/silenzio/ripresa, la ricarica istantanea da store,
-  lo spreco a stoccaggio pieno (HUD), il mortaio che rifiuta senza colpi.
+## 11. Droni (fiction, v2+ — invariato dalla v1)
 
-## 12. Questioni aperte (da sciogliere con l'utente)
+Il credito biomassa avviene AL KILL, istantaneo: i droni restano pura
+scenografia della raccolta (billboard dalla base ai cadaveri freschi,
+"aspirano", tornano). NON toccano `danger` né il ruolo ostacolo dei
+cadaveri. Se un giorno la biomassa dovesse legarsi alla raccolta FISICA
+(cadaveri lontani = biomassa persa), è un cambio di regola in bio.c, non
+di architettura.
 
-1. **Tank al cambio output**: proposta = PERSISTE (è biomassa grezza, §4).
-   Alternativa severa: si azzera (punisce lo switch, ma frustra).
-2. **Mortaio**: consuma SOLO colpi prodotti (proposta: sì — senza colpi non
-   spara; parte con lo store pieno) o ha anche un colpo "gratis" a cooldown
-   lungo?
-3. **Targeting del kit riparazione**: click sulla struttura col kit attivo
-   (stile pennello)? o "ripara la struttura più danneggiata nel raggio
-   base"? La v1 più semplice è il click.
-4. **Ricarica istantanea — input**: click sulla torretta / tasto R su
-   hover? (La torretta in ricarica va evidenziata comunque, §5.)
-5. **HUD convertitore in assalto**: v1 a TASTI (cicla output) + contatori
-   in un angolo; il pannello vero arriva con la UI del Blocco 3/fase G.
-6. **PREP**: il convertitore lavora anche in PREP (kill di prova non
-   esistono, quindi di fatto no) — gli store PARTONO pieni, vuoti, o
-   configurabili per missione? Proposta: configurabile nel `.scn`
-   (`biostock N`), default 1 di ogni munizione.
+## 12. Questioni aperte
+
+1. **Riparazione a mantenimento vs click**: la spec dice mantenimento
+   (flusso, dosabile). Se all'atto pratico il channel risultasse rognoso
+   (eventi mouse + fixed timestep), fallback v1: click = ripara
+   `min(hp_mancanti, tank)` in un colpo. Da decidere in sandbox.
+2. **Persistenza upgrade lungo la campagna**: gli acquisti del debrief
+   valgono solo il livello dopo o per sempre? E la biomassa residua NON
+   spesa si perde (proposta: sì, use-it-or-lose-it — tiene i livelli
+   autocontenuti e rende il pannello una decisione, non un salvadanaio)?
+3. **REGOLA in PREP**: il facing si sceglie già al piazzamento; serve
+   anche il ri-orientamento gratuito in PREP (comodità) o solo in
+   assalto? Proposta: anche in PREP, stesso gesto.
+4. **Costo mortaio vs riparazione**: 40 bio/colpo contro 250 bio per
+   rimettere in piedi una torretta — il rapporto giusto si vede solo
+   giocando; annotare in balance.cfg che sono le due manopole da tarare
+   INSIEME (comprano entrambe "sopravvivenza adesso").
+
+## 13. Smontaggio della v1 (ordine di lavoro)
+
+1. `bio.c/h`: via `bio_set_output/count/cost/cap` per item, store,
+   upgrade ricorsivo, callback produced; dentro `bio_add` con clamp+spreco
+   e `bio_take(n)` su valuta unica. `test_bio` riscritto.
+2. defense.c: solo il default `reload_s` (5 → 12 via host/balance) e
+   `def_turret_set_facing`. Nessun altro tocco.
+3. vat_horde: via le 7 card, il tasto O, i rami upgrade in barra, gli
+   store del mortaio; dentro i 3 pulsanti-verbo + cursori + barra reload
+   + riparazione a mantenimento + REGOLA + pannello debrief.
+4. scene.c: `biotank`, deprecazione `biostock`.
+5. CLAUDE.md e questo doc aggiornati a implementazione fatta.
