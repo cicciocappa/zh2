@@ -1730,7 +1730,8 @@ enum { HELI_IN, HELI_DOWN, HELI_ACT, HELI_UP, HELI_OUT };
 #define HELI_CABLE_FLY 2.4f       // scala del cavo col carico appeso
 #define HELI_CABLE_MIN 0.06f      // cavo ritirato (quasi invisibile)
 #define HELI_ROTOR_W  17.0f       // spin dei rotori (rad/s)
-#define HELI_CAM_HH   60.0f       // half-height camera per le cinematiche (zoom out)
+#define HELI_CAM_HH   30.0f       // half-height camera per le cinematiche (follow)
+#define HELI_CAM_RATE  2.0f       // 1/s: convergenza esponenziale del follow (pos+zoom)
 // camera di GIOCO vincolata (decisione 2026-07-08): elevation FISSA (il ¾ di
 // GFX_DESIGN — si gioca sempre alla stessa inquadratura), yaw libero (per
 // guardare dietro palazzi e muri), zoom clampato (niente close-up sui lowpoly
@@ -1738,8 +1739,8 @@ enum { HELI_IN, HELI_DOWN, HELI_ACT, HELI_UP, HELI_OUT };
 // vat_horde resta libero. Se l'ombra visiva dietro gli statici alti risulta
 // scomoda, alzare l'elevation fissa, non liberarla.
 #define GAME_CAM_EL     0.40f     // rad (~23°, il default storico)
-#define GAME_CAM_HH_MIN 8.0f      // zoom-in massimo (half-height, m)
-#define GAME_CAM_HH_MAX 90.0f     // zoom-out massimo (HELI_CAM_HH ci sta dentro)
+#define GAME_CAM_HH_MIN 12.0f     // zoom-in massimo (half-height, m)
+#define GAME_CAM_HH_MAX 40.0f     // zoom-out massimo (HELI_CAM_HH ci sta dentro)
 static struct {
     int active;                   // 0 spento, 1 = consegna, 2 = estrazione
     int phase; float t;
@@ -2335,6 +2336,7 @@ typedef struct {
     VatLayer *vl; SpawnCtx *spctx; Destruct *dz;
     GLuint obVbo, prVbo; int *obNV, *prNV; int ground_on;
     float *cam_x, *cam_z, *cam_hh; int *running;
+    SDL_Window *win; int *fullscreen;   // per APP_SET_FULLSCREEN (apply live)
     Placement *plc; Traps *traps;
 } ShellHost;
 static ShellHost gHost;
@@ -2395,6 +2397,10 @@ static void shell_do_act(AppAction act){
             /* FALLTHROUGH */
         case APP_ACT_APPLY_SETTINGS:
             au_set_volume((float)gApp.vol_sfx/10.0f,(float)gApp.vol_music/10.0f);
+            // schermo intero: applicato SUBITO (anche dalla schermata opzioni)
+            if(gHost.win && gHost.fullscreen && *gHost.fullscreen!=gApp.fullscreen){
+                *gHost.fullscreen=gApp.fullscreen;
+                SDL_SetWindowFullscreen(gHost.win,gApp.fullscreen); }
             break;
         case APP_ACT_LOAD_LEVEL:    shell_load_level(); break;
         case APP_ACT_START_ASSAULT: gSurviveT=0.0f;
@@ -2410,25 +2416,145 @@ static void shell_do_act(AppAction act){
             // in PREP (stesso percorso dello skip con INVIO).
             if(gHost.sc->has_lz && gHeliM.ok && gLzCore>=0){
                 heli_begin(1,gHost.sc);
-                *gHost.cam_x=gHost.sc->lz_x; *gHost.cam_z=gHost.sc->lz_y;
-                if(*gHost.cam_hh<HELI_CAM_HH) *gHost.cam_hh=HELI_CAM_HH; // zoom out: heli in campo da subito
+                // niente snap: la camera converge sull'heli col follow (vedi
+                // blocco cinematica prima dei vincoli GAME_CAM_*)
             } else shell_do_act(app_input(&gApp,APP_IN_CONFIRM));
             break;
         default: break;
     }
 }
 
-// ---- overlay 2D: quad + testo font8 nel flat.vs + ui.fs (alpha in aNormal.x)
+// ---- overlay 2D: quad + testo nel flat.vs + ui.fs (alpha in aNormal.x,
+// UV dell'atlas font in aNormal.yz — un solo shader e un solo draw call).
+// Font UI VETTORIALE (2026-07-12): assets/fonts/ui.zfnt (atlas A8 + metriche,
+// bakato da un TTF con gfx/font_bake.py — formato in testa allo script).
+// ui_text scala i glifi così che la CAP-HEIGHT combaci con la vecchia cella
+// font8 (FONT8_H·s): le taglie e i layout esistenti restano validi. Se il
+// .zfnt manca si torna al font8 bitmap; i quad pieni puntano al blocco
+// bianco riservato dell'atlas (fallback: texture 1×1 bianca).
+typedef struct { unsigned cp; float adv;
+                 unsigned short x,y,w,h; short ox,oy; } UiGlyph;
+#define UIF_BOLD 0x10000u          // bit di faccia nel codepoint (vedi font_bake.py)
+static struct {
+    int ok; unsigned aw,ah,ng;
+    float px,cap_top,cap_h,ascent,descent;
+    float wu,wv;                    // UV del blocco bianco (quad pieni)
+    UiGlyph *g;
+    int idx[128],idx_b[128];        // ASCII diretto (regular/bold); accenti in scansione
+    GLuint tex;
+} gUiFont;
+static int gUiBold=0;               // faccia corrente di ui_text (0 reg, 1 bold)
+static const UiGlyph* ui_font_glyph(unsigned cp){
+    if(cp<(128u|UIF_BOLD)){
+        if(cp<128){ int k=gUiFont.idx[cp]; return k>=0?&gUiFont.g[k]:NULL; }
+        if((cp&UIF_BOLD) && (cp&~UIF_BOLD)<128){
+            int k=gUiFont.idx_b[cp&~UIF_BOLD]; return k>=0?&gUiFont.g[k]:NULL; }
+    }
+    for(unsigned i=0;i<gUiFont.ng;i++) if(gUiFont.g[i].cp==cp) return &gUiFont.g[i];
+    return NULL;
+}
+static const UiGlyph* ui_font_pick(unsigned cp){   // faccia corrente + fallback regular
+    const UiGlyph *gl=ui_font_glyph(cp|(gUiBold?UIF_BOLD:0u));
+    return (gl||!gUiBold)?gl:ui_font_glyph(cp);
+}
+static void ui_font_load(const char *path){
+    memset(&gUiFont,0,sizeof gUiFont);
+    for(int i=0;i<128;i++){ gUiFont.idx[i]=-1; gUiFont.idx_b[i]=-1; }
+    gUiFont.wu=gUiFont.wv=0.5f;
+    unsigned char *buf=NULL; long len=0;
+    FILE *f=fopen(path,"rb");
+    if(f){ fseek(f,0,SEEK_END); len=ftell(f); fseek(f,0,SEEK_SET);
+        buf=malloc((size_t)len);
+        if(!buf || fread(buf,1,(size_t)len,f)!=(size_t)len){ free(buf); buf=NULL; }
+        fclose(f); }
+    glGenTextures(1,&gUiFont.tex); glBindTexture(GL_TEXTURE_2D,gUiFont.tex);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+    if(buf && len>=44 && !memcmp(buf,"ZFN1",4)){   /* header ZFN1 = 44 byte */
+        const unsigned char *p=buf+4;
+        memcpy(&gUiFont.aw,p,4); memcpy(&gUiFont.ah,p+4,4); p+=8;
+        memcpy(&gUiFont.px,p,4); memcpy(&gUiFont.cap_top,p+4,4);
+        memcpy(&gUiFont.cap_h,p+8,4); memcpy(&gUiFont.ascent,p+12,4);
+        memcpy(&gUiFont.descent,p+16,4); p+=20;
+        unsigned wx,wy; memcpy(&wx,p,4); memcpy(&wy,p+4,4); p+=8;
+        memcpy(&gUiFont.ng,p,4); p+=4;
+        size_t need=44u+(size_t)gUiFont.ng*20u+(size_t)gUiFont.aw*gUiFont.ah;
+        if(gUiFont.ng>0 && gUiFont.cap_h>0.0f && (size_t)len>=need){
+            gUiFont.g=malloc(gUiFont.ng*sizeof(UiGlyph));
+            for(unsigned i=0;i<gUiFont.ng;i++){ UiGlyph *gl=&gUiFont.g[i];
+                memcpy(&gl->cp,p,4); memcpy(&gl->adv,p+4,4);
+                memcpy(&gl->x,p+8,2); memcpy(&gl->y,p+10,2);
+                memcpy(&gl->w,p+12,2); memcpy(&gl->h,p+14,2);
+                memcpy(&gl->ox,p+16,2); memcpy(&gl->oy,p+18,2); p+=20;
+                if(gl->cp<128) gUiFont.idx[gl->cp]=(int)i;
+                else if((gl->cp&UIF_BOLD) && (gl->cp&~UIF_BOLD)<128)
+                    gUiFont.idx_b[gl->cp&~UIF_BOLD]=(int)i; }
+            glPixelStorei(GL_UNPACK_ALIGNMENT,1);
+            glTexImage2D(GL_TEXTURE_2D,0,GL_R8,(GLsizei)gUiFont.aw,(GLsizei)gUiFont.ah,
+                         0,GL_RED,GL_UNSIGNED_BYTE,p);
+            glGenerateMipmap(GL_TEXTURE_2D);
+            glPixelStorei(GL_UNPACK_ALIGNMENT,4);
+            gUiFont.wu=((float)wx+0.5f)/(float)gUiFont.aw;
+            gUiFont.wv=((float)wy+0.5f)/(float)gUiFont.ah;
+            gUiFont.ok=1;
+            printf("font UI: %s (atlas %ux%u, %u glifi, cap %.1f px)\n",
+                   path,gUiFont.aw,gUiFont.ah,gUiFont.ng,(double)gUiFont.cap_h);
+        }
+    }
+    if(!gUiFont.ok){                       // fallback: 1×1 bianca -> font8 bitmap
+        unsigned char w8=255;
+        glPixelStorei(GL_UNPACK_ALIGNMENT,1);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_R8,1,1,0,GL_RED,GL_UNSIGNED_BYTE,&w8);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glPixelStorei(GL_UNPACK_ALIGNMENT,4);
+        fprintf(stderr,"font UI: %s assente/invalido, fallback font8 bitmap\n",path);
+    }
+    free(buf);
+}
 #define UI_MAX_V 120000
 static float *gUiBuf=NULL; static int gUiV=0;
-static void ui_quad(float x,float y,float w,float h,float r,float g,float b,float a){
+static void ui_quad_uv(float x,float y,float w,float h,
+                       float u0,float v0,float u1,float v1,
+                       float r,float g,float b,float a){
     if(gUiV+6>UI_MAX_V) return;
-    float v[6][2]={{x,y},{x+w,y},{x+w,y+h},{x,y},{x+w,y+h},{x,y+h}};
+    float v[6][4]={{x,y,u0,v0},{x+w,y,u1,v0},{x+w,y+h,u1,v1},
+                   {x,y,u0,v0},{x+w,y+h,u1,v1},{x,y+h,u0,v1}};
     for(int i=0;i<6;i++){ float *o=gUiBuf+(size_t)(gUiV+i)*9;
-        o[0]=v[i][0];o[1]=v[i][1];o[2]=0.0f; o[3]=a;o[4]=0;o[5]=0; o[6]=r;o[7]=g;o[8]=b; }
+        o[0]=v[i][0];o[1]=v[i][1];o[2]=0.0f;
+        o[3]=a;o[4]=v[i][2];o[5]=v[i][3]; o[6]=r;o[7]=g;o[8]=b; }
     gUiV+=6;
 }
+static void ui_quad(float x,float y,float w,float h,float r,float g,float b,float a){
+    ui_quad_uv(x,y,w,h,gUiFont.wu,gUiFont.wv,gUiFont.wu,gUiFont.wv,r,g,b,a);
+}
+// decodifica UTF-8 minima (2 byte: bastano per gli accenti del charset bakato)
+static unsigned ui_utf8_next(const unsigned char **pp){
+    unsigned c=*(*pp)++;
+    if(c>=0xC0 && c<0xE0 && **pp){ c=((c&0x1Fu)<<6)|(**pp&0x3Fu); (*pp)++; }
+    return c;
+}
 static void ui_text(float x,float y,float s,const char*str,float r,float g,float b,float a){
+    if(gUiFont.ok){
+        float sc=s*FONT8_H/gUiFont.cap_h;      // cap-height = vecchia cella font8
+        float iw=1.0f/(float)gUiFont.aw, ih=1.0f/(float)gUiFont.ah;
+        float cx=x;
+        for(const unsigned char*p=(const unsigned char*)str;*p;){
+            unsigned cp=ui_utf8_next(&p);
+            if(cp=='\n'){ y+=s*(FONT8_H+3); cx=x; continue; }
+            const UiGlyph *gl=ui_font_pick(cp);
+            if(!gl){ cx+=s*FONT8_ADV; continue; }
+            if(gl->w)
+                ui_quad_uv(cx+(float)gl->ox*sc, y+((float)gl->oy-gUiFont.cap_top)*sc,
+                           (float)gl->w*sc,(float)gl->h*sc,
+                           (float)gl->x*iw,(float)gl->y*ih,
+                           (float)(gl->x+gl->w)*iw,(float)(gl->y+gl->h)*ih,
+                           r,g,b,a);
+            cx+=gl->adv*sc;
+        }
+        return;
+    }
     float cx=x;
     for(const char*p=str;*p;p++){
         if(*p=='\n'){ y+=s*(FONT8_H+3); cx=x; continue; }
@@ -2439,6 +2565,17 @@ static void ui_text(float x,float y,float s,const char*str,float r,float g,float
     }
 }
 static float ui_text_w(float s,const char*str){        // larghezza riga più lunga
+    if(gUiFont.ok){
+        float sc=s*FONT8_H/gUiFont.cap_h, wl=0.0f, best=0.0f;
+        for(const unsigned char*p=(const unsigned char*)str;*p;){
+            unsigned cp=ui_utf8_next(&p);
+            if(cp=='\n'){ if(wl>best)best=wl; wl=0.0f; continue; }
+            const UiGlyph *gl=ui_font_pick(cp);
+            wl += gl ? gl->adv*sc : s*FONT8_ADV;
+        }
+        if(wl>best)best=wl;
+        return best;
+    }
     int n=0,best=0;
     for(const char*p=str;*p;p++){ if(*p=='\n'){ if(n>best)best=n; n=0; } else n++; }
     if(n>best)best=n;
@@ -2446,6 +2583,42 @@ static float ui_text_w(float s,const char*str){        // larghezza riga più lu
 }
 static void ui_text_c(float cxpx,float y,float s,const char*str,float r,float g,float b,float a){
     ui_text(cxpx-ui_text_w(s,str)*0.5f,y,s,str,r,g,b,a);
+}
+// variante BOLD centrata (seconda faccia dell'atlas; senza bold nel .zfnt
+// cade sul regular). Per bold non centrato: gUiBold=1 attorno a ui_text.
+static void ui_text_cb(float cxpx,float y,float s,const char*str,float r,float g,float b,float a){
+    gUiBold=1; ui_text_c(cxpx,y,s,str,r,g,b,a); gUiBold=0;
+}
+
+// ---- immagini UI (title screen, pulsanti menu): PNG RGBA via stb_image,
+// disegnate con flat.vs + uiimg.fs PRIMA del buffer quad/testo (che quindi
+// ci scrive sopra). Coda per-frame, pochi elementi: un draw call ciascuna.
+static struct { GLuint title,btn,btn_hov; int tw,th,bw,bh; } gUiTex;
+#define UI_IMG_MAX 16
+static struct { GLuint tex; float x,y,w,h,r,g,b,a; } gUiImg[UI_IMG_MAX];
+static int gUiImgN=0;
+static GLuint ui_tex_load(const char *path,int *ow,int *oh,int required){
+    int w,h,n; unsigned char *d=stbi_load(path,&w,&h,&n,4);
+    if(!d){ if(required) fprintf(stderr,"ui: %s assente/illeggibile\n",path); return 0; }
+    GLuint t; glGenTextures(1,&t); glBindTexture(GL_TEXTURE_2D,t);
+    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,d);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+    stbi_image_free(d);
+    if(ow)*ow=w; if(oh)*oh=h;
+    printf("ui: %s %dx%d\n",path,w,h);
+    return t;
+}
+static void ui_img(GLuint tex,float x,float y,float w,float h,
+                   float r,float g,float b,float a){
+    if(!tex || gUiImgN>=UI_IMG_MAX) return;
+    gUiImg[gUiImgN].tex=tex;
+    gUiImg[gUiImgN].x=x; gUiImg[gUiImgN].y=y; gUiImg[gUiImgN].w=w; gUiImg[gUiImgN].h=h;
+    gUiImg[gUiImgN].r=r; gUiImg[gUiImgN].g=g; gUiImg[gUiImgN].b=b; gUiImg[gUiImgN].a=a;
+    gUiImgN++;
 }
 
 // ---- barra PREP (PREP_UI_DESIGN §3-§4): 3 tab filtro su PlKind, card voce,
@@ -2621,17 +2794,19 @@ static void prep_bar_draw(int SW,int SH,DefGame *g,float mpx,float mpy){
         char cs[24]; snprintf(cs,sizeof cs,it->kind==PL_BARRICADE?"%d$/M":"%d$",it->cost);
         ui_text_c(r->x+r->w*0.5f,r->y+50,1.5f,cs,tc*0.9f,tc*0.85f,0.35f,1);
     }
+    // pannello info / costo-linea: parte DOPO l'ultima card della tab attiva
+    // (il numero di card cambia per tab e cresce col catalogo — mai fisso)
+    float ix=gPrepCardR[0].x+(float)tb->n*(PREP_CARD_W+8)+12;
     if(gLineOn){                                    // drag di linea: costo live
         char li[64];
         snprintf(li,sizeof li,"LINEA %.1f M - %d$%s",(double)gLineLen,gLineCost,
                  gLineValid?"":(gHost.plc->reason==PL_NOFUNDS?" - BUDGET!":" - OCCUPATO"));
-        ui_text(gPrepCardR[0].x+2*(PREP_CARD_W+8),gPrepCardR[0].y+8,2,li,
+        ui_text(ix,gPrepCardR[0].y+8,2,li,
                 gLineValid?0.30f:0.95f,gLineValid?0.95f:0.25f,0.25f,1);
         ui_text(mpx+16,mpy-20,2,li,gLineValid?0.30f:0.95f,gLineValid?0.95f:0.25f,0.25f,1);
     } else if(sel){                                 // pannello info (§3)
         char l1[80],l2[96];
         prep_info_lines(sel,l1,sizeof l1,l2,sizeof l2);
-        float ix=gPrepCardR[0].x+2*(PREP_CARD_W+8)+12;
         ui_text(ix,gPrepCardR[0].y+8,2,l1,0.95f,0.85f,0.45f,1);
         ui_text(ix,gPrepCardR[0].y+26,2,l2,0.80f,0.80f,0.80f,1);
     }
@@ -2865,6 +3040,26 @@ static void hover_tooltip_draw(float W, float H, float mpx, float mpy){
     }
 }
 
+// pulsanti del menu: colonna sul lato DESTRO del title screen (scelta utente
+// 2026-07-12). Layout condiviso da render e hit test del mouse (mai rect
+// stantii, stesso principio della barra PREP §4).
+static void menu_btn_rect(int i,float W,float H,UiRect *r){
+    float bw=W*0.22f;
+    float bh=(gUiTex.bw>0)?bw*(float)gUiTex.bh/(float)gUiTex.bw:bw*0.28f;
+    if(bh>H*0.11f){ float k=H*0.11f/bh; bh*=k; bw*=k; }   // clamp, aspect intatto
+    float gap=bh*0.30f;
+    float tot=APP_MENU_COUNT*bh+(APP_MENU_COUNT-1)*gap;
+    r->x=W*0.78f-bw*0.5f;
+    r->y=H*0.52f-tot*0.5f+(float)i*(bh+gap);
+    r->w=bw; r->h=bh;
+}
+static void title_bg_draw(float W,float H){    // titlescreen a copertura (crop)
+    if(!gUiTex.title){ ui_quad(0,0,W,H,0.02f,0.02f,0.04f,0.92f); return; }
+    float sc=W/(float)gUiTex.tw;
+    if(sc*(float)gUiTex.th<H) sc=H/(float)gUiTex.th;
+    float iw=(float)gUiTex.tw*sc, ih=(float)gUiTex.th*sc;
+    ui_img(gUiTex.title,(W-iw)*0.5f,(H-ih)*0.5f,iw,ih,1,1,1,1);
+}
 static void shell_build_ui(int SW,int SH,DefGame *g,float mpx,float mpy){
     float W=(float)SW,H=(float)SH;
     AppState st=gApp.state;
@@ -2894,64 +3089,88 @@ static void shell_build_ui(int SW,int SH,DefGame *g,float mpx,float mpy){
                 1,1,1,1);
         return;
     }
-    ui_quad(0,0,W,H,0.02f,0.02f,0.04f,0.72f);           // oscura il mondo fermo
+    // scala UI delle schermate a pieno schermo (title/menu/settings/briefing/
+    // debrief): le taglie storiche sono tarate su 720p, in fullscreen il testo
+    // segue la finestra (i pulsanti/posizioni sono già proporzionali a W/H).
+    // Le barre HUD di gioco (PREP/ASSALTO, cinematiche) restano in pixel.
+    float uk=H/720.0f;
     if(st==APP_TITLE){
-        ui_text_c(W*0.5f,H*0.26f,12,"HORDE",0.85f,0.15f,0.10f,1);
-        ui_text_c(W*0.5f,H*0.26f+12*(FONT8_H+3),3,"SIGNORE, ABBIAMO UN PROBLEMA DI ZOMBIE",
-                  0.75f,0.75f,0.75f,1);
-        ui_text_c(W*0.5f,H*0.74f,3,"PREMI UN TASTO",1,1,1,0.9f);
-    } else if(st==APP_MENU){
-        ui_text_c(W*0.5f,H*0.12f,8,"HORDE",0.85f,0.15f,0.10f,1);
+        title_bg_draw(W,H);
+        if(!gUiTex.title){        // fallback senza immagine: il vecchio titolo testo
+            ui_text_c(W*0.5f,H*0.26f,12*uk,"HORDE",0.85f,0.15f,0.10f,1);
+            ui_text_c(W*0.5f,H*0.26f+12*uk*(FONT8_H+3),3*uk,"SIGNORE, ABBIAMO UN PROBLEMA DI ZOMBIE",
+                      0.75f,0.75f,0.75f,1);
+        }
+        ui_text_cb(W*0.5f,H*0.88f,3*uk,"PREMI UN TASTO",1,1,1,0.9f);
+        return;
+    }
+    if(st==APP_MENU){
+        title_bg_draw(W,H);
+        if(!gUiTex.title) ui_text_c(W*0.5f,H*0.12f,8*uk,"HORDE",0.85f,0.15f,0.10f,1);
         if(gApp.campaign_done)
-            ui_text_c(W*0.5f,H*0.27f,3,"CAMPAGNA COMPLETATA!",0.3f,0.9f,0.3f,1);
-        float s=4,lh=s*(FONT8_H+5),y=H*0.38f;
+            ui_text_cb(W*0.5f,H*0.08f,3*uk,"CAMPAGNA COMPLETATA!",0.3f,0.9f,0.3f,1);
         for(int i=0;i<APP_MENU_COUNT;i++){
             const char *lab=app_menu_label(i);
             int en=app_menu_enabled(&gApp,i),sel=(i==gApp.menu_idx);
-            float w=ui_text_w(s,lab);
-            if(sel) ui_quad(W*0.5f-w*0.5f-18,y-8,w+36,s*FONT8_H+16,0.45f,0.08f,0.06f,0.85f);
-            float c=en?1.0f:0.4f;
-            ui_text_c(W*0.5f,y,s,lab,c,c,c,1);
-            y+=lh;
+            UiRect r; menu_btn_rect(i,W,H,&r);
+            if(gUiTex.btn){
+                // hover: pulsante_hover.png se c'è, altrimenti la stessa
+                // texture schiarita; disabilitato = spento
+                GLuint tex=(sel&&gUiTex.btn_hov)?gUiTex.btn_hov:gUiTex.btn;
+                float lum=en?((sel&&!gUiTex.btn_hov)?1.35f:1.0f):0.45f;
+                ui_img(tex,r.x,r.y,r.w,r.h,lum,lum,lum,1);
+            } else
+                ui_quad(r.x,r.y,r.w,r.h,sel?0.45f:0.16f,0.08f,0.06f,0.85f);
+            // etichetta agganciata all'ALTEZZA del pulsante (cap ~42%):
+            // scala con la finestra insieme al pulsante stesso
+            float s=r.h*0.42f/FONT8_H,c=en?1.0f:0.5f;
+            ui_text_cb(r.x+r.w*0.5f,r.y+(r.h-s*FONT8_H)*0.5f,s,lab,c,c,c,1);
         }
-        ui_text_c(W*0.5f,y+lh*0.5f,2,"FRECCE = SCEGLI   INVIO = CONFERMA",0.6f,0.6f,0.6f,1);
-    } else if(st==APP_SETTINGS){
-        ui_text_c(W*0.5f,H*0.16f,6,"SETTINGS",0.9f,0.9f,0.9f,1);
-        float s=3.5f,lh=s*(FONT8_H+6),y=H*0.38f;
+        { UiRect r; menu_btn_rect(APP_MENU_COUNT-1,W,H,&r);
+          ui_text_c(r.x+r.w*0.5f,r.y+r.h+14*uk,2*uk,"FRECCE O MOUSE = SCEGLI   INVIO O CLICK = CONFERMA",
+                    0.75f,0.75f,0.75f,0.9f); }
+        return;
+    }
+    ui_quad(0,0,W,H,0.02f,0.02f,0.04f,0.72f);           // oscura il mondo fermo
+    if(st==APP_SETTINGS){
+        ui_text_c(W*0.5f,H*0.16f,6*uk,"SETTINGS",0.9f,0.9f,0.9f,1);
+        float s=3.5f*uk,lh=s*(FONT8_H+6),y=H*0.38f;
         for(int i=0;i<APP_SET_COUNT;i++){
             char row[64];
-            if(i==APP_SET_SFX)        snprintf(row,sizeof row,"VOLUME SFX     < %2d >",gApp.vol_sfx);
-            else if(i==APP_SET_MUSIC) snprintf(row,sizeof row,"VOLUME MUSICA  < %2d >",gApp.vol_music);
+            if(i==APP_SET_SFX)        snprintf(row,sizeof row,"VOLUME SFX      < %2d >",gApp.vol_sfx);
+            else if(i==APP_SET_MUSIC) snprintf(row,sizeof row,"VOLUME MUSICA   < %2d >",gApp.vol_music);
+            else if(i==APP_SET_FULLSCREEN)
+                                      snprintf(row,sizeof row,"SCHERMO INTERO  < %s >",gApp.fullscreen?"SI":"NO");
             else                      snprintf(row,sizeof row,"INDIETRO");
             int sel=(i==gApp.set_idx);
             float w=ui_text_w(s,row);
-            if(sel) ui_quad(W*0.5f-w*0.5f-14,y-7,w+28,s*FONT8_H+14,0.45f,0.08f,0.06f,0.85f);
+            if(sel) ui_quad(W*0.5f-w*0.5f-14*uk,y-7*uk,w+28*uk,s*FONT8_H+14*uk,0.45f,0.08f,0.06f,0.85f);
             ui_text_c(W*0.5f,y,s,row,1,1,1,1);
             y+=lh;
         }
         if(!au_backend_live())
-            ui_text_c(W*0.5f,y+lh*0.5f,2,"AUDIO MUTO: MANCA VAT/MINIAUDIO.H (VEDI GAME_APP_DESIGN.MD)",
+            ui_text_c(W*0.5f,y+lh*0.5f,2*uk,"AUDIO MUTO: MANCA VAT/MINIAUDIO.H (VEDI GAME_APP_DESIGN.MD)",
                       0.7f,0.6f,0.3f,1);
     } else if(st==APP_BRIEFING){
         char hdr[96];
         snprintf(hdr,sizeof hdr,"MISSIONE %d: %s",gApp.cur+1,(L&&L->name[0])?L->name:"(SENZA NOME)");
-        ui_text(W*0.14f,H*0.16f,4,hdr,0.95f,0.78f,0.30f,1);
-        ui_text(W*0.14f,H*0.28f,2.5f,L?L->brief:"",0.92f,0.92f,0.92f,1);
+        ui_text(W*0.14f,H*0.16f,4*uk,hdr,0.95f,0.78f,0.30f,1);
+        ui_text(W*0.14f,H*0.28f,2.5f*uk,L?L->brief:"",0.92f,0.92f,0.92f,1);
         char obj[80];
         snprintf(obj,sizeof obj,"OBIETTIVO: RESISTI %d SECONDI%s",
                  (int)(L?L->survive_s:0),(L&&L->core_hp>0)?" - DIFENDI IL NUCLEO":"");
-        ui_text(W*0.14f,H*0.60f,3,obj,0.75f,0.88f,1.0f,1);
-        ui_text_c(W*0.5f,H*0.80f,3,
+        ui_text(W*0.14f,H*0.60f,3*uk,obj,0.75f,0.88f,1.0f,1);
+        ui_text_c(W*0.5f,H*0.80f,3*uk,
                   gApp.level_ready?"INVIO PER INIZIARE":"CARICAMENTO...",1,1,1,0.9f);
     } else if(st==APP_DEBRIEF){
         const char *T=gApp.won?"MISSIONE COMPIUTA":"POSTAZIONE PERSA";
-        ui_text_c(W*0.5f,H*0.32f,6,T,gApp.won?0.30f:0.90f,gApp.won?0.90f:0.20f,0.20f,1);
+        ui_text_c(W*0.5f,H*0.32f,6*uk,T,gApp.won?0.30f:0.90f,gApp.won?0.90f:0.20f,0.20f,1);
         char k[64]; snprintf(k,sizeof k,"KILLS %d",def_kills(g));
-        ui_text_c(W*0.5f,H*0.50f,3,k,0.9f,0.9f,0.9f,1);
+        ui_text_c(W*0.5f,H*0.50f,3*uk,k,0.9f,0.9f,0.9f,1);
         const char *P=gApp.won?((gApp.cur+1>=gApp.nlevels)?"INVIO PER IL MENU"
                                                           :"INVIO: PROSSIMO LIVELLO")
                               :"INVIO: RIPROVA";
-        ui_text_c(W*0.5f,H*0.66f,3,P,1,1,1,0.9f);
+        ui_text_c(W*0.5f,H*0.66f,3*uk,P,1,1,1,0.9f);
     }
 }
 #endif /* GAME_SHELL */
@@ -3080,6 +3299,12 @@ int main(int argc, char **argv){
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER,1);SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE,24);
     SDL_Window*win=SDL_CreateWindow("vat_horde",SW,SH,SDL_WINDOW_OPENGL|SDL_WINDOW_RESIZABLE);
     int fullscreen=0;
+#ifdef GAME_SHELL
+    // opzione SCHERMO INTERO persistita (progress.txt): applicata all'avvio.
+    // Mai in headless: gli screenshot restano 1280x720 deterministici.
+    if(gApp.fullscreen && !shot && !bench_meas){
+        fullscreen=1; SDL_SetWindowFullscreen(win,1); }
+#endif
     SDL_GLContext ctx=SDL_GL_CreateContext(win);
     if(!ctx||!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress)){fprintf(stderr,"GL init fail\n");return 1;}
     printf("GL %s\n",glGetString(GL_VERSION));
@@ -3539,10 +3764,29 @@ int main(int argc, char **argv){
     gHost.vl=vl; gHost.spctx=&spctx; gHost.dz=&dz;
     gHost.obVbo=obVbo; gHost.prVbo=prVbo; gHost.obNV=&obNV; gHost.prNV=&prNV;
     gHost.ground_on=groundOn; gHost.cam_x=&cx; gHost.cam_z=&cz; gHost.cam_hh=&hh; gHost.running=&running;
+    gHost.win=win; gHost.fullscreen=&fullscreen;
     gHost.plc=&plc; gHost.traps=&traps; prep_tabs_build(&plc);   // barra PREP: indice tab->voci (§7)
     gUiBuf=malloc((size_t)UI_MAX_V*9*sizeof(float));
+    ui_font_load("assets/fonts/ui.zfnt");   // font vettoriale (fallback font8)
     GLuint uiProg=vg_shader("assets/shaders/flat.vs","assets/shaders/ui.fs");
     GLint uVPui=glGetUniformLocation(uiProg,"uVP");
+    glUseProgram(uiProg);
+    glUniform1i(glGetUniformLocation(uiProg,"uTex"),0);
+    // immagini UI: title screen + pulsanti (hover opzionale), shader dedicato
+    gUiTex.title  =ui_tex_load("assets/ui/titlescreen.png",&gUiTex.tw,&gUiTex.th,1);
+    gUiTex.btn    =ui_tex_load("assets/ui/pulsante.png",&gUiTex.bw,&gUiTex.bh,1);
+    gUiTex.btn_hov=ui_tex_load("assets/ui/pulsante_hover.png",NULL,NULL,0);
+    GLuint imgProg=vg_shader("assets/shaders/flat.vs","assets/shaders/uiimg.fs");
+    GLint uVPimg=glGetUniformLocation(imgProg,"uVP");
+    glUseProgram(imgProg);
+    glUniform1i(glGetUniformLocation(imgProg,"uTex"),0);
+    GLuint imgVao,imgVbo; glGenVertexArrays(1,&imgVao);glBindVertexArray(imgVao);
+    glGenBuffers(1,&imgVbo);glBindBuffer(GL_ARRAY_BUFFER,imgVbo);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)(6*9*sizeof(float)),NULL,GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
+    glBindVertexArray(0);
     GLuint uiVao,uiVbo; glGenVertexArrays(1,&uiVao);glBindVertexArray(uiVao);
     glGenBuffers(1,&uiVbo);glBindBuffer(GL_ARRAY_BUFFER,uiVbo);
     glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)UI_MAX_V*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
@@ -3563,8 +3807,10 @@ int main(int argc, char **argv){
                e.type==SDL_EVENT_MOUSE_BUTTON_DOWN ||
                e.type==SDL_EVENT_MOUSE_BUTTON_UP){
 #ifdef GAME_SHELL
-                // negli stati UI (menu/briefing/…) il mouse non tocca il mondo
-                if(!ed.active && gApp.state!=APP_PREP && gApp.state!=APP_ASSAULT)
+                // negli stati UI (briefing/settings/…) il mouse non tocca il
+                // mondo; TITLE e MENU passano (hover/click sui pulsanti, sotto)
+                if(!ed.active && gApp.state!=APP_PREP && gApp.state!=APP_ASSAULT
+                   && gApp.state!=APP_TITLE && gApp.state!=APP_MENU)
                     continue;
 #endif
                 // punto logico -> pixel (corretto anche su HiDPI: SW/SH sono pixel)
@@ -3575,6 +3821,32 @@ int main(int argc, char **argv){
                 if(motion){ mouse_px=mxf; mouse_py=myf; }
                 int alt = (SDL_GetModState()&SDL_KMOD_ALT)!=0;
 #ifdef GAME_SHELL
+                // TITLE: un click vale "premi un tasto"
+                if(!ed.active && gApp.state==APP_TITLE){
+                    if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
+                        au_play(SND_MENU_SELECT);
+                        shell_do_act(app_input(&gApp,APP_IN_CONFIRM)); }
+                    continue;
+                }
+                // MENU: hover = selezione (stessi rect del render), click = conferma
+                if(!ed.active && gApp.state==APP_MENU){
+                    for(int i=0;i<APP_MENU_COUNT;i++){
+                        UiRect r; menu_btn_rect(i,(float)SW,(float)SH,&r);
+                        if(!ui_hit(&r,mxf,myf)) continue;
+                        if(gApp.menu_idx!=i && app_menu_enabled(&gApp,i)){
+                            gApp.menu_idx=i; au_play(SND_MENU_MOVE); }
+                        if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN &&
+                           e.button.button==SDL_BUTTON_LEFT &&
+                           app_menu_enabled(&gApp,i) && gApp.menu_idx==i){
+                            AppAction act=app_input(&gApp,APP_IN_CONFIRM);
+                            if(act!=APP_ACT_NONE && act!=APP_ACT_QUIT)
+                                au_play(SND_MENU_SELECT);
+                            shell_do_act(act);
+                        }
+                        break;
+                    }
+                    continue;
+                }
                 // barra PREP: il mouse dentro la barra è UI (tab/card/undo/via),
                 // MAI un gesto sul mondo (§4 — il bug classico del commit sotto
                 // il click di UI). Un drag di linea che finisce in barra muore.
@@ -3820,7 +4092,8 @@ int main(int argc, char **argv){
                 }
                 if(in_ui){
                     if(e.key.key==SDLK_F11){ fullscreen=!fullscreen;
-                        SDL_SetWindowFullscreen(win,fullscreen); continue; }
+                        SDL_SetWindowFullscreen(win,fullscreen);
+                        gApp.fullscreen=fullscreen; continue; }   // settings coerenti
                     if(ast==APP_TITLE){ ain=APP_IN_CONFIRM; mapped=1; }   // any key
                     if(!mapped) continue;
                     if(ain==APP_IN_UP||ain==APP_IN_DOWN) au_play(SND_MENU_MOVE);
@@ -3840,7 +4113,11 @@ int main(int argc, char **argv){
             // --- tasti globali (EDIT e PLAY) ---
             switch(e.key.key){
                 case SDLK_ESCAPE: running=0; break;
-                case SDLK_F11: fullscreen=!fullscreen; SDL_SetWindowFullscreen(win,fullscreen); break;
+                case SDLK_F11: fullscreen=!fullscreen; SDL_SetWindowFullscreen(win,fullscreen);
+#ifdef GAME_SHELL
+                    gApp.fullscreen=fullscreen;                   // settings coerenti
+#endif
+                    break;
                 case SDLK_TAB:                                    // EDIT<->PLAY
                     if(ed.active){
                         if(ed.dirty){ free_world(s,g,dir);        // re-instanzia dalla Scene editata
@@ -3975,8 +4252,14 @@ int main(int argc, char **argv){
         if(frame_t>0.25) frame_t=0.25;                 // anti spiral-of-death
         if(blast_frame>=0 && frame>=blast_frame){ blast_pending=1; blast_frame=-1; }
         int sim_run = !ed.active && !paused;
+        int combat = 1;      // 0 = sim viva ma il mondo non si fa danni (EXTRACT)
 #ifdef GAME_SHELL
-        sim_run = sim_run && (gApp.state==APP_PREP || gApp.state==APP_ASSAULT);
+        // in EXTRACT la sim CONTINUA (l'orda si muove sotto l'heli che parte)
+        // ma combat=0: niente def_update (zero danni a strutture, torrette
+        // mute), niente mine (2026-07-12).
+        sim_run = sim_run && (gApp.state==APP_PREP || gApp.state==APP_ASSAULT
+                              || gApp.state==APP_EXTRACT);
+        combat = (gApp.state!=APP_EXTRACT);
         if(gBioFlash>0.0f) gBioFlash-=(float)frame_t;   // flash HUD produzione
 #endif
         host_apply_mags(g);   // equipaggia i caricatori delle torrette nuove (§5)
@@ -4015,11 +4298,11 @@ int main(int argc, char **argv){
                 Uint64 t0=SDL_GetPerformanceCounter();
                 simp_step(s,FIXED_DT);
                 Uint64 t1=SDL_GetPerformanceCounter();
-                def_update(g,FIXED_DT);
+                if(combat) def_update(g,FIXED_DT);
                 // mine (GAME_PLAN fase D): dopo lo step (griglia fresca) le trappole
                 // ARMATE scattano sul primo agente vicino -> host_blast (def_blast +
                 // FX, friendly fire incluso). Catene risolte in ordine di id nel core.
-                { TrapBlastCtx tbc={g,s,&sc,&gCatalog,&dz,&fx,vl,0};
+                if(combat){ TrapBlastCtx tbc={g,s,&sc,&gCatalog,&dz,&fx,vl,0};
                   traps_update(&traps,s,FIXED_DT,on_trap_blast,&tbc);
                   if(tbc.prop_changed) prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g); }
 #ifdef GAME_SHELL
@@ -4107,7 +4390,7 @@ int main(int argc, char **argv){
                 // rinculo torrette + vampa alla bocca + streak del proiettile:
                 // per chi ha sparato in questo step. build_turret_mesh legge il
                 // rinculo; il tracer parte dalla bocca del cannone verso l'impatto.
-                { int nt=def_turret_count(g);
+                if(combat){ int nt=def_turret_count(g);   // t->fired stantio senza def_update
                   for(int ti=0;ti<nt;ti++){ DefTurret *t=def_turret(g,ti);
                       if(!t->fired || def_turret_disabled(g,ti)) continue;
                       float ca=cosf(t->ang), sa=sinf(t->ang);
@@ -4151,11 +4434,14 @@ int main(int argc, char **argv){
                         // vinta -> cinematica di ESTRAZIONE (BASE_DESIGN §4.2);
                         // senza lz/modello/base viva si passa dritti al debrief.
                         if(gApp.state==APP_EXTRACT){
+                            // def_update non gira più in EXTRACT: rimuovi i
+                            // timbri lure attivi ORA (bit-esatto) o restano
+                            // inchiodati nella nav per tutta la cinematica.
+                            def_set_fire_lure(g,0.0f,0.0f,0.0f);
                             if(sc.has_lz && gHeliM.ok && gLzCore>=0 &&
                                !def_struct_collapsed(g,gLzCore)){
                                 heli_begin(2,&sc);
-                                cx=sc.lz_x; cz=sc.lz_y;
-                                if(hh<HELI_CAM_HH) hh=HELI_CAM_HH;   // zoom out per la cinematica
+                                // niente snap: camera-follow progressivo (sotto)
                             } else shell_do_act(app_input(&gApp,APP_IN_CONFIRM));
                         }
                     }
@@ -4231,7 +4517,7 @@ int main(int argc, char **argv){
                 // zombie a contatto d'una torretta (contact siege): il danno
                 // c'era gia', ora si VEDE — latch della clip d'attacco puntata
                 // all'emplacement (def_contact_turret, fresco da def_update).
-                { int an=simp_count(s); const float *apx=simp_px(s), *apy=simp_py(s);
+                if(combat){ int an=simp_count(s); const float *apx=simp_px(s), *apy=simp_py(s);
                   for(int ai=0;ai<an;ai++){
                       int aslot=simp_slot_of(s,ai);
                       int ti=def_contact_turret(g,aslot); if(ti<0) continue;
@@ -4257,6 +4543,20 @@ int main(int argc, char **argv){
         else if(drag_cam==2){ az-=(mouse_px-rot_px)*0.005f; el+=(mouse_py-rot_py)*0.005f;
             if(el<0.08f)el=0.08f; if(el>1.50f)el=1.50f; rot_px=mouse_px; rot_py=mouse_py; }
 #ifdef GAME_SHELL
+        // cinematiche heli: la camera SEGUE l'elicottero. Convergenza
+        // esponenziale su posizione e zoom (HELI_CAM_HH) — parte da dove il
+        // giocatore ha lasciato la camera e ci arriva progressivamente, mai
+        // salti; poi resta agganciata all'heli in volo (2026-07-12).
+        if(gHeli.active && !ed.active){
+            // consegna: depositato il container (carrying->0) la camera molla
+            // l'heli e resta a inquadrare la BASE; estrazione: segue l'heli
+            // fino all'uscita.
+            float tx=gHeli.x, tz=gHeli.z;
+            if(gHeli.active==1 && !gHeli.carrying){ tx=gLzX; tz=gLzY; }
+            float kf=1.0f-expf(-HELI_CAM_RATE*(float)frame_t);
+            cx+=(tx-cx)*kf; cz+=(tz-cz)*kf;
+            hh+=(HELI_CAM_HH-hh)*kf;
+        }
         // vincoli camera di gioco (GAME_CAM_*): un solo punto di enforcement,
         // a valle di TUTTI gli input (rotella, +/-, frecce, drag RMB, tasto C)
         // — l'elevation e la prospettiva libera si toccano solo in EDIT.
@@ -4351,7 +4651,8 @@ int main(int argc, char **argv){
 
 #ifdef GAME_SHELL
         // cinematiche elicottero (BASE_DESIGN §4): avanzano col tempo di frame
-        // (fiction pura, la sim è congelata fuori da PREP/ASSALTO) e disegnano
+        // (fiction pura; in DEPLOY la sim è congelata, in EXTRACT continua a
+        // girare senza combat — l'orda si muove sotto l'heli) e disegnano
         // col shader mesh texturato dei mesh-gib. Il container appeso lo ha già
         // stampato build_struct_mesh qui sopra.
         if(gHeli.active){
@@ -4605,15 +4906,36 @@ int main(int argc, char **argv){
         // ricarica/riparazione e per la futura modalita' REGOLA.)
         // overlay shell (title/menu/briefing/debrief + barra di fase): 2D in
         // pixel, sopra tutto, blend alpha (l'alpha viaggia in aNormal.x).
-        gUiV=0; shell_build_ui(SW,SH,g,mouse_px,mouse_py);
-        if(gUiV>0){
+        gUiV=0; gUiImgN=0; shell_build_ui(SW,SH,g,mouse_px,mouse_py);
+        if(gUiV>0 || gUiImgN>0){
             glDisable(GL_DEPTH_TEST); glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
             mat4 uivp; m_ortho(uivp,0.0f,(float)SW,(float)SH,0.0f,-1.0f,1.0f);
-            glUseProgram(uiProg); glUniformMatrix4fv(uVPui,1,GL_FALSE,uivp);
-            glBindVertexArray(uiVao); glBindBuffer(GL_ARRAY_BUFFER,uiVbo);
-            glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)gUiV*9*sizeof(float),gUiBuf);
-            glDrawArrays(GL_TRIANGLES,0,gUiV);
+            if(gUiImgN>0){                      // immagini sotto quad/testo
+                glUseProgram(imgProg); glUniformMatrix4fv(uVPimg,1,GL_FALSE,uivp);
+                glActiveTexture(GL_TEXTURE0);
+                glBindVertexArray(imgVao); glBindBuffer(GL_ARRAY_BUFFER,imgVbo);
+                for(int i=0;i<gUiImgN;i++){
+                    float x=gUiImg[i].x,y=gUiImg[i].y,w=gUiImg[i].w,h=gUiImg[i].h;
+                    float r=gUiImg[i].r,gg=gUiImg[i].g,b=gUiImg[i].b,a=gUiImg[i].a;
+                    float v[6][5]={{x,y,0,0,0},{x+w,y,0,1,0},{x+w,y+h,0,1,1},
+                                   {x,y,0,0,0},{x+w,y+h,0,1,1},{x,y+h,0,0,1}};
+                    float buf[6*9];
+                    for(int k=0;k<6;k++){ float *o=buf+k*9;
+                        o[0]=v[k][0];o[1]=v[k][1];o[2]=v[k][2];
+                        o[3]=a;o[4]=v[k][3];o[5]=v[k][4]; o[6]=r;o[7]=gg;o[8]=b; }
+                    glBindTexture(GL_TEXTURE_2D,gUiImg[i].tex);
+                    glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)sizeof buf,buf);
+                    glDrawArrays(GL_TRIANGLES,0,6);
+                }
+            }
+            if(gUiV>0){
+                glUseProgram(uiProg); glUniformMatrix4fv(uVPui,1,GL_FALSE,uivp);
+                glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,gUiFont.tex);
+                glBindVertexArray(uiVao); glBindBuffer(GL_ARRAY_BUFFER,uiVbo);
+                glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)gUiV*9*sizeof(float),gUiBuf);
+                glDrawArrays(GL_TRIANGLES,0,gUiV);
+            }
             glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
         }
 #endif

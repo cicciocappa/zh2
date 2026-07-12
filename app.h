@@ -54,7 +54,8 @@ typedef struct {
 enum { APP_MENU_NEW, APP_MENU_CONTINUE, APP_MENU_SETTINGS, APP_MENU_EXIT,
        APP_MENU_COUNT };
 /* settings rows (APP_SETTINGS). */
-enum { APP_SET_SFX, APP_SET_MUSIC, APP_SET_BACK, APP_SET_COUNT };
+enum { APP_SET_SFX, APP_SET_MUSIC, APP_SET_FULLSCREEN, APP_SET_BACK,
+       APP_SET_COUNT };
 
 typedef struct {
     AppLevel level[APP_MAX_LEVELS]; int nlevels;
@@ -64,6 +65,8 @@ typedef struct {
     int menu_idx;       /* APP_MENU_* selection                             */
     int set_idx;        /* APP_SET_* selection                              */
     int vol_sfx, vol_music;   /* 0..10 (persisted)                          */
+    int fullscreen;     /* 0/1 (persisted): the host applies it on
+                         * APP_ACT_APPLY_SETTINGS and at startup            */
     int level_ready;    /* BRIEFING: host finished loading                  */
     int won;            /* DEBRIEF: outcome of the last assault             */
     int campaign_done;  /* beat the last level                              */

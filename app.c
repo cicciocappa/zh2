@@ -77,6 +77,7 @@ int app_load_progress(App *a, const char *path){
         if      (strcmp(k, "unlocked")  == 0) a->unlocked  = x;
         else if (strcmp(k, "vol_sfx")   == 0) a->vol_sfx   = x;
         else if (strcmp(k, "vol_music") == 0) a->vol_music = x;
+        else if (strcmp(k, "fullscreen") == 0) a->fullscreen = (x != 0);
     }
     fclose(f);
     if (a->unlocked < 0) a->unlocked = 0;
@@ -91,8 +92,8 @@ int app_load_progress(App *a, const char *path){
 int app_save_progress(const App *a, const char *path){
     FILE *f = fopen(path, "w");
     if (!f) return -1;
-    fprintf(f, "# zh2 progress\nunlocked %d\nvol_sfx %d\nvol_music %d\n",
-            a->unlocked, a->vol_sfx, a->vol_music);
+    fprintf(f, "# zh2 progress\nunlocked %d\nvol_sfx %d\nvol_music %d\nfullscreen %d\n",
+            a->unlocked, a->vol_sfx, a->vol_music, a->fullscreen);
     fclose(f);
     return 0;
 }
@@ -168,6 +169,11 @@ AppAction app_input(App *a, AppInput in){
             if (nv > 10) nv = 10;
             if (nv == *vol) return APP_ACT_NONE;
             *vol = nv;
+            return APP_ACT_APPLY_SETTINGS;
+        }
+        if (a->set_idx == APP_SET_FULLSCREEN &&
+            (in == APP_IN_LEFT || in == APP_IN_RIGHT || in == APP_IN_CONFIRM)){
+            a->fullscreen = !a->fullscreen;         /* host applies right away */
             return APP_ACT_APPLY_SETTINGS;
         }
         if (in == APP_IN_BACK ||
