@@ -666,9 +666,30 @@ diversa in pochi frame), giocate nella fase MESH del decedente prima dello
 swap a impostor → pose finali ×2-3 = colonne d'atlante in più, costo lineare
 piccolo. Insieme a heading random + colori neutri, il timbro sparisce.
 
+**Migrazione in `vat_horde` — FATTA (2026-07-12).** Cella 64 px (scelta
+utente; 16 viste intoccabili), anello COMPLETO a 16 blocchi outfit
+(continuità outfit per-cadavere garantita; elementali 14/15 con le loro
+righe come prima): albedo 1152×16384 px = il MASSIMO GL tipico in altezza —
+`nOutRing` viene clampato a runtime su `GL_MAX_TEXTURE_SIZE` (lo shader
+satura l'outfit all'ultimo blocco, degrado grazioso). ~75 MB albedo, come
+l'atlante piatto 256 px che SOSTITUISCE (net ≈ +5 MB di normale per-vista).
+Il decal piatto top-down è rimosso da vat_horde (stesso costo per quad
+dell'impostor ⇒ nessun motivo di tenerlo come tier); resta in fxlab per
+confronto (toggle I). Tier: mesh decedente (TTL, invariato) → ring impostor
+persistente. Verificato headless su `arena_breach` (139 kill): tappeto
+coerente a due azimuth, zero errori FBO. Shader condiviso con fxlab
+(`uNOut` = blocchi outfit: 1 in fxlab col ribake, 16 in gioco).
+
 **Aperto:** (a) pendii — l'elevazione effettiva cambia col terreno inclinato;
 se stona, 2-3 anelli di elevazione attorno a 0.40 (= ottaedrico ridotto);
-(b) migrazione in `vat_horde` col tier: mesh (fresco/TTL) → ring impostor
-(persistente) → eventuale decal piatto solo al tier di zoom minimo;
-(c) in gioco il bake per-outfit può andare offline (estensione della pipeline
-sprite_render/outfit_bake) e compresso.
+(b) in gioco il bake per-outfit può andare offline (estensione della pipeline
+sprite_render/outfit_bake) e compresso, se l'init si allunga;
+(c) **OTTIMIZZAZIONE DA ESPLORARE (decisione utente 2026-07-12):** i 16
+blocchi outfit dell'anello sono una perplessità dichiarata — ridurli a **4
+outfit "generici" da cadavere** (desaturati, fango+sangue), con una
+**transizione outfit-specifico → outfit-generico giocata nella fase MESH del
+decedente** (è lì che l'occhio guarda; allo swap in impostor il corpo è già
+convergito al generico). Taglia l'albedo dell'anello a ¼ (~19 MB), leva il
+clamp `GL_MAX_TEXTURE_SIZE` dal percorso critico e prepara i design-cadavere
+dedicati della pipeline outfit. Richiede: 4 righe outfit "corpse" nelle
+diffuse (o un grading a runtime nella fase mesh) + mappa outfit→generico.
