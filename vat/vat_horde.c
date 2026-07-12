@@ -2796,6 +2796,7 @@ static int reload_pick_turret(DefGame *g, float wx, float wy) {
 static int gHovOn=0; static char gHovLabel[64];
 static float gHovHp=0, gHovHpMax=0;     // hp_max<=0 = senza barra (indistruttibile)
 static int gHovTurret=-1;               // torretta sotto il cursore -> cono a terra
+static int gHovSid=-1;                  // struttura sotto il cursore (bersaglio kit)
 #define HOVER_TURRET_H 1.9f             // altezza cliccabile della torretta
 #define HOVER_STRUCT_H 2.8f             // muri/barriere/nucleo (H del render)
 #define HOVER_SCAN_TOP 8.0f             // quota massima scandita (prop alti)
@@ -2815,7 +2816,8 @@ static int hover_resolve(const Scene *sc, DefGame *g, float wx, float wy, float 
             int cx=(int)(t->x/sc->cell), cy=(int)(t->y/sc->cell);
             int sid=def_cell_struct(g,cx,cy);
             if(sid>=0 && def_struct_is_turret(g,sid)){
-                gHovHp=def_struct_hp(g,sid); gHovHpMax=def_struct_hp_max(g,sid); }
+                gHovHp=def_struct_hp(g,sid); gHovHpMax=def_struct_hp_max(g,sid);
+                gHovSid=sid; }
             gHovTurret=best;
             gHovOn=1; return 1; } }
     int cx=(int)(wx/sc->cell), cy=(int)(wy/sc->cell);
@@ -2840,6 +2842,7 @@ static int hover_resolve(const Scene *sc, DefGame *g, float wx, float wy, float 
     if(h>eh) return 0;                            // piano sopra la cima: si scende
     snprintf(gHovLabel,sizeof gHovLabel,"%s",lab);
     gHovHp=def_struct_hp(g,id); gHovHpMax=def_struct_hp_max(g,id);
+    gHovSid=id;
     gHovOn=1; return 1;
 }
 // tooltip accanto al cursore (chiamata dentro shell_build_ui, spazio schermo)
@@ -3629,16 +3632,21 @@ int main(int argc, char **argv){
                         // LMB su una struttura = +HP consumando un kit; RMB annulla.
                         if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
                             if(e.button.button==SDL_BUTTON_LEFT){
-                                float wx,wy;
-                                if(pick_y0(vp,mxf,myf,SW,SH,&wx,&wy)){
-                                    int sid=repair_pick_struct(g,s,wx,wy);
-                                    if(sid>=0 && def_struct_hp(g,sid)<def_struct_hp_max(g,sid)
-                                       && bio_take(&gBio,BIO_REPAIR)){
-                                        def_struct_repair(g,sid,BIO_REPAIR_HP);
-                                        au_play(SND_MENU_SELECT);
-                                        if(bio_count(&gBio,BIO_REPAIR)<=0) gAimRepair=0;
-                                    } else au_play(SND_MENU_MOVE);   // niente kit / gia' sana
-                                }
+                                // bersaglio = elemento risolto dall'hover (piani
+                                // di quota: prende la torretta su tutta la
+                                // sagoma, non solo alla base — il pick a terra
+                                // finisce DIETRO il modello con la camera
+                                // inclinata); fallback al pick a terra per un
+                                // click accanto a un muro basso.
+                                int sid=gHovSid; float wx,wy;
+                                if(sid<0 && pick_y0(vp,mxf,myf,SW,SH,&wx,&wy))
+                                    sid=repair_pick_struct(g,s,wx,wy);
+                                if(sid>=0 && def_struct_hp(g,sid)<def_struct_hp_max(g,sid)
+                                   && bio_take(&gBio,BIO_REPAIR)){
+                                    def_struct_repair(g,sid,BIO_REPAIR_HP);
+                                    au_play(SND_MENU_SELECT);
+                                    if(bio_count(&gBio,BIO_REPAIR)<=0) gAimRepair=0;
+                                } else au_play(SND_MENU_MOVE);   // niente kit / gia' sana
                             } else if(e.button.button==SDL_BUTTON_RIGHT) gAimRepair=0;
                         }
                         continue;             // in targeting il mouse non guida la camera
@@ -3647,18 +3655,25 @@ int main(int argc, char **argv){
                     // ISTANTANEA consumando la munizione del suo kind (§5, §12.Q4)
                     if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN &&
                        e.button.button==SDL_BUTTON_LEFT){
+                        // hover prima del pick a terra: stessa ragione del kit
+                        // (il click sul corpo del modello unprojetta DIETRO)
+                        int tid=-1;
+                        if(gHovTurret>=0){ DefTurret *t=def_turret(g,gHovTurret);
+                            if(t && t->mag_size>0 &&
+                               (t->mag<t->mag_size ||
+                                def_turret_reloading(g,gHovTurret)>0.0f))
+                                tid=gHovTurret; }
                         float wx,wy;
-                        if(pick_y0(vp,mxf,myf,SW,SH,&wx,&wy)){
-                            int tid=reload_pick_turret(g,wx,wy);
-                            if(tid>=0){
-                                DefTurret *t=def_turret(g,tid);
-                                int item=BIO_AMMO_LIGHT+((t->kind>=0&&t->kind<4)?t->kind:0);
-                                if(bio_take(&gBio,item)){
-                                    def_turret_reload_now(g,tid);
-                                    au_play(SND_MENU_SELECT);
-                                } else au_play(SND_MENU_MOVE);       // munizione esaurita
-                                continue;   // il click era per la torretta, non pan camera
-                            }
+                        if(tid<0 && pick_y0(vp,mxf,myf,SW,SH,&wx,&wy))
+                            tid=reload_pick_turret(g,wx,wy);
+                        if(tid>=0){
+                            DefTurret *t=def_turret(g,tid);
+                            int item=BIO_AMMO_LIGHT+((t->kind>=0&&t->kind<4)?t->kind:0);
+                            if(bio_take(&gBio,item)){
+                                def_turret_reload_now(g,tid);
+                                au_play(SND_MENU_SELECT);
+                            } else au_play(SND_MENU_MOVE);       // munizione esaurita
+                            continue;   // il click era per la torretta, non pan camera
                         }
                     }
                 }
@@ -4570,7 +4585,7 @@ int main(int argc, char **argv){
         // struttura su tutta la sagoma (facciata e tetto), non solo alla base.
         // (Approssimazione: quote assolute — su terreni collinari il bordo alto
         // può slittare di poco, per un tooltip è irrilevante.)
-        gHovOn=0; gHovTurret=-1;
+        gHovOn=0; gHovTurret=-1; gHovSid=-1;
         if(!ed.active && (gApp.state==APP_PREP || gApp.state==APP_ASSAULT) &&
            !drag_cam && !(gAimMort && gApp.state==APP_ASSAULT)){
             if(gApp.state==APP_PREP) prep_ui_layout(SW,SH); else strikes_ui_layout(SW,SH);
@@ -4584,23 +4599,10 @@ int main(int argc, char **argv){
                 }
             }
         }
-        // cono di mira della torretta sotto il cursore (ambra, depth off):
-        // rende leggibile a colpo d'occhio arco e gittata delle difese piazzate.
-        if(gHovTurret>=0 && !plc.active){
-            DefTurret *ht=def_turret(g,gHovTurret);
-            if(ht){
-                float fc=0.5f*(ht->arc_min+ht->arc_max);
-                float half=0.5f*(ht->arc_max-ht->arc_min);
-                int ov=push_aim_cone(edovl,0,EDOVL_MAXV,ht->x,ht->y,
-                                     fc,half,ht->range,0.95f,0.70f,0.15f);
-                if(ov){ glDisable(GL_DEPTH_TEST);
-                    glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
-                    glBindVertexArray(ovVao);glBindBuffer(GL_ARRAY_BUFFER,ovVbo);
-                    glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)ov*9*sizeof(float),edovl);
-                    glDrawArrays(GL_TRIANGLES,0,ov);
-                    glEnable(GL_DEPTH_TEST); }
-            }
-        }
+        // (niente cono di mira su hover: l'indicazione di direzione appartiene
+        // solo al gesto di piazzamento — tolto su richiesta 2026-07-12. Il
+        // tooltip hover resta; gHovTurret resta risolto per i click di
+        // ricarica/riparazione e per la futura modalita' REGOLA.)
         // overlay shell (title/menu/briefing/debrief + barra di fase): 2D in
         // pixel, sopra tutto, blend alpha (l'alpha viaggia in aNormal.x).
         gUiV=0; shell_build_ui(SW,SH,g,mouse_px,mouse_py);
