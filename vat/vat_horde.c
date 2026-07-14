@@ -3069,11 +3069,20 @@ static void shell_build_ui(int SW,int SH,DefGame *g,float mpx,float mpy){
         if(st==APP_PREP)
             snprintf(line,sizeof line,"PREPARAZIONE - %s | PIAZZA LE DIFESE, "
                      "POI VIA ALL'ORDA",L?L->name:"?");
-        else { float left=L?L->survive_s-gSurviveT:0.0f; if(left<0)left=0;
-            snprintf(line,sizeof line,"ASSALTO - RESISTI ANCORA %d S | KILLS %d%s",
-                     (int)(left+0.5f),def_kills(g),
-                     (gShellCore>=0&&def_struct_hp(g,gShellCore)<def_struct_hp_max(g,gShellCore))
-                     ?" | IL NUCLEO E' SOTTO ATTACCO":""); }
+        else {
+            // fase A: se la scena dichiara la missione comanda mission.c —
+            // il timer di AppLevel resta solo per le arene legacy.
+            float left = gMissionOn ? mission_time_left(&gMission)
+                       : (L ? L->survive_s-gSurviveT : 0.0f);
+            if(left<0)left=0;
+            if(gMissionOn && gMission.kind==SCENE_MISSION_CLEAR)
+                snprintf(line,sizeof line,"ASSALTO - ELIMINA L'ORDA | KILLS %d",
+                         def_kills(g));
+            else
+                snprintf(line,sizeof line,"ASSALTO - RESISTI ANCORA %d S | KILLS %d%s",
+                         (int)(left+0.5f),def_kills(g),
+                         (gShellCore>=0&&def_struct_hp(g,gShellCore)<def_struct_hp_max(g,gShellCore))
+                         ?" | IL NUCLEO E' SOTTO ATTACCO":""); }
         ui_quad(0,0,W,28,0,0,0,0.55f);
         ui_text(10,8,2,line,1,1,1,1);
         if(st==APP_PREP) prep_bar_draw(SW,SH,g,mpx,mpy);   // barra PREP (§3)
@@ -3157,8 +3166,16 @@ static void shell_build_ui(int SW,int SH,DefGame *g,float mpx,float mpy){
         ui_text(W*0.14f,H*0.16f,4*uk,hdr,0.95f,0.78f,0.30f,1);
         ui_text(W*0.14f,H*0.28f,2.5f*uk,L?L->brief:"",0.92f,0.92f,0.92f,1);
         char obj[80];
-        snprintf(obj,sizeof obj,"OBIETTIVO: RESISTI %d SECONDI%s",
-                 (int)(L?L->survive_s:0),(L&&L->core_hp>0)?" - DIFENDI IL NUCLEO":"");
+        if(gMissionOn && gMission.kind==SCENE_MISSION_CLEAR)
+            snprintf(obj,sizeof obj,"OBIETTIVO: ELIMINA L'ORDA%s",
+                     gHost.sc->has_lz?" - DIFENDI LA LZ":"");
+        else if(gMissionOn)
+            snprintf(obj,sizeof obj,"OBIETTIVO: RESISTI %d SECONDI%s",
+                     (int)gMission.survive_s,
+                     gHost.sc->has_lz?" - DIFENDI LA LZ":"");
+        else
+            snprintf(obj,sizeof obj,"OBIETTIVO: RESISTI %d SECONDI%s",
+                     (int)(L?L->survive_s:0),(L&&L->core_hp>0)?" - DIFENDI IL NUCLEO":"");
         ui_text(W*0.14f,H*0.60f,3*uk,obj,0.75f,0.88f,1.0f,1);
         ui_text_c(W*0.5f,H*0.80f,3*uk,
                   gApp.level_ready?"INVIO PER INIZIARE":"CARICAMENTO...",1,1,1,0.9f);
@@ -4256,10 +4273,12 @@ int main(int argc, char **argv){
 #ifdef GAME_SHELL
         // in EXTRACT la sim CONTINUA (l'orda si muove sotto l'heli che parte)
         // ma combat=0: niente def_update (zero danni a strutture, torrette
-        // mute), niente mine (2026-07-12).
+        // mute), niente mine (2026-07-12). In PREP idem (2026-07-14): le
+        // torrette sono spente finché l'assalto non parte — senza il gate
+        // sparavano ai branchi dormienti durante il piazzamento.
         sim_run = sim_run && (gApp.state==APP_PREP || gApp.state==APP_ASSAULT
                               || gApp.state==APP_EXTRACT);
-        combat = (gApp.state!=APP_EXTRACT);
+        combat = (gApp.state==APP_ASSAULT);
         if(gBioFlash>0.0f) gBioFlash-=(float)frame_t;   // flash HUD produzione
 #endif
         host_apply_mags(g);   // equipaggia i caricatori delle torrette nuove (§5)

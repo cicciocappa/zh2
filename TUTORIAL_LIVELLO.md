@@ -8,6 +8,42 @@
 > `levels/test_level.blend` (generato da `gfx/test_level_make.py`, esercita
 > ogni regola).
 
+## 0-bis. Il metodo: greybox → kit → vestizione (deciso 14 lug 2026)
+
+La risposta alla domanda "apro Blender e ora che faccio?" — l'ordine di
+lavoro, PRIMA della tecnica:
+
+1. **Greybox giocabile lo stesso giorno.** Un livello di zh2 spogliato
+   dell'arte è topologia di pressione: LZ, cinta con cancelli e sezioni
+   deboli, exit, palazzi-box che incanalano. Tutto questo si costruisce con
+   soli box e plane (il vincolo "hull ≤ 16 vertici, palazzi = box" dice
+   proprio questo) e si playtesta subito in `vat_horde`. Si itera sul layout
+   finché l'assedio è DIVERTENTE; l'arte arriva dopo. Vestire un livello
+   brutto è tempo buttato.
+   **Regola: il livello NON piazza difese.** Il livello fornisce terreno,
+   mura, cancelli, exit — la difesa (torrette, barricate aggiuntive) è
+   SEMPRE una decisione del giocatore in PREP, pagata col budget. Mai
+   `turret` in un livello di gioco (nei banchi di test/demo sì). Il
+   valore delle difese "che avresti regalato" va nel budget.
+2. **Kit modulare per ambientazione, non diorami bespoke.** 10–20 pezzi
+   riusabili (segmenti di cinta, cancello, gusci di edificio, container…)
+   entrano nel catalogo prop + `blend/props.blend`; un livello nuovo =
+   greybox → pezzi kit al posto dei box → 1–2 landmark unici. L'identità
+   del luogo la danno il layout e i landmark, non mille mesh uniche.
+3. **Luoghi inventati con stile riconoscibile; OSM solo come lucido.**
+   Import di geometria reale scartato (footprint sporchi, geografia non
+   pensata per l'assedio, landmark costosi). Se serve un tracciato credibile:
+   curve OSM in un layer `_ref` e ci si ricalca sopra. Google Earth escluso
+   (ToS + mesh fotogrammetriche inutilizzabili).
+4. **Prima ambientazione: stabilimento industriale** — cinta nativa,
+   capannoni-box, terreno piatto, piazzale = LZ, exit con fiction facile
+   (cancelli/brecce). Favela/borgo medievale = ambientazioni successive.
+5. **Mai partire dalla tela bianca**: il seed del livello si genera via
+   script (`gfx/level1_make.py` → `levels/level1.blend`); si apre Blender
+   su un livello già bloccato e si rimodella. Rilanciare lo script
+   SOVRASCRIVE il `.blend`: dopo la prima modifica a mano, il `.blend` è la
+   fonte di verità e il seed non si rigenera più.
+
 ## 0. Prerequisiti
 
 - Blender 5.1 portatile: `~/Scaricati/blender-5.1.0-linux-x64/blender`
@@ -68,6 +104,8 @@ ignorato: **duplicare con Shift+D funziona e basta**. Regola nome:
 | `wall`   | plane o box sul muro distruttibile                | `hp` (default 500), `cost_mult` (default 1.0) |
 | `turret` | **empty** "plain axes" (o mesh: conta solo l'origine) | `range` (30), `heavy` (0), `hp` (0 = default host) |
 | `poly`   | volume 3D vero (box estruso): footprint+altezza escono da soli | `height` (override), `cost` (se presente → costo nav invece di solido) |
+| `exit`   | plane sull'area d'emissione scriptata (director di missione) | `rate` **obbligatoria** (agenti/s), `delay` (s, default 0), `pool` (default 0 = illimitato) |
+| `lz`     | **empty**, uno solo per livello; lo yaw orienta il container | — |
 
 Trappole:
 
@@ -107,9 +145,12 @@ volumi fusi nel terreno del singolo livello.
 | `cell`               | `cell v`           | default 0.5 |
 | `world_w`, `world_h` | `world W H`        | default: AABB del terreno; **obbligatori senza terreno** |
 | `set_<nome>`         | `set <nome> v`     | es. `set_k_density` → parametro `SimPParams`; occhio ai typo, `scene_load` li ignora in silenzio |
+| `mission`            | `mission …`        | stringa, inizia per `survive` o `clear` (es. `"survive 180 prep 0"`) |
+| `budget`             | `budget N`         | budget di piazzamento PREP |
+| `biostock`           | `biostock N`       | scorta iniziale munizioni (omesso = default host) |
 
-**Nomi riservati, non usarli per altro**: `exit`, `lz`, `mission`, `budget`
-(arrivano con la fase A di GAME_PLAN).
+Con una `lz` nel livello NON serve un `goal`: l'host costruisce core
+assediabile + goal centrale dalla LZ (`build_lz_core`).
 
 ## 7. Export
 

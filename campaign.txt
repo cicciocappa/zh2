@@ -1,8 +1,17 @@
-# campaign.txt — campagna placeholder (GAME_APP_DESIGN.md §2).
-# Un blocco per livello; `level` apre il blocco. Le mappe sono le arene-banco
-# esistenti finché i livelli veri (GAME_PLAN fase H) non arrivano.
+# campaign.txt — campagna (GAME_APP_DESIGN.md §2).
+# Un blocco per livello; `level` apre il blocco.
 # Chiavi: level <scn> | name <testo> | survive <s> | core <hp> | brief <riga>
 # Future (gia' accettate dal parser, ignorate): voice <wav> | video <file>
+# NB: se la .scn dichiara `mission` (fase A), obiettivo/timer/core vengono
+# dalla SCENA e le chiavi survive/core del blocco sono ignorate — valgono
+# solo per le arene-banco legacy senza riga mission.
+
+level assets/scenes/level1.scn
+name  Stabilimento
+brief Il piazzale di uno stabilimento cintato: un solo cancello a ovest,
+brief e i rilievi dicono che la cinta nord ha una sezione marcia. Le mura
+brief le abbiamo; le difese le scegli tu, e l'orda non arriva tutta
+brief insieme. Resisti fino all'estrazione.
 
 level assets/scenes/arena4.scn
 name  Perimetro

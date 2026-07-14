@@ -492,6 +492,62 @@ design → test headless → aggancio vat_horde → verifica visiva → commit.
       (toolbar piazzamento, pannello torretta, barre HP).
 - [ ] **Fase H — Contenuto e tuning**: mappe strada/piazza/campi (editor),
       bilanciamento tabelle. Meta/campagna = doc futuro.
+  - [x] **Metodo di authoring DECISO** (14 lug 2026, `TUTORIAL_LIVELLO.md`
+        §0-bis): greybox-first (layout con box, playtest subito, arte dopo),
+        kit modulare per ambientazione (catalogo prop, non diorami bespoke),
+        luoghi inventati (OSM solo come lucido `_ref`), prima ambientazione =
+        stabilimento industriale. Seed via script contro la tela bianca.
+  - [x] **Export entità di missione** (`gfx/export_scn.py`): `exit` (rect,
+        props rate/delay/pool), `lz` (empty + yaw), `mission`/`budget`/
+        `biostock` (scene props). Fixture `test_level` estesa, regressione
+        bit-identica sulle righe preesistenti, parse verificato con
+        `scene_load`. `BLENDER_LEVEL.md` §8 aggiornato.
+  - [~] **Livello 1 "Stabilimento"** (`gfx/level1_make.py` →
+        `levels/level1.blend` → `assets/scenes/level1.scn`): cinta 50×50 con
+        cancello a cancellate (spara-attraverso) + sezione debole nord,
+        capannoni che formano il corridoio cancello→LZ, palazzi esterni a
+        imbuto, 3 exit scriptate (ovest subito, nord +40 s sulla debole,
+        sud +80 s), pack dormiente a est, survive 180 budget 800. ZERO
+        difese pre-piazzate (regola 14 lug: le difese le decide il
+        giocatore in PREP, il loro valore sta nel budget). PRIMO LIVELLO
+        DELLA CAMPAGNA (`campaign.txt`, arene-banco a seguire): la shell
+        ora legge obiettivo/timer dalla missione DI SCENA quando c'è
+        (briefing + barra assalto, `mission_time_left`; le chiavi
+        survive/core del blocco campagna restano per le arene legacy).
+        RESTA: playtest con `./game` → tuning layout/rate nel `.blend` →
+        vestizione col kit. Nota: l'hint "NUCLEO SOTTO ATTACCO" della
+        barra usa gShellCore e non copre il core-LZ (minore).
+
+## Bilanciamento difesa (osservazioni playtest level1, 14 lug 2026)
+
+- [x] **BUG: torrette attive in PREP** — sparavano ai branchi dormienti
+      durante il piazzamento. FIX: il gate `combat` (nato per EXTRACT) ora è
+      acceso SOLO in ASSAULT (`vat_horde.c`): in PREP niente `def_update` →
+      torrette mute e ferme, zero danni strutture, zero mine.
+- [ ] **Danno d'assedio SUPERLINEARE nella densità** (idea utente dal primo
+      playtest: "difesa facilissima, torrette nei punti sbagliati e ha retto
+      lo stesso"). Causa strutturale: in `siege_update` (defense.c) ogni
+      agente che preme fa `ATTACK_DAMAGE` 5 HP / `ATTACK_PERIOD` 0.8 s →
+      DPS totale LINEARE in N, e N è cappato dal FRONTE del muro (solo la
+      prima fila ha `wall_pressure > 0`; la massa dietro spinge ma non
+      colpisce). Un'orda di 500 e una fila di 20 fanno lo stesso danno.
+      Due strade (compatibili):
+      (a) **fisica, preferita**: danno per colpo ∝ `wall_pressure[i]`
+          (`push·into_wall` già fotografato dal core) — la pressione PBD
+          CRESCE con la massa che spinge da dietro, quindi il superlineare
+          emerge dalla fisica vera della calca, gratis e per-agente.
+          Da misurare prima la distribuzione di p (micro-test alla
+          test_siege: fila singola vs calca profonda) per la curva
+          `dmg·min(p/p_ref,cap)`.
+      (b) **contabile, più controllabile**: contare i pressers per struttura
+          per tick in `siege_update` (un array per sid, due passate) e
+          moltiplicare il colpo per `(N/N_ref)^alpha` → DPS ∝ N^(1+alpha).
+      In entrambi i casi ritarare `ATTACK_DAMAGE`/HP mura di conserva (i
+      valori attuali diventano il caso "fila sottile"). Test: estendere
+      `test_siege` (fila vs calca = tempi di crollo ben distinti).
+- [ ] **Pass di bilanciamento generale post-playtest**: budget 800 di level1
+      tutto da tarare, HP mura (900 a caso), rate delle exit. Da fare DOPO
+      il danno superlineare (cambia tutto) e DOPO biomassa v2.
 
 ## Idee da implementare (proposte 14 lug 2026)
 
