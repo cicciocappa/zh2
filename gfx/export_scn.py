@@ -14,7 +14,11 @@
 #     AND one `poly solid` per mesh footprint (opt-out: custom prop nav="none");
 #   - collection-instance empties -> `prop <collection-name> x y rot`;
 #   - scene custom props: cell, world_w/world_h (default: terrain AABB),
-#     set_<name> -> `set <name> v`; `mission`/`budget`/`exit`/`lz` reserved.
+#     set_<name> -> `set <name> v`; mission entities (GAME_PLAN fase A):
+#     `exit` rect (props rate/delay/pool) -> `exit x y w h rate delay pool`,
+#     `lz` empty (one per level, yaw from rotation) -> `lz x y yaw`,
+#     scene props `mission` (string "survive|clear ..."), `budget` (float),
+#     `biostock` (int) -> their .scn lines.
 #
 # Validation is BLOCKING (unknown prefix, off-world entity, bad catalog key,
 # format limits): no .scn / glb / zhm is written if any error is found.
@@ -38,7 +42,6 @@ SCENE_MAX_PROP       = 256
 SCENE_PROP_KEY_LEN   = 24
 
 RECT_TYPES  = ("goal", "spawn", "pack", "cost")
-RESERVED    = ("exit", "lz")           # GAME_PLAN fase A — do not repurpose
 SKIP_OBTYPE = ("CAMERA", "LIGHT", "LIGHT_PROBE", "SPEAKER", "ARMATURE")
 
 errors, warnings, notes = [], [], []
@@ -231,10 +234,12 @@ def main():
 
     # ---- scene-level parameters -------------------------------------------
     cell = float(sc.get("cell", 0.5))
-    for k in ("mission", "budget"):
-        if k in sc.keys():
-            err(f"scene property '{k}' is reserved (GAME_PLAN fase A), "
-                f"not supported yet")
+    mission = str(sc["mission"]).strip() if "mission" in sc.keys() else None
+    if mission is not None and mission.split()[:1] not in (["survive"], ["clear"]):
+        err(f"scene property 'mission' must start with 'survive' or 'clear' "
+            f"(got '{mission}')")
+    budget   = float(sc["budget"])  if "budget"   in sc.keys() else None
+    biostock = int(sc["biostock"])  if "biostock" in sc.keys() else None
     sets = sorted((k[4:], float(sc[k])) for k in sc.keys()
                   if k.startswith("set_"))
     if len(sets) > SCENE_MAX_SET:
@@ -271,6 +276,8 @@ def main():
     turrets = []                            # (name, x, y, range, heavy, hp)
     polys   = []                            # (name, hull, height, cost|None)
     props   = []                            # (name, key, x, y, rot)
+    exits   = []                            # (name, x, y, w, h, rate, delay, pool)
+    lz      = None                          # (name, x, y, yaw)
 
     for ob in sorted(sc.objects, key=lambda o: o.name):
         if ob in ignored or ob.name.startswith("_"):
@@ -322,9 +329,20 @@ def main():
             pe = poly_entry(ob, deps, ob.name)
             if pe:
                 polys.append((ob.name, *pe))
-        elif head in RESERVED:
-            err(f"'{ob.name}': '{head}' is reserved (GAME_PLAN fase A), "
-                f"not supported yet")
+        elif head == "exit":
+            x, y, w, h = aabb_xy(ob)
+            check_rect_yaw(ob)
+            if "rate" not in ob.keys():
+                err(f"'{ob.name}': exit rect without 'rate' property")
+                continue
+            exits.append((ob.name, x, y, w, h, float(ob["rate"]),
+                          float(ob.get("delay", 0.0)), int(ob.get("pool", 0))))
+        elif head == "lz":
+            if lz is not None:
+                err(f"'{ob.name}': more than one lz (already '{lz[0]}')")
+                continue
+            p = ob.matrix_world.translation
+            lz = (ob.name, p.x, p.y, yaw_deg(ob) % 360.0)
         elif ob.type in SKIP_OBTYPE:
             notes.append(f"skipped {ob.type.lower()} '{ob.name}'")
         else:
@@ -352,6 +370,8 @@ def main():
         err(f"{len(walls)} walls (max {SCENE_MAX_RECT})")
     if len(turrets) > SCENE_MAX_RECT:
         err(f"{len(turrets)} turrets (max {SCENE_MAX_RECT})")
+    if len(exits) > SCENE_MAX_RECT:
+        err(f"{len(exits)} exits (max {SCENE_MAX_RECT})")
     if len(polys) > SCENE_MAX_POLY:
         err(f"{len(polys)} polys incl. statics footprints (max {SCENE_MAX_POLY})")
     if len(props) > SCENE_MAX_PROP:
@@ -369,6 +389,10 @@ def main():
         check_bounds(wl[0], wl[3], wl[4], wl[3] + wl[5], wl[4] + wl[6])
     for tu in turrets:
         check_bounds(tu[0], tu[1], tu[2], tu[1], tu[2])
+    for ex in exits:
+        check_bounds(ex[0], ex[1], ex[2], ex[1] + ex[3], ex[2] + ex[4])
+    if lz is not None:
+        check_bounds(lz[0], lz[1], lz[2], lz[1], lz[2])
     for pl in polys:
         xs = [p[0] for p in pl[1]]; ys = [p[1] for p in pl[1]]
         check_bounds(pl[0], min(xs), min(ys), max(xs), max(ys))
@@ -423,6 +447,14 @@ def main():
         L.append(f"statics {st_path}")
     for name, val in sets:
         L.append(f"set {name} {fmt(val)}")
+    if mission is not None:
+        L.append(f"mission {mission}")
+    if budget is not None:
+        L.append(f"budget {fmt(budget)}")
+    if biostock is not None:
+        L.append(f"biostock {biostock:d}")
+    if lz is not None:
+        L.append(f"lz {fmt(lz[1])} {fmt(lz[2])} {fmt(lz[3])}")
     for t in RECT_TYPES:
         for r in rects[t]:
             line = f"{t} {fmt(r[1])} {fmt(r[2])} {fmt(r[3])} {fmt(r[4])}"
@@ -438,6 +470,9 @@ def main():
                  f"{fmt(w)} {fmt(h)}")
     for name, x, y, rng, heavy, hp in turrets:
         L.append(f"turret {fmt(x)} {fmt(y)} {fmt(rng)} {heavy:d} {fmt(hp)}")
+    for name, x, y, w, h, rate, delay, pool in exits:
+        L.append(f"exit {fmt(x)} {fmt(y)} {fmt(w)} {fmt(h)} {fmt(rate)} "
+                 f"{fmt(delay)} {pool:d}")
     for name, key, x, y, rot in props:
         L.append(f"prop {key} {fmt(x)} {fmt(y)} {fmt(rot)}")
 
@@ -451,8 +486,8 @@ def main():
     counts = " ".join(f"{t}:{len(rects[t])}" for t in RECT_TYPES)
     print(f"[export_scn] wrote {args.out}  world {fmt(world_w)}x{fmt(world_h)} "
           f"cell {fmt(cell)}  {counts} poly:{len(polys)} wall:{len(walls)} "
-          f"turret:{len(turrets)} prop:{len(props)} set:{len(sets)}  "
-          f"({len(warnings)} warnings)")
+          f"turret:{len(turrets)} exit:{len(exits)} lz:{1 if lz else 0} "
+          f"prop:{len(props)} set:{len(sets)}  ({len(warnings)} warnings)")
 
 
 if __name__ == "__main__":

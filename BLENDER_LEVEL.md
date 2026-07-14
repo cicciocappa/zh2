@@ -160,16 +160,20 @@ Warning (il `.scn` esce comunque):
   raggiungibilità — flood fill su `phi` — resta rimandata come in
   EDITOR_PLAN E4, aperture §9).
 
-## 8. Nomi riservati per GAME_PLAN fase A (non ancora implementati)
+## 8. Entità di missione (GAME_PLAN fase A) — IMPLEMENTATE (2026-07-14)
 
-Quando `mission.c` estenderà il formato (`exit`/`lz`/`mission`/`budget`),
-la convenzione è già fissata — NON usare questi nomi per altro:
+`mission.c` e il formato `.scn` le consumano dal 2026-07-04; l'export le
+emette dal 2026-07-14 (fixture `test_level` estesa, regressione: righe
+preesistenti bit-identiche):
 
-- `exit` — rect (come `spawn`) con properties `rate`, `delay`, `pool` →
-  `exit x y w h rate [delay] [pool]`;
-- `lz` — empty puntuale (uno solo per livello) → `lz x y`;
-- scena: `mission` (stringa, es. `"survive 300 prep 90"`), `budget`
-  (float) → righe `mission …` / `budget …`.
+- `exit` — rect (come `spawn`) con custom properties `rate`
+  (**obbligatoria**, come `weight` per `cost`), `delay` (default 0),
+  `pool` (default 0 = illimitato) → `exit x y w h rate delay pool`;
+- `lz` — empty puntuale, **uno solo per livello** (due = errore bloccante);
+  lo yaw dell'empty è l'orientamento del container → `lz x y yaw`;
+- scena: `mission` (stringa, deve iniziare per `survive` o `clear`, es.
+  `"survive 300 prep 90"`), `budget` (float), `biostock` (int) →
+  righe `mission …` / `budget …` / `biostock …`.
 
 Regola invariata da EDITOR_PLAN §1: il formato lo estende chi implementa
 la semantica; l'exporter aggiunge l'emissione DOPO che `scene_load` +
