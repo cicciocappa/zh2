@@ -6,7 +6,7 @@
 # terrain grid, statics (one with footprint, one nav="none"), rect entities,
 # wall/turret, explicit polys (rotated blockout + cost hazard), props (both a
 # prop_<key> empty and a collection instance), `_`-ignored object, camera+light,
-# mission entities (exit rect + lz empty + mission/budget/biostock scene props).
+# mission entities (exit rect + lz empty + mission/budget/biotank scene props).
 import bpy
 import math
 import os
@@ -22,7 +22,8 @@ sc["set_k_density"] = 2.5
 sc["set_k_jam"] = 8.0
 sc["mission"] = "survive 120 prep 10"
 sc["budget"] = 500.0
-sc["biostock"] = 2
+sc["biotank"] = 0.0
+sc["biotank_cap"] = 500.0
 
 root = sc.collection
 

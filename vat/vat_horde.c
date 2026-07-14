@@ -1164,7 +1164,7 @@ static void scorch_add(float x, float y, float r) {
 // dell'economia biomassa. Nel sandbox vat_horde restano infiniti salvo env.
 // VAT_HORDE_MAG="light,heavy,flame,acid" (0 = infinito), VAT_HORDE_RELOAD=s.
 static int   gMagDef[4] = {0,0,0,0};
-static float gReloadDef = 5.0f;
+static float gReloadDef = 12.0f;    // §5 v2: la finestra muta deve far MALE
 static int   gTurMagSeen = 0;             // torrette gia' equipaggiate
 static void host_init_mag_defaults(void){
 #ifdef GAME_SHELL
@@ -1189,9 +1189,9 @@ static void host_apply_mags(DefGame *g){
 }
 
 #ifdef GAME_SHELL
-// Attacchi speciali: colpo di mortaio (GAME_PLAN fase F). Dal 2026-07-10 il
-// colpo CONSUMA un item BIO_MORTAR dallo store del convertitore (BIOMASS_DESIGN
-// §12.Q2: solo colpi prodotti, si parte con lo store pieno). In ASSALTO M o l'icona in
+// Attacchi speciali: colpo di mortaio (GAME_PLAN fase F). Il colpo si paga in
+// BIOMASSA al momento del tiro (BIOMASS_DESIGN v2 §4: niente scorte di colpi —
+// BIO_MORTAR_COST dal serbatoio). In ASSALTO M o l'icona in
 // barra entra in aiming (una X segue il mouse a terra); LMB programma il colpo,
 // che dopo MORTAR_DELAY esplode via host_blast sul punto mirato. Stato qui (serve
 // a build_world per il reset); barra/aiming più sotto. La formalizzazione (modulo
@@ -1216,6 +1216,11 @@ static int gAimMort = 0; static float gAimX = 0.0f, gAimY = 0.0f;
 // click è rifiutato e la X di mira si spegne; in aiming i due anelli sono
 // disegnati attorno alla base. Env VAT_HORDE_MORTAR_MIN/MAX.
 static float gMortMinR = 12.0f, gMortMaxR = 90.0f;
+// COOLDOWN fra un colpo e l'altro (2026-07-14): senza, un serbatoio pieno si
+// scarica in una raffica di colpi back-to-back — il costo in biomassa da solo
+// non è un freno al RITMO. Il tubo si raffredda: finché gMortCd > 0 il click è
+// rifiutato e il pulsante lo dice. Env VAT_HORDE_MORTAR_CD.
+static float gMortCdMax = 5.0f, gMortCd = 0.0f;
 #endif
 
 // Esplosione lato host (EXPLOSION_DESIGN.md §3): la verità di gioco (def_blast:
@@ -1755,27 +1760,38 @@ static struct {
 static void shell_do_act(AppAction act);          // definita più sotto
 static App gApp;                                  // stato shell (sezione GAME SHELL)
 
-// --- economia biomassa (BIOMASS_DESIGN): l'UNICO convertitore della base.
-// Stato host: modulo bio (kill -> tank -> item), targeting del kit riparazione
-// (stile pennello, §12.Q3), flash HUD alla produzione. Reset in build_world.
+// --- economia biomassa v2 (BIOMASS_DESIGN): valuta UNICA, spesa a domanda.
+// Niente convertitore, niente store per item: i kill riempiono il serbatoio, le
+// azioni lo prosciugano al loro costo. Stato host: il modulo bio + le tre
+// MODALITÀ-VERBO della barra (§4), esclusive fra loro. Reset in build_world.
 static Bio  gBio;
-static int  gAimRepair = 0;               // click su struttura = ripara
-static float gBioFlash = 0.0f;            // > 0: evidenzia l'item appena uscito
-static int   gBioLastItem = -1;
-#define BIO_REPAIR_HP 250.0f              // HP per kit (manopola balance.cfg)
+static int  gAimRepair = 0;               // RIPARA (R): LMB tenuto = flusso bio->HP
+static int  gRepairHold = 0;              // LMB giù nella modalità RIPARA
+static int  gAdjOn = 0;                   // REGOLA (V): click su torretta = riorienta
+static int  gAdjTid = -1;                 // torretta col cono in mano (drag in corso)
+static float gAdjFacing = 0.0f;
+static float gBioFlash = 0.0f;            // > 0: serbatoio pieno, kill SPRECATO
+// costi delle azioni (§6; manopole balance.cfg quando arriverà il Blocco 3)
+#define BIO_MORTAR_COST  40.0f            // un colpo di mortaio
+#define BIO_REPAIR_RATE 100.0f            // HP/s a mantenimento (1 bio = 1 HP)
+#define BIO_ADJUST_COST   0.0f            // REGOLA: gratis in v1
+static const float BIO_RELOAD_COST[4] = { 25.0f, 35.0f, 30.0f, 30.0f }; // per kind
 // resa per body (§6: walker 1, tank 8; obeso 2 in proporzione agli HP)
 static const float BIO_YIELD[BT_COUNT] = { 2.0f, 1.0f, 1.0f, 1.0f, 8.0f };
-static const char *BIO_NAME[BIO_ITEM_COUNT] =
-    { "PROIETTILI", "PERFORANTI", "COMBUSTIB.", "ACIDO",
-      "MORTAIO", "RIPARAZ.", "UPGRADE" };
-static void on_bio_produced(void *u, int item){
-    (void)u; gBioFlash = 0.8f; gBioLastItem = item;
-    au_play(SND_MENU_MOVE);               // ping di produzione (v1)
-}
 static void host_bio_kill(DefBody body){
     if (gApp.state != APP_ASSAULT) return;    // biomassa = valuta dell'ASSALTO
-    bio_add(&gBio, BIO_YIELD[((int)body >= 0 && body < BT_COUNT) ? body : BT_MAN]);
+    float lost = bio_add(&gBio,
+                         BIO_YIELD[((int)body >= 0 && body < BT_COUNT) ? body : BT_MAN]);
+    if (lost > 0.0f) gBioFlash = 0.5f;        // §3: lo spreco lampeggia, non chiede nulla
 }
+#ifdef GAME_SHELL
+// una sola modalità-verbo alla volta (§4): accenderne una spegne le altre.
+static void bio_mode_set(int mort, int rep, int adj){
+    gAimMort = mort; gAimRepair = rep; gAdjOn = adj;
+    if (!rep) gRepairHold = 0;
+    if (!adj) gAdjTid = -1;
+}
+#endif
 
 // quota a cui la BASE del container appeso tocca terra alla lz
 static float heli_alt_low(void){
@@ -2129,18 +2145,13 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     spctx->s = s; spctx->vl = vl;
     gScorchN = gScorchHead = 0;                     // crateri scorch: mondo pulito
 #ifdef GAME_SHELL
-    gAimMort = 0; for(int i=0;i<STRIKE_MAX;i++) gStrikes[i].on = 0;  // reset mortaio
+    for(int i=0;i<STRIKE_MAX;i++) gStrikes[i].on = 0;                // reset mortaio
+    gMortCd = 0.0f;                                                  // tubo freddo
     gHeli.active = 0; gLzHeld = 0;                                   // reset cinematica
-    // convertitore biomassa (BIOMASS_DESIGN): stato pulito + stock iniziale.
-    // §12.Q6: `biostock N` della scena = N di ogni munizione (4 ammo + colpi
-    // mortaio); omesso = 1 di ogni ammo, mortaio PIENO (§12.Q2).
-    gAimRepair = 0; gBioFlash = 0.0f; gBioLastItem = -1;
-    bio_init(&gBio);
-    bio_set_produced_cb(&gBio, on_bio_produced, NULL);
-    for(int it=BIO_AMMO_LIGHT; it<=BIO_AMMO_ACID; it++)
-        bio_set_store(&gBio, it, sc->bio_stock >= 0 ? sc->bio_stock : 1);
-    bio_set_store(&gBio, BIO_MORTAR,
-                  sc->bio_stock >= 0 ? sc->bio_stock : bio_cap(&gBio, BIO_MORTAR));
+    // serbatoio biomassa (BIOMASS_DESIGN v2 §3+§8): `biotank [start] [cap]`
+    // della scena (omesso = vuoto, capienza di default). Verbi tutti spenti.
+    bio_mode_set(0,0,0); gBioFlash = 0.0f;
+    bio_init(&gBio, sc->bio_start, sc->bio_cap);
 #endif
     gTurMagSeen = 0;                      // caricatori: ri-equipaggia le torrette
 
@@ -2636,6 +2647,7 @@ static PrepTab gPrepTabs[PREP_TABS]={ {"1 TORRETTE",PL_TURRET,{0},0},
 static int   gPrepTab=0;
 static float gPrepBarY=1e9f;                       // sopra = mondo, sotto = UI
 static UiRect gPrepTabR[PREP_TABS], gPrepCardR[PREP_TAB_ITEMS], gPrepUndoR, gPrepGoR;
+static UiRect gPrepAdjR;                           // REGOLA (V) anche in PREP
 // ghost di linea (drag in corso): il blocco ghost del frame scrive qui, la
 // barra (disegnata dopo) legge per il costo live accanto al cursore (§5).
 static int gLineOn=0, gLineValid=0, gLineCost=0; static float gLineLen=0.0f;
@@ -2680,6 +2692,9 @@ static void prep_ui_layout(int SW,int SH){
         gPrepTabR[t]=(UiRect){x,y0+6,w,22}; x+=w+8.0f;
     }
     gPrepUndoR=(UiRect){x+12,y0+6,ui_text_w(2,"ANNULLA")+20.0f,22};
+    // REGOLA anche in PREP (BIOMASS §12.Q3): sbagliare il facing al piazzamento
+    // non deve costare un undo. Gratis, stesso gesto dell'assalto.
+    gPrepAdjR=(UiRect){gPrepUndoR.x+gPrepUndoR.w+8,y0+6,ui_text_w(2,"REGOLA (V)")+20.0f,22};
     x=10.0f;
     for(int c=0;c<PREP_TAB_ITEMS;c++){              // riga card (tab attiva)
         gPrepCardR[c]=(UiRect){x,y0+36,PREP_CARD_W,PREP_CARD_H}; x+=PREP_CARD_W+8.0f; }
@@ -2745,6 +2760,10 @@ static int prep_ui_click(float mx,float my,int SW,int SH,DefGame *g,SimP *s){
     if(ui_hit(&gPrepUndoR,mx,my)){
         if(pl_undo_pop(p,g,s)) gStructOn=1;
         plmod_trim(g); return 1; }
+    if(ui_hit(&gPrepAdjR,mx,my)){                   // REGOLA (V): esclusiva col ghost
+        bio_mode_set(0,0,!gAdjOn);
+        if(gAdjOn) p->active=0;
+        au_play(SND_MENU_SELECT); return 1; }
     if(ui_hit(&gPrepGoR,mx,my)){                    // = INVIO (APP_IN_CONFIRM)
         au_play(SND_MENU_SELECT);
         shell_do_act(app_input(&gApp,APP_IN_CONFIRM)); return 1; }
@@ -2773,6 +2792,10 @@ static void prep_bar_draw(int SW,int SH,DefGame *g,float mpx,float mpy){
       int can=(p->undo && p->undo->n>0); float c=can?1.0f:0.4f;
       ui_quad(r->x,r->y,r->w,r->h,0.14f,0.14f,0.20f,0.9f);
       ui_text(r->x+10,r->y+4,2,"ANNULLA",c,c,c,1); }
+    { const UiRect *r=&gPrepAdjR;                   // REGOLA (BIOMASS §4)
+      ui_quad(r->x,r->y,r->w,r->h,gAdjOn?0.45f:0.14f,gAdjOn?0.28f:0.14f,
+              gAdjOn?0.10f:0.20f,0.9f);
+      ui_text(r->x+10,r->y+4,2,"REGOLA (V)",1,1,1,1); }
     { char bt[48]; snprintf(bt,sizeof bt,"BUDGET %d $",def_budget(g));  // §3
       int poor=(sel && def_budget(g)<sel->cost);
       ui_text((float)SW-ui_text_w(3,bt)-12,y0+9,3,bt,
@@ -2816,122 +2839,94 @@ static void prep_bar_draw(int SW,int SH,DefGame *g,float mpx,float mpy){
       ui_text_c(r->x+r->w*0.5f,y0+100,1.5f,"INVIO",0.6f,0.6f,0.6f,1); }
 }
 
-// ---- barra ASSALTO: mortaio (aiming) + convertitore biomassa (BIOMASS_DESIGN
-// §12.Q5 v1: card cliccabili = output, O cicla; contatori/costi in card;
-// serbatoio + avviso spreco in riga alta; upgrade §7 a due bottoni). Layout
-// on demand come la barra PREP (mai rect stantii).
-static UiRect gMortR; static float gStrikeBarY = 1e9f;
-static UiRect gBioCardR[BIO_ITEM_COUNT], gUpCostR, gUpCapR;
-#define BIO_CARD_W 88.0f
+// ---- barra ASSALTO (BIOMASS_DESIGN v2 §4): SOLO i verbi del giocatore —
+// MORTAIO / RIPARA / REGOLA, ognuno una modalità esclusiva col suo costo — più
+// il serbatoio di biomassa (una barra, un numero). Niente card di produzione:
+// il convertitore v1 non esiste più. Layout on demand come la barra PREP.
+static UiRect gMortR, gRepR, gAdjR; static float gStrikeBarY = 1e9f;
+#define VERB_W 132.0f
 static void strikes_ui_layout(int SW, int SH) {
+    (void)SW;
     float y0 = (float)SH - PREP_BAR_H; gStrikeBarY = y0;
-    gMortR = (UiRect){ 10.0f, y0 + 36, PREP_CARD_W, PREP_CARD_H };
-    float x = 10.0f + PREP_CARD_W + 26.0f;
-    for (int i = 0; i < BIO_ITEM_COUNT; i++) {
-        gBioCardR[i] = (UiRect){ x, y0 + 36, BIO_CARD_W, PREP_CARD_H };
-        x += BIO_CARD_W + 6.0f;
+    gMortR = (UiRect){ 10.0f,               y0 + 36, VERB_W, PREP_CARD_H };
+    gRepR  = (UiRect){ 10.0f + VERB_W + 8,  y0 + 36, VERB_W, PREP_CARD_H };
+    gAdjR  = (UiRect){ 10.0f + 2*(VERB_W+8),y0 + 36, VERB_W, PREP_CARD_H };
+}
+// pulsante-verbo: cornice accesa in modalità, titolo + tasto + costo
+static void verb_button(const UiRect *r, int on, int afford,
+                        const char *title, const char *key, const char *cost) {
+    ui_quad(r->x, r->y, r->w, r->h, on ? 0.28f : 0.12f, on ? 0.14f : 0.10f, 0.10f, 0.92f);
+    ui_quad(r->x, r->y, r->w, 2, 0.65f, 0.32f, 0.12f, 1);
+    if (on) {                                        // cornice della modalità attiva
+        ui_quad(r->x, r->y + r->h - 2, r->w, 2, 0.95f, 0.55f, 0.20f, 1);
+        ui_quad(r->x, r->y, 2, r->h, 0.95f, 0.55f, 0.20f, 1);
+        ui_quad(r->x + r->w - 2, r->y, 2, r->h, 0.95f, 0.55f, 0.20f, 1);
     }
-    float uw2 = ui_text_w(2, "SCORTA +1") + 16.0f;
-    gUpCapR  = (UiRect){ (float)SW - uw2 - 10.0f, y0 + 6, uw2, 22 };
-    float uw1 = ui_text_w(2, "COSTI -10%") + 16.0f;
-    gUpCostR = (UiRect){ gUpCapR.x - uw1 - 8.0f, y0 + 6, uw1, 22 };
+    float cx = r->x + r->w * 0.5f, c = afford ? 0.95f : 0.45f;
+    ui_text_c(cx, r->y + 10, 2, title, c, c * 0.95f, c * 0.9f, 1);
+    ui_text_c(cx, r->y + 30, 1.5f, cost, afford ? 0.55f : 0.40f,
+              afford ? 0.95f : 0.45f, 0.45f, 1);
+    ui_text_c(cx, r->y + r->h - 13, 1.5f, key, 0.70f, 0.70f, 0.70f, 1);
 }
 static void strikes_bar_draw(int SW, int SH) {
     strikes_ui_layout(SW, SH);
     float y0 = gStrikeBarY;
     ui_quad(0, y0, (float)SW, PREP_BAR_H, 0.05f, 0.05f, 0.09f, 0.88f);
     ui_quad(0, y0, (float)SW, 2, 0.35f, 0.10f, 0.08f, 1);
-    // riga alta: serbatoio verso il costo dell'output + avviso spreco (§4)
-    { int out = bio_output(&gBio);
-      float need = bio_cost(&gBio, out), tank = bio_tank(&gBio);
+    // riga alta: IL serbatoio (§3) — un numero, una barra, il flash dello spreco
+    { float tank = bio_tank(&gBio), cap = bio_cap(&gBio);
       char tt[64]; snprintf(tt, sizeof tt, "BIOMASSA %.0f/%.0f",
-                            (double)tank, (double)need);
+                            (double)tank, (double)cap);
       ui_text(10, y0 + 9, 2, tt, 0.55f, 0.95f, 0.45f, 1);
-      float bw = 150.0f, bx = 10 + ui_text_w(2, tt) + 12;
+      float bw = 220.0f, bx = 10 + ui_text_w(2, tt) + 12;
       ui_quad(bx, y0 + 10, bw, 12, 0.10f, 0.14f, 0.10f, 0.9f);
-      float f = need > 0 ? tank / need : 0.0f; if (f > 1) f = 1;
-      ui_quad(bx, y0 + 10, bw * f, 12, 0.30f, 0.80f, 0.30f, 1);
-      if (bio_full(&gBio))                         // lo spreco e' INFORMATO
-          ui_text(bx + bw + 16, y0 + 9, 2, "STOCCAGGIO PIENO - BIOMASSA SPRECATA",
+      float f = cap > 0 ? tank / cap : 0.0f; if (f > 1) f = 1;
+      int hot = (gBioFlash > 0.0f);                  // kill sprecato: lampeggia
+      ui_quad(bx, y0 + 10, bw * f, 12, hot ? 0.95f : 0.30f,
+              hot ? 0.35f : 0.80f, 0.30f, 1);
+      if (bio_full(&gBio))                           // lo spreco resta INFORMATO
+          ui_text(bx + bw + 16, y0 + 9, 2, "SERBATOIO PIENO - BIOMASSA SPRECATA",
                   0.95f, 0.25f, 0.20f, 1);
     }
-    // upgrade del convertitore (§7): un kit = un livello, ramo a scelta
-    { int kits = bio_count(&gBio, BIO_UPGRADE);
-      int can1 = kits > 0 && bio_can_upgrade_costs(&gBio);
-      int can2 = kits > 0 && bio_can_upgrade_caps(&gBio);
-      ui_quad(gUpCostR.x, gUpCostR.y, gUpCostR.w, gUpCostR.h, 0.14f, 0.14f, 0.20f, 0.9f);
-      ui_quad(gUpCapR.x,  gUpCapR.y,  gUpCapR.w,  gUpCapR.h,  0.14f, 0.14f, 0.20f, 0.9f);
-      float c1 = can1 ? 1.0f : 0.4f, c2 = can2 ? 1.0f : 0.4f;
-      ui_text(gUpCostR.x + 8, gUpCostR.y + 4, 2, "COSTI -10%", c1, c1, c1, 1);
-      ui_text(gUpCapR.x + 8,  gUpCapR.y + 4,  2, "SCORTA +1",  c2, c2, c2, 1);
-    }
-    // mortaio (azione di fuoco; i colpi vengono dallo store BIO_MORTAR)
-    { const UiRect *r = &gMortR; int on = gAimMort;
-      int shots = bio_count(&gBio, BIO_MORTAR);
-      ui_quad(r->x, r->y, r->w, r->h, on ? 0.28f : 0.12f, on ? 0.14f : 0.10f, 0.10f, 0.92f);
-      ui_quad(r->x, r->y, r->w, 2, 0.65f, 0.32f, 0.12f, 1);
-      float cx = r->x + r->w * 0.5f, cy = r->y + 22;
-      ui_quad(cx - 10, cy - 2, 20, 7, 0.35f, 0.37f, 0.35f, 1);      // piastra
-      ui_quad(cx - 2, cy - 13, 5, 12, 0.52f, 0.52f, 0.58f, 1);      // tubo
-      char mc[16]; snprintf(mc, sizeof mc, "%d COLPI", shots);
-      float tc = shots > 0 ? 0.95f : 0.45f;
-      ui_text_c(cx, r->y + 32, 1.5f, mc, tc, tc * 0.9f, 0.35f, 1);
-      ui_text_c(cx, r->y + r->h - 12, 1.5f, "MORTAIO (M)", 0.95f, 0.9f, 0.85f, 1);
-    }
-    // card del convertitore: click = seleziona output
-    for (int i = 0; i < BIO_ITEM_COUNT; i++) {
-        const UiRect *cr = &gBioCardR[i];
-        int sel = (bio_output(&gBio) == i);
-        int n = bio_count(&gBio, i), cap = bio_cap(&gBio, i);
-        ui_quad(cr->x, cr->y, cr->w, cr->h, 0.12f, 0.12f, 0.17f, 0.92f);
-        if (gBioFlash > 0.0f && gBioLastItem == i)      // item appena uscito
-            ui_quad(cr->x, cr->y, cr->w, cr->h, 0.30f, 0.90f, 0.35f, 0.30f * gBioFlash);
-        if (sel) { ui_quad(cr->x, cr->y, cr->w, 2, 0.30f, 0.95f, 0.35f, 1);
-                   ui_quad(cr->x, cr->y + cr->h - 2, cr->w, 2, 0.30f, 0.95f, 0.35f, 1);
-                   ui_quad(cr->x, cr->y, 2, cr->h, 0.30f, 0.95f, 0.35f, 1);
-                   ui_quad(cr->x + cr->w - 2, cr->y, 2, cr->h, 0.30f, 0.95f, 0.35f, 1); }
-        ui_text_c(cr->x + cr->w * 0.5f, cr->y + 7, 1.5f, BIO_NAME[i],
-                  0.85f, 0.85f, 0.85f, 1);
-        char cnt[16]; snprintf(cnt, sizeof cnt, "%d/%d", n, cap);
-        float tc = n > 0 ? 0.95f : 0.45f;
-        ui_text_c(cr->x + cr->w * 0.5f, cr->y + 21, 2.5f, cnt,
-                  tc, n >= cap ? 0.85f : tc, 0.40f, 1);
-        char cs[20]; snprintf(cs, sizeof cs, "%.0f BIO", (double)bio_cost(&gBio, i));
-        ui_text_c(cr->x + cr->w * 0.5f, cr->y + 46, 1.5f, cs, 0.55f, 0.75f, 0.50f, 1);
-    }
+    float tank = bio_tank(&gBio);
+    // MORTAIO: in cooldown il pulsante dice quanto manca (il rifiuto del click
+    // dev'essere LEGGIBILE, non sembrare un bug) + barra di raffreddamento.
+    { char c[28];
+      if (gMortCd > 0.0f) snprintf(c, sizeof c, "PRONTO IN %.1f S", (double)gMortCd);
+      else                snprintf(c, sizeof c, "%.0f BIO", (double)BIO_MORTAR_COST);
+      verb_button(&gMortR, gAimMort, gMortCd <= 0.0f && tank >= BIO_MORTAR_COST,
+                  "MORTAIO", "M", c);
+      if (gMortCd > 0.0f && gMortCdMax > 0.0f) {
+          float f = 1.0f - gMortCd / gMortCdMax;      // 0 appena sparato -> 1 pronto
+          const UiRect *r = &gMortR;
+          ui_quad(r->x + 6, r->y + r->h - 24, r->w - 12, 4, 0.16f, 0.16f, 0.20f, 0.9f);
+          ui_quad(r->x + 6, r->y + r->h - 24, (r->w - 12) * f, 4, 0.95f, 0.70f, 0.20f, 1);
+      } }
+    verb_button(&gRepR, gAimRepair, tank > 0.0f, "RIPARA", "R", "1 BIO / HP");
+    verb_button(&gAdjR, gAdjOn, 1, "REGOLA", "V",
+                BIO_ADJUST_COST > 0.0f ? "COSTO" : "GRATIS");
     // riga hint contestuale in fondo alla barra
     const char *hint =
         gAimMort   ? "MIRA COL MOUSE - CLICK SINISTRO = FUOCO (RMB/M ANNULLA)" :
-        gAimRepair ? "CLICK SU UNA STRUTTURA = RIPARA (RMB/R ANNULLA)" :
-        "CLICK SU CARD/O = OUTPUT - CLICK SU TORRETTA = RICARICA - R RIPARA - M MORTAIO";
+        gAimRepair ? "TIENI PREMUTO SU UNA STRUTTURA = RIPARA (RMB/R ANNULLA)" :
+        gAdjOn     ? "TRASCINA DA UNA TORRETTA = NUOVA DIREZIONE (RMB/V ANNULLA)" :
+        "CLICK SU UNA TORRETTA IN RICARICA = RICARICA SUBITO - M MORTAIO - R RIPARA - V REGOLA";
     ui_text_c((float)SW * 0.5f, y0 + 101, 1, hint, 0.65f, 0.65f, 0.65f, 1);
 }
 static int strikes_ui_click(float mx, float my, int SW, int SH) {
     strikes_ui_layout(SW, SH);
     if (my < gStrikeBarY) return 0;
     if (ui_hit(&gMortR, mx, my)) {
-        gAimMort = !gAimMort; if (gAimMort) gAimRepair = 0;
-        au_play(SND_MENU_SELECT); return 1; }
-    for (int i = 0; i < BIO_ITEM_COUNT; i++)
-        if (ui_hit(&gBioCardR[i], mx, my)) {        // card = seleziona output
-            bio_set_output(&gBio, i); au_play(SND_MENU_MOVE); return 1; }
-    if (ui_hit(&gUpCostR, mx, my)) {                // §7 ramo costi
-        if (bio_count(&gBio, BIO_UPGRADE) > 0 && bio_can_upgrade_costs(&gBio)) {
-            bio_take(&gBio, BIO_UPGRADE); bio_upgrade_costs(&gBio);
-            au_play(SND_MENU_SELECT);
-        } else au_play(SND_MENU_MOVE);
-        return 1; }
-    if (ui_hit(&gUpCapR, mx, my)) {                 // §7 ramo stoccaggio
-        if (bio_count(&gBio, BIO_UPGRADE) > 0 && bio_can_upgrade_caps(&gBio)) {
-            bio_take(&gBio, BIO_UPGRADE); bio_upgrade_caps(&gBio);
-            au_play(SND_MENU_SELECT);
-        } else au_play(SND_MENU_MOVE);
-        return 1; }
+        bio_mode_set(!gAimMort, 0, 0); au_play(SND_MENU_SELECT); return 1; }
+    if (ui_hit(&gRepR, mx, my)) {
+        bio_mode_set(0, !gAimRepair, 0); au_play(SND_MENU_SELECT); return 1; }
+    if (ui_hit(&gAdjR, mx, my)) {
+        bio_mode_set(0, 0, !gAdjOn); au_play(SND_MENU_SELECT); return 1; }
     return 1;                                       // sfondo barra: consumato (mai mondo)
 }
 
-// picking per il kit riparazione (§12.Q3, click): struttura NON crollata piu'
-// vicina al punto cliccato (scan celle nel raggio del click).
+// picking per la RIPARAZIONE (§4): struttura NON crollata piu' vicina al punto
+// cliccato (scan celle nel raggio del click). Fallback dell'hover-inspect.
 static int repair_pick_struct(DefGame *g, SimP *s, float wx, float wy) {
     float cs = simp_cell_size(s), R = 1.6f;
     int cx0 = (int)((wx - R) / cs), cy0 = (int)((wy - R) / cs);
@@ -2947,13 +2942,22 @@ static int repair_pick_struct(DefGame *g, SimP *s, float wx, float wy) {
         }
     return best;
 }
-// picking per la ricarica istantanea (§12.Q4, click): torretta viva col
-// caricatore NON pieno (o in ricarica) sotto il cursore.
+// picking per la ricarica istantanea (§5, click): torretta viva col caricatore
+// NON pieno (o in ricarica) sotto il cursore.
 static int reload_pick_turret(DefGame *g, float wx, float wy) {
     int nt = def_turret_count(g), best = -1; float bd = 1.4f * 1.4f;
     for (int i = 0; i < nt; i++) { DefTurret *t = def_turret(g, i);
         if (def_turret_disabled(g, i) || t->mag_size <= 0) continue;
         if (t->mag >= t->mag_size && def_turret_reloading(g, i) <= 0.0f) continue;
+        float dx = t->x - wx, dy = t->y - wy, d = dx * dx + dy * dy;
+        if (d < bd) { bd = d; best = i; } }
+    return best;
+}
+// picking per REGOLA (§4): una torretta viva qualunque sotto il cursore.
+static int adjust_pick_turret(DefGame *g, float wx, float wy) {
+    int nt = def_turret_count(g), best = -1; float bd = 1.4f * 1.4f;
+    for (int i = 0; i < nt; i++) { DefTurret *t = def_turret(g, i);
+        if (def_turret_disabled(g, i)) continue;
         float dx = t->x - wx, dy = t->y - wy, d = dx * dx + dy * dy;
         if (d < bd) { bd = d; best = i; } }
     return best;
@@ -3040,6 +3044,97 @@ static void hover_tooltip_draw(float W, float H, float mpx, float mpy){
     }
 }
 
+// --- barra di reload world-space (BIOMASS §5) + cursori-icona delle modalità
+// (§4). La barra appare SOLO durante la ricarica e sparisce a caricatore pieno:
+// il giocatore vede quanto manca e decide se pagare la ricarica istantanea.
+// Il frame body proietta i punti sopra la canna, la UI li disegna in pixel.
+#define REL_BAR_MAX 64
+static struct { float x, y, f; } gRelBar[REL_BAR_MAX];   // schermo + progresso 0..1
+static int gRelBarN = 0;
+// proiezione world -> pixel (vp è column-major come lo vuole GL). 0 = dietro la camera.
+static int world_to_screen(const float vp[16], float x, float y, float z,
+                           int W, int H, float *sx, float *sy){
+    float w = vp[3]*x + vp[7]*y + vp[11]*z + vp[15];
+    if(w <= 1e-4f) return 0;
+    float cx = (vp[0]*x + vp[4]*y + vp[8]*z + vp[12]) / w;
+    float cy = (vp[1]*x + vp[5]*y + vp[9]*z + vp[13]) / w;
+    *sx = (cx*0.5f + 0.5f) * (float)W;
+    *sy = (1.0f - (cy*0.5f + 0.5f)) * (float)H;
+    return 1;
+}
+static void reload_bars_draw(void){
+    for(int i=0;i<gRelBarN;i++){
+        float bw=44.0f, bh=6.0f;
+        float x=gRelBar[i].x-bw*0.5f, y=gRelBar[i].y-bh*0.5f;
+        float f=gRelBar[i].f; if(f<0)f=0; if(f>1)f=1;
+        ui_quad(x-1,y-1,bw+2,bh+2,0.02f,0.02f,0.03f,0.75f);
+        ui_quad(x,y,bw,bh,0.16f,0.16f,0.20f,0.9f);
+        ui_quad(x,y,bw*f,bh,0.95f,0.70f,0.20f,1);        // ambra: torretta MUTA
+    }
+}
+// icona accanto al cursore: dice in che modalità si è senza guardare la barra
+// (§4: quad/glifi del layer UI, niente pipeline asset né SDL cursor).
+static void mode_cursor_draw(float mpx, float mpy){
+    float x=mpx+14, y=mpy+14;
+    if(gAimRepair){                                       // martello
+        ui_quad(x,y+8,4,10,0.75f,0.60f,0.35f,1);          // manico
+        ui_quad(x-4,y+2,14,6,0.80f,0.82f,0.86f,1);        // testa
+    } else if(gAdjOn){                                    // V (evoca il cono)
+        for(int k=0;k<6;k++){
+            ui_quad(x+(float)k,      y+2+(float)k*2, 3,3, 0.95f,0.75f,0.25f,1);
+            ui_quad(x+12-(float)k,   y+2+(float)k*2, 3,3, 0.95f,0.75f,0.25f,1);
+        }
+    }
+    // il MORTAIO ha già la sua X di mira sul mondo: niente icona al cursore
+}
+
+// riparazione a MANTENIMENTO (BIOMASS §4): finché LMB resta giù su una struttura
+// danneggiata la biomassa cola in HP a BIO_REPAIR_RATE (1 bio = 1 HP). Si ferma
+// da sola a hp_max, a serbatoio vuoto o al rilascio. Mai sulle crollate (il
+// crollo è definitivo). Bersaglio = quello dell'hover (piani di quota: prende la
+// torretta su tutta la sagoma). Chiamata dal frame body, non dagli eventi: la
+// spesa è un FLUSSO, deve essere dosabile.
+static void repair_channel(DefGame *g, float dt){
+    if(!gAimRepair || !gRepairHold) return;
+    int sid=gHovSid;
+    if(sid<0 || def_struct_collapsed(g,sid)) return;
+    float miss=def_struct_hp_max(g,sid)-def_struct_hp(g,sid);
+    if(miss<=0.0f) return;                       // già sana: niente spesa
+    float want=BIO_REPAIR_RATE*dt;
+    if(want>miss) want=miss;
+    if(want>bio_tank(&gBio)) want=bio_tank(&gBio);
+    if(want<=0.0f) return;                       // serbatoio a secco
+    bio_take(&gBio,want);
+    def_struct_repair(g,sid,want);               // 1 bio = 1 HP
+}
+
+// gesto REGOLA (BIOMASS §4), condiviso PREP/ASSALTO: LMB su una torretta prende
+// il suo cono, il drag lo orienta (gAdjFacing lo aggiorna il frame body dal
+// cursore), il rilascio committa il nuovo facing pagandone il costo; RMB annulla
+// il gesto in corso, o esce dalla modalità. Stesso gesto del piazzamento
+// direzionale.
+static void adjust_event(const SDL_Event *e, DefGame *g, const float *vp,
+                         float mxf, float myf, int SW, int SH){
+    if(e->type==SDL_EVENT_MOUSE_BUTTON_DOWN){
+        if(e->button.button==SDL_BUTTON_LEFT){
+            int tid=gHovTurret; float wx,wy;
+            if(tid<0 && pick_y0(vp,mxf,myf,SW,SH,&wx,&wy))
+                tid=adjust_pick_turret(g,wx,wy);
+            if(tid>=0){ gAdjTid=tid; gAdjFacing=def_turret(g,tid)->ang;
+                        au_play(SND_MENU_MOVE); }
+        } else if(e->button.button==SDL_BUTTON_RIGHT){
+            if(gAdjTid>=0) gAdjTid=-1; else gAdjOn=0;
+        }
+    } else if(e->type==SDL_EVENT_MOUSE_BUTTON_UP &&
+              e->button.button==SDL_BUTTON_LEFT && gAdjTid>=0){
+        if(bio_take(&gBio,BIO_ADJUST_COST)){
+            def_turret_set_facing(g,gAdjTid,gAdjFacing);
+            au_play(SND_MENU_SELECT);
+        } else au_play(SND_MENU_MOVE);           // costo attivo e serbatoio corto
+        gAdjTid=-1;
+    }
+}
+
 // pulsanti del menu: colonna sul lato DESTRO del title screen (scelta utente
 // 2026-07-12). Layout condiviso da render e hit test del mouse (mai rect
 // stantii, stesso principio della barra PREP §4).
@@ -3086,8 +3181,10 @@ static void shell_build_ui(int SW,int SH,DefGame *g,float mpx,float mpy){
         ui_quad(0,0,W,28,0,0,0,0.55f);
         ui_text(10,8,2,line,1,1,1,1);
         if(st==APP_PREP) prep_bar_draw(SW,SH,g,mpx,mpy);   // barra PREP (§3)
-        else if(st==APP_ASSAULT) strikes_bar_draw(SW,SH);  // barra strike (mortaio)
+        else if(st==APP_ASSAULT) strikes_bar_draw(SW,SH);  // barra verbi (BIOMASS §4)
+        reload_bars_draw();                                // torrette in ricarica (§5)
         hover_tooltip_draw(W,H,mpx,mpy);                   // ispezione al cursore
+        mode_cursor_draw(mpx,mpy);                         // icona della modalità (§4)
         return;
     }
     if(st==APP_DEPLOY||st==APP_EXTRACT){                // cinematiche: mondo visibile
@@ -3517,8 +3614,10 @@ int main(int argc, char **argv){
 #ifdef GAME_SHELL
     if(getenv("VAT_HORDE_MORTAR_MIN")) gMortMinR=atof(getenv("VAT_HORDE_MORTAR_MIN"));
     if(getenv("VAT_HORDE_MORTAR_MAX")) gMortMaxR=atof(getenv("VAT_HORDE_MORTAR_MAX"));
+    if(getenv("VAT_HORDE_MORTAR_CD"))  gMortCdMax=atof(getenv("VAT_HORDE_MORTAR_CD"));
     if(gMortMinR<0) gMortMinR=0;
     if(gMortMaxR<gMortMinR+1.0f) gMortMaxR=gMortMinR+1.0f;
+    if(gMortCdMax<0.0f) gMortCdMax=0.0f;
 #endif
     host_init_mag_defaults();   // caricatori (BIOMASS §5): default kind + env
     printf("torrette 3D: light=%s heavy=%s flame=%s acid=%s (scala %.2f)\n",
@@ -3899,9 +3998,12 @@ int main(int argc, char **argv){
                                     float rd=sqrtf(rdx*rdx+rdy*rdy);
                                     if(rd<gMortMinR || rd>gMortMaxR){
                                         au_play(SND_MENU_MOVE);        // "no": fuori gittata
-                                    } else if(!bio_take(&gBio,BIO_MORTAR)){
-                                        au_play(SND_MENU_MOVE);        // "no": niente colpi in store
+                                    } else if(gMortCd>0.0f){
+                                        au_play(SND_MENU_MOVE);        // "no": tubo ancora caldo
+                                    } else if(!bio_take(&gBio,BIO_MORTAR_COST)){
+                                        au_play(SND_MENU_MOVE);        // "no": biomassa insufficiente
                                     } else {
+                                        gMortCd=gMortCdMax;            // riparte il cooldown
                                         // il colpo parte dalla BOCCA del tubo (modello),
                                         // fallback centro container + BASE_H
                                         float mx_,my_,mz_; mortar_muzzle(&mx_,&my_,&mz_);
@@ -3917,35 +4019,36 @@ int main(int argc, char **argv){
                         continue;                  // in aiming il mouse non guida la camera
                     }
                     if(gAimRepair){
-                        // kit riparazione attivo (BIOMASS §12.Q3, stile pennello):
-                        // LMB su una struttura = +HP consumando un kit; RMB annulla.
+                        // RIPARA (§4): LMB TENUTO PREMUTO = flusso biomassa->HP
+                        // (repair_channel, nel frame body); qui si tiene solo lo
+                        // stato del pulsante. Il bersaglio è quello dell'hover
+                        // (piani di quota: prende la torretta su tutta la sagoma);
+                        // fallback al pick a terra per un click accanto a un muro
+                        // basso. RMB esce dalla modalità.
                         if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
                             if(e.button.button==SDL_BUTTON_LEFT){
-                                // bersaglio = elemento risolto dall'hover (piani
-                                // di quota: prende la torretta su tutta la
-                                // sagoma, non solo alla base — il pick a terra
-                                // finisce DIETRO il modello con la camera
-                                // inclinata); fallback al pick a terra per un
-                                // click accanto a un muro basso.
-                                int sid=gHovSid; float wx,wy;
-                                if(sid<0 && pick_y0(vp,mxf,myf,SW,SH,&wx,&wy))
-                                    sid=repair_pick_struct(g,s,wx,wy);
-                                if(sid>=0 && def_struct_hp(g,sid)<def_struct_hp_max(g,sid)
-                                   && bio_take(&gBio,BIO_REPAIR)){
-                                    def_struct_repair(g,sid,BIO_REPAIR_HP);
-                                    au_play(SND_MENU_SELECT);
-                                    if(bio_count(&gBio,BIO_REPAIR)<=0) gAimRepair=0;
-                                } else au_play(SND_MENU_MOVE);   // niente kit / gia' sana
-                            } else if(e.button.button==SDL_BUTTON_RIGHT) gAimRepair=0;
-                        }
+                                if(gHovSid<0){ float wx,wy;
+                                    if(pick_y0(vp,mxf,myf,SW,SH,&wx,&wy))
+                                        gHovSid=repair_pick_struct(g,s,wx,wy); }
+                                if(gHovSid>=0){ gRepairHold=1; au_play(SND_MENU_SELECT); }
+                                else au_play(SND_MENU_MOVE);     // niente struttura sotto
+                            } else if(e.button.button==SDL_BUTTON_RIGHT){
+                                gRepairHold=0; gAimRepair=0; }
+                        } else if(e.type==SDL_EVENT_MOUSE_BUTTON_UP &&
+                                  e.button.button==SDL_BUTTON_LEFT) gRepairHold=0;
                         continue;             // in targeting il mouse non guida la camera
                     }
-                    // click su una torretta col caricatore non pieno = ricarica
-                    // ISTANTANEA consumando la munizione del suo kind (§5, §12.Q4)
+                    if(gAdjOn){               // REGOLA (§4): drag = nuova direzione
+                        adjust_event(&e,g,vp,mxf,myf,SW,SH);
+                        continue;
+                    }
+                    // fuori da ogni modalità: click su una torretta in ricarica =
+                    // ricarica ISTANTANEA pagando il costo del suo kind (§5). Il
+                    // bersaglio è autoevidente (ha la barra di reload addosso).
                     if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN &&
                        e.button.button==SDL_BUTTON_LEFT){
-                        // hover prima del pick a terra: stessa ragione del kit
-                        // (il click sul corpo del modello unprojetta DIETRO)
+                        // hover prima del pick a terra: il click sul corpo del
+                        // modello unprojetta DIETRO la torretta
                         int tid=-1;
                         if(gHovTurret>=0){ DefTurret *t=def_turret(g,gHovTurret);
                             if(t && t->mag_size>0 &&
@@ -3957,14 +4060,22 @@ int main(int argc, char **argv){
                             tid=reload_pick_turret(g,wx,wy);
                         if(tid>=0){
                             DefTurret *t=def_turret(g,tid);
-                            int item=BIO_AMMO_LIGHT+((t->kind>=0&&t->kind<4)?t->kind:0);
-                            if(bio_take(&gBio,item)){
+                            float cost=BIO_RELOAD_COST[(t->kind>=0&&t->kind<4)?t->kind:0];
+                            if(bio_take(&gBio,cost)){
                                 def_turret_reload_now(g,tid);
                                 au_play(SND_MENU_SELECT);
-                            } else au_play(SND_MENU_MOVE);       // munizione esaurita
+                            } else au_play(SND_MENU_MOVE);       // biomassa insufficiente
                             continue;   // il click era per la torretta, non pan camera
                         }
                     }
+                }
+                // REGOLA in PREP (§12.Q3): stesso gesto, sul mondo (la barra PREP
+                // l'ha già filtrato sopra). Gratis: qui è pura comodità di
+                // authoring — il facing si sceglie al piazzamento, ma sbagliarlo
+                // non deve costare un undo.
+                if(!ed.active && gApp.state==APP_PREP && !drag_cam && gAdjOn){
+                    adjust_event(&e,g,vp,mxf,myf,SW,SH);
+                    continue;
                 }
 #endif
                 // camera col mouse? PLAY: LMB/RMB nudi; EDIT o placement: solo con Alt.
@@ -4190,21 +4301,22 @@ int main(int argc, char **argv){
                     if(pick_y0(vp,mouse_px,mouse_py,SW,SH,&blast_x,&blast_y)) blast_pending=1;
                     break;
 #ifdef GAME_SHELL
-                case SDLK_M:  // colpo di mortaio: entra/esci dall'aiming (solo in ASSALTO)
-                    if(gApp.state==APP_ASSAULT){ gAimMort=!gAimMort;
-                        if(gAimMort){ gAimRepair=0; au_play(SND_MENU_SELECT); } }
-                    break;
-                case SDLK_O:  // convertitore: cicla l'output (BIOMASS §12.Q5 v1)
+                // i tre verbi dell'assalto (BIOMASS §4): modalità esclusive
+                case SDLK_M:  // MORTAIO: entra/esci dall'aiming
                     if(gApp.state==APP_ASSAULT){
-                        bio_set_output(&gBio,(bio_output(&gBio)+1)%BIO_ITEM_COUNT);
-                        au_play(SND_MENU_MOVE); }
+                        bio_mode_set(!gAimMort,0,0);
+                        au_play(gAimMort?SND_MENU_SELECT:SND_MENU_MOVE); }
                     break;
-                case SDLK_R:  // kit riparazione: entra/esci dal targeting (§12.Q3)
+                case SDLK_R:  // RIPARA: tieni premuto su una struttura = flusso bio->HP
                     if(gApp.state==APP_ASSAULT){
-                        if(!gAimRepair && bio_count(&gBio,BIO_REPAIR)<=0)
-                            au_play(SND_MENU_MOVE);          // niente kit in store
-                        else { gAimRepair=!gAimRepair; gAimMort=0;
-                               au_play(gAimRepair?SND_MENU_SELECT:SND_MENU_MOVE); } }
+                        bio_mode_set(0,!gAimRepair,0);
+                        au_play(gAimRepair?SND_MENU_SELECT:SND_MENU_MOVE); }
+                    break;
+                case SDLK_V:  // REGOLA: riorienta una torretta (anche in PREP, §12.Q3)
+                    if(gApp.state==APP_ASSAULT || gApp.state==APP_PREP){
+                        bio_mode_set(0,0,!gAdjOn);
+                        if(gAdjOn) plc.active=0;      // esclusiva col ghost di piazzamento
+                        au_play(gAdjOn?SND_MENU_SELECT:SND_MENU_MOVE); }
                     break;
 #endif
                 case SDLK_RETURN: case SDLK_KP_ENTER:  // fase A: via all'assalto
@@ -4279,7 +4391,11 @@ int main(int argc, char **argv){
         sim_run = sim_run && (gApp.state==APP_PREP || gApp.state==APP_ASSAULT
                               || gApp.state==APP_EXTRACT);
         combat = (gApp.state==APP_ASSAULT);
-        if(gBioFlash>0.0f) gBioFlash-=(float)frame_t;   // flash HUD produzione
+        if(gBioFlash>0.0f) gBioFlash-=(float)frame_t;   // flash HUD dello spreco
+        if(gMortCd>0.0f){ gMortCd-=(float)frame_t; if(gMortCd<0.0f) gMortCd=0.0f; }
+        // RIPARA a mantenimento (§4): la spesa è un flusso, va nel frame body
+        // (dt reale) — non negli eventi. Fuori dall'assalto non si ripara.
+        if(gApp.state==APP_ASSAULT) repair_channel(g,(float)frame_t);
 #endif
         host_apply_mags(g);   // equipaggia i caricatori delle torrette nuove (§5)
         if(sim_run){
@@ -4877,7 +4993,7 @@ int main(int argc, char **argv){
             int ov=0; float sX=1.4f;
             float rdx=gAimX-gBaseOX, rdy=gAimY-gBaseOY;
             float rd=sqrtf(rdx*rdx+rdy*rdy);
-            int okr=(rd>=gMortMinR && rd<=gMortMaxR);
+            int okr=(rd>=gMortMinR && rd<=gMortMaxR && gMortCd<=0.0f);  // cd: X grigia
             float xr=okr?0.95f:0.45f, xg=okr?0.25f:0.45f, xb=okr?0.12f:0.50f;
             ov=ed_push_bar(edovl,ov, gAimX-sX,gAimY-sX, gAimX+sX,gAimY+sX, 0.35f, xr,xg,xb);
             ov=ed_push_bar(edovl,ov, gAimX-sX,gAimY+sX, gAimX+sX,gAimY-sX, 0.35f, xr,xg,xb);
@@ -4920,9 +5036,60 @@ int main(int argc, char **argv){
             }
         }
         // (niente cono di mira su hover: l'indicazione di direzione appartiene
-        // solo al gesto di piazzamento — tolto su richiesta 2026-07-12. Il
-        // tooltip hover resta; gHovTurret resta risolto per i click di
-        // ricarica/riparazione e per la futura modalita' REGOLA.)
+        // solo al gesto di piazzamento e alla modalità REGOLA — tolto su
+        // richiesta 2026-07-12. Il tooltip hover resta; gHovTurret resta
+        // risolto per i click di ricarica/riparazione e per REGOLA.)
+        // REGOLA (BIOMASS §4): col cono in mano la direzione insegue il cursore
+        // (commit al rilascio, eventi); a mani vuote il cono della torretta sotto
+        // il mouse dice cosa si sta per prendere. Stesso overlay flat del ghost
+        // di piazzamento, stessa lettura visiva.
+        if(gAdjOn && !ed.active &&
+           (gApp.state==APP_PREP || gApp.state==APP_ASSAULT)){
+            int tid = (gAdjTid>=0) ? gAdjTid : gHovTurret;
+            if(tid>=0){
+                DefTurret *t=def_turret(g,tid);
+                float half=(t->arc_max-t->arc_min)*0.5f;
+                if(half<0.05f) half=0.05f;
+                float facing=t->ang;
+                if(gAdjTid>=0){                    // drag: la direzione è il cursore
+                    float wx,wy;
+                    if(pick_y0(vp,mouse_px,mouse_py,SW,SH,&wx,&wy)){
+                        float dx=wx-t->x, dy=wy-t->y;
+                        if(dx*dx+dy*dy>=0.09f) gAdjFacing=atan2f(dy,dx);
+                    }
+                    facing=gAdjFacing;
+                }
+                float live=(gAdjTid>=0)?1.0f:0.5f;   // in mano acceso, in hover smorto
+                int ov=push_aim_cone(edovl,0,EDOVL_MAXV,t->x,t->y,facing,half,
+                                     t->range, 0.95f*live,0.75f*live,0.20f*live);
+                if(ov){ glDisable(GL_DEPTH_TEST);
+                    glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
+                    glBindVertexArray(ovVao);glBindBuffer(GL_ARRAY_BUFFER,ovVbo);
+                    glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)ov*9*sizeof(float),edovl);
+                    glDrawArrays(GL_TRIANGLES,0,ov);
+                    glEnable(GL_DEPTH_TEST); }
+            }
+        }
+        // barre di reload world-space (BIOMASS §5): solo sulle torrette che stanno
+        // ricaricando (informazione transitoria e ACTIONABLE — la decisione
+        // 2026-07-08 contro le barre HP permanenti resta valida). Qui si proiettano
+        // i punti sopra la canna; il disegno è nel layer UI (shell_build_ui).
+        gRelBarN=0;
+        if(!ed.active && (gApp.state==APP_PREP || gApp.state==APP_ASSAULT)){
+            int nt=def_turret_count(g);
+            for(int i=0;i<nt && gRelBarN<REL_BAR_MAX;i++){
+                float left=def_turret_reloading(g,i);
+                if(left<=0.0f || def_turret_disabled(g,i)) continue;
+                DefTurret *t=def_turret(g,i);
+                float rs=(t->reload_s>0.0f)?t->reload_s:gReloadDef;
+                float sx,sy;
+                if(!world_to_screen(vp,t->x,ter_z(t->x,t->y)+2.4f,t->y,SW,SH,&sx,&sy))
+                    continue;                       // dietro la camera
+                gRelBar[gRelBarN].x=sx; gRelBar[gRelBarN].y=sy;
+                gRelBar[gRelBarN].f=1.0f-left/rs;   // 0 = appena scattata, 1 = pronta
+                gRelBarN++;
+            }
+        }
         // overlay shell (title/menu/briefing/debrief + barra di fase): 2D in
         // pixel, sopra tutto, blend alpha (l'alpha viaggia in aNormal.x).
         gUiV=0; gUiImgN=0; shell_build_ui(SW,SH,g,mouse_px,mouse_py);

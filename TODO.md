@@ -294,16 +294,40 @@ statico. SOLO 2 API nuove al core (`simp_query_ray`, `simp_set_vpref`).
 
 ## M5b — Economia (doc separato, futuro)
 
-- [x] **Biomassa: convertitore + caricatori — FATTO (2026-07-10,
-      BIOMASS_DESIGN.md)**: modulo `bio.c` (tank→item, cap per risorsa, spreco
-      informato, upgrade ricorsivo §7), caricatori torretta in defense
-      (`mag_size`/`reload_s`, `def_turret_reload_now`, legacy mag 0 = infinito),
-      `def_struct_repair`, `biostock` in scene, wiring completo in vat_horde
-      (kill→resa per body, mortaio a colpi prodotti, ricarica a click,
-      riparazione a click con R, barra ASSALTO col convertitore, O cicla
-      output). `test_bio` + `test_turret_mag` PASS. Il vecchio piano
-      "blob alla morte + raccolta fisica" è SUPERATO (credito al kill,
-      droni = fiction v2, §8 del doc).
+- [x] **Biomassa v2: valuta unica + verbi — FATTO (2026-07-14,
+      BIOMASS_DESIGN.md)**: `bio.c` riscritto (UN serbatoio cappato, `bio_add`
+      ritorna lo sprecato, `bio_take(cost)`; via convertitore/store/item/
+      upgrade ricorsivo della v1, UX bocciata), caricatori torretta in defense
+      (`mag_size`/`reload_s` 12 s, `def_turret_reload_now`, legacy mag 0 =
+      infinito) + `def_turret_set_facing` (REGOLA), `def_struct_repair`,
+      `biotank [start] [cap]` in scene (`biostock` ignorato con warning),
+      host: barra a 3 VERBI (MORTAIO 40 bio · RIPARA a mantenimento 1 bio/HP ·
+      REGOLA gratis, anche in PREP), ricarica istantanea a click (25/35/30/30),
+      barra di reload world-space, flash di spreco. `test_bio` (riscritto) +
+      `test_turret_mag` (caso REGOLA) PASS. Il vecchio piano "blob alla morte +
+      raccolta fisica" resta SUPERATO (credito al kill, droni = fiction).
+- [ ] **Mortaio: taratura del freno (idee dell'utente, 14 lug 2026)**. Oggi:
+      cooldown fisso 5 s (`gMortCdMax`, `VAT_HORDE_MORTAR_CD`) + 40 bio a colpo.
+      Impressione a caldo: **il mortaio è ancora troppo forte**. Due strade
+      annotate, da provare in gioco:
+      1. **Costo decrescente col tempo di attesa**: il colpo costa TANTO appena
+         finito il cooldown (es. 80 bio a 5 s) e il prezzo CALA aspettando,
+         fino al costo base (es. 40 bio a 10 s). Chi spamma paga il doppio, chi
+         dosa paga il listino: il freno diventa una scelta, non un muro.
+      2. **Problema che apre**: partendo a serbatoio vuoto, un costo iniziale
+         alto ritarda troppo il PRIMO colpo (il mortaio resta muto per mezza
+         partita). Soluzione preferita dall'utente: **partire con un colpo già
+         disponibile** (una "carica" gratis / serbatoio iniziale sufficiente al
+         primo tiro) e far salire il costo dei colpi SUCCESSIVI.
+      Nota: (1) e (2) sono la stessa manopola vista da due lati (prezzo in
+      funzione del tempo dall'ultimo colpo, con una carica iniziale gratuita);
+      la forma esatta della curva e i numeri si tarano solo giocando, insieme
+      al costo della riparazione (§12.Q4: comprano entrambi "sopravvivenza
+      adesso"). Quando arriva `balance.cfg`, questi valori ci vanno dentro.
+- [ ] **Biomassa §7: pannello upgrade al DEBRIEF** (la biomassa residua compra
+      capienza serbatoio +100 a costi crescenti + gli assi torretta): aspetta
+      il Blocco 3 (assi da comprare) e la decisione §12.Q2 (persistenza degli
+      acquisti lungo la campagna, biomassa residua use-it-or-lose-it?).
 - [ ] Basi di raccolta avanzate: punti esterni alla base, goal + HP (riusano
       §7), reddito maggiore ma bersaglio dell'orda → dilemma espandi/difendi.
       Richiede l'attribuzione multi-goal del drain (questione aperta).

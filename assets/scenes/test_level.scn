@@ -8,7 +8,7 @@ set k_density 2.5
 set k_jam 8
 mission survive 120 prep 10
 budget 500
-biostock 2
+biotank 0 500
 lz 52 20 90
 goal 54 16 4 8
 spawn 1 4 2 12

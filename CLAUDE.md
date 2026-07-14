@@ -413,27 +413,38 @@ eseguibili si lanciano dalla root del progetto.
   = danno diretto pubblico (nato qui, serve a EXPLOSION_DESIGN §8).
   `test_mission` = vinta/persa/CLEAR/pool esatti/determinismo; banco
   `assets/scenes/mission_demo.scn`.
-- `bio.h` / `bio.c` — economia biomassa (BIOMASS_DESIGN.md, FATTA 2026-07-10):
-  modulo game-side zero-dep. Ogni kill frutta biomassa (resa per body,
-  host); l'UNICO convertitore la trasforma nell'output SELEZIONATO (7 item:
-  4 munizioni per kind torretta, colpo mortaio, kit riparazione, kit
-  upgrade), store cappato per risorsa (default 3), output pieno = biomassa
-  SPRECATA (`bio_full` → HUD "STOCCAGGIO PIENO"). Tank persiste al cambio
-  output. Upgrade ricorsivo §7 (`bio_upgrade_costs/caps`, floor 0.5·base /
-  tetto base+3). Lato defense: caricatori torretta (`mag_size`/`mag`/
-  `reload_s`/`reload_t` in DefTurret, mag_size 0 = infinito legacy
-  bit-identico; flame/acid scalano a tick), `def_turret_reload_now`/
-  `_reloading`, `def_struct_repair` (mai su crollate). Host (vat_horde,
-  GAME_SHELL): kill→`bio_add`, mortaio consuma BIO_MORTAR (senza colpi
-  rifiuta; store parte pieno), click su torretta = ricarica istantanea
-  (consuma la munizione del kind), R + click su struttura = riparazione
-  (+250 HP), O/card cliccabili = output, barra ASSALTO col convertitore,
-  canna grigia in ricarica; mag default per kind 40/12/30/25, reload 5 s
-  (`VAT_HORDE_MAG`/`VAT_HORDE_RELOAD`; sandbox non-shell = infiniti salvo
-  env). Scene: `biostock N` (default 1 di ogni munizione, mortaio pieno).
-  Budget $ (PREP) e biomassa (ASSALTO) NON si convertono. `test_bio` +
-  `test_turret_mag` (guardia legacy, ciclo N colpi→silenzio→ripresa,
-  reload_now, tick flame, lure spento in ricarica, determinismo).
+- `bio.h` / `bio.c` — economia biomassa **v2** (BIOMASS_DESIGN.md, riscritta
+  2026-07-14; la v1 col convertitore a output selezionabile è stata smontata,
+  UX bocciata). Modulo game-side zero-dep: UN serbatoio di UNA valuta.
+  Ogni kill frutta biomassa (resa per body, host) fino a `cap` (default 500);
+  oltre è SPRECATA (`bio_add` ritorna lo sprecato → flash HUD, `bio_full`).
+  Le azioni si pagano a domanda dal serbatoio (`bio_take(cost)`, rifiuta se
+  corto): niente item, niente store, niente output da selezionare.
+  Lato defense: caricatori torretta (`mag_size`/`mag`/`reload_s`/`reload_t`
+  in DefTurret, mag_size 0 = infinito legacy bit-identico; flame/acid scalano
+  a tick), `def_turret_reload_now`/`_reloading`, `def_struct_repair` (mai su
+  crollate) e **`def_turret_set_facing`** (REGOLA: trasla l'arco, ampiezza
+  conservata, la torretta ri-acquisisce da sé).
+  Host (vat_horde, GAME_SHELL) — la barra d'ASSALTO mostra SOLO i verbi del
+  giocatore (§4) più il serbatoio: **MORTAIO** (M, 40 bio a colpo, aiming
+  come prima), **RIPARA** (R, LMB TENUTO su una struttura = flusso
+  biomassa→HP a 100 HP/s, 1 bio = 1 HP, si ferma a hp_max/serbatoio vuoto/
+  rilascio), **REGOLA** (V, drag da una torretta = nuovo facing; gratis;
+  disponibile anche in PREP, pulsante accanto ad ANNULLA). Fuori modalità,
+  click su una torretta in ricarica = ricarica istantanea a costo per kind
+  (25/35/30/30). La torretta in ricarica porta una **barra di reload
+  world-space** (transitoria e actionable — le barre HP permanenti restano
+  bandite) e reload default **12 s**: la finestra muta deve far male.
+  Costi in testa a vat_horde.c (`BIO_MORTAR_COST`, `BIO_REPAIR_RATE`,
+  `BIO_RELOAD_COST[]`, `BIO_ADJUST_COST`) finché non arriva balance.cfg;
+  mag default per kind 40/12/30/25 (`VAT_HORDE_MAG`/`VAT_HORDE_RELOAD`;
+  sandbox non-shell = infiniti salvo env). Scene: `biotank [start] [cap]`
+  (`biostock` v1 = parsato, ignorato, warning). Budget $ (PREP) e biomassa
+  (ASSALTO) NON si convertono. Gli **upgrade escono dall'assalto**: pannello
+  al debrief (§7) DA FARE col Blocco 3. `test_bio` (add/cap/spreco esatto,
+  take/rifiuto, cap knob, determinismo) + `test_turret_mag` (guardia legacy,
+  ciclo colpi→silenzio→ripresa, reload_now, tick flame, lure spento in
+  ricarica, REGOLA, determinismo).
 - `OUTFIT_DESIGN.md` — pipeline texture outfit zombie a BAKE DI PROIEZIONE
   (DECISO 2026-07-10, da implementare): basta dipingere a mano nello spazio
   UV scomodo — collage fronte/retro su sagoma + `gfx/outfit_bake.py`

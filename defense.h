@@ -106,13 +106,19 @@ int        def_turret_count(const DefGame *g);
 
 /* ---- magazine (BIOMASS_DESIGN §5) ----
  * Instant reload: refill the mag and zero the countdown — the host calls it
- * after consuming the matching ammo item (light -> BIO_AMMO_LIGHT etc.; the
- * kind -> item map lives in the host, defense doesn't know bio). No-op on
- * invalid ids and mag-less (mag_size 0) turrets. */
+ * after charging the biomass cost of the kind (the kind -> cost table lives in
+ * the host, defense doesn't know bio). No-op on invalid ids and mag-less
+ * (mag_size 0) turrets. */
 void  def_turret_reload_now(DefGame *g, int tid);
 /* Seconds of reload left (0 = ready to fire). For render (lowered barrel /
- * blink) and HUD. Always 0 for mag-less turrets. */
+ * blink) and the world-space reload bar. Always 0 for mag-less turrets. */
 float def_turret_reloading(const DefGame *g, int tid);
+
+/* ---- REGOLA (BIOMASS_DESIGN §4) ----
+ * Re-aim a placed turret: `ang` (rad) becomes the new arc CENTRE, the arc keeps
+ * its width (arc_min/arc_max translated) and the barrel snaps to it. The turret
+ * re-acquires on its own from the new sector. No-op on invalid ids. */
+void  def_turret_set_facing(DefGame *g, int tid, float ang);
 
 /* ---- §7 base & defeat: destructible structures ----
  *

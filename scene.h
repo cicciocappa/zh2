@@ -34,9 +34,8 @@
  *                                     #   it the core structure + central goal
  *     mission survive 300 prep 90 budget 500   # or: mission clear 0 [prep N]…
  *     budget 500                      # standalone budget (if no mission line)
- *     biostock 2                      # initial munition stock (BIOMASS_DESIGN):
- *                                     #   N of each ammo type + mortar shots
- *                                     #   (omitted = 1 of each ammo, mortar full)
+ *     biotank 0 500                   # biomass (BIOMASS_DESIGN v2): start + tank
+ *                                     #   capacity (omitted = 0 / 500)
  *
  * `exit`/`lz`/`mission`/`budget` are the GAME_PLAN fase A entities (names
  * reserved by BLENDER_LEVEL §8): stored here, applied by the host via
@@ -134,10 +133,11 @@ typedef struct {
     SceneExit exits[SCENE_MAX_RECT];  int n_exit;   /* scripted exits (host-side, fase A) */
     SceneMission mission;             /* kind NONE = legacy demo scene      */
     float lz_x, lz_y, lz_yaw; int has_lz; /* base LZ: pos + yaw(deg) (host: container core + goal) */
-    /* `biostock N` (BIOMASS_DESIGN §12.Q6): initial store of each MUNITION
-     * item (4 ammo types + mortar shots), clamped to the caps by the host.
-     * < 0 = not declared -> host default (1 of each ammo, mortar full). */
-    int   bio_stock;
+    /* `biotank [start] [cap]` (BIOMASS_DESIGN v2 §8): initial biomass and tank
+     * capacity. < 0 = not declared -> host defaults (0 / BIO_CAP_DEFAULT).
+     * The v1 `biostock N` line is parsed and IGNORED (warning): the converter
+     * and its per-item stores are gone. */
+    float bio_start, bio_cap;
 } Scene;
 
 /* Load/save/free. Return 0 on success, negative on error (file or format). */

@@ -160,6 +160,34 @@ static void test_lure_reload(void) {
     free(base); def_destroy(g); simp_destroy(s);
 }
 
+/* (7) REGOLA (v2 §4): a turret aimed AWAY from the horde sees nothing; re-aimed
+ * at it, the arc keeps its width and the turret re-acquires on its own. */
+static double test_facing(int *shots_out) {
+    DefGame *g; SimP *s = make_world(&g);
+    const float HALF = 0.4f;                 /* narrow mount: the sector matters */
+    DefTurret t = {0};
+    t.x = 30.0f; t.y = 20.0f; t.range = 12.0f;
+    t.arc_min = -HALF; t.arc_max = HALF;     /* faces EAST; the horde is WEST    */
+    t.sweep_dir = 1; t.sweep_speed = 3.0f;
+    t.kind = TUR_LIGHT; t.fire_period = 0.10f; t.damage = 1.0f;
+    int tid = def_add_turret(g, &t);
+    for (int k = 0; k < (int)(2.0f / DT); k++) { simp_step(s, DT); def_update(g, DT); }
+    CHECK(def_shots(g) == 0, "facing away: nothing in the arc (%d shots)", def_shots(g));
+
+    def_turret_set_facing(g, tid, 3.1416f);            /* REGOLA: aim WEST */
+    DefTurret *tt = def_turret(g, tid);
+    CHECK(fabsf((tt->arc_max - tt->arc_min) - 2.0f * HALF) < 1e-4f,
+          "arc width conserved (got %.4f)", (double)(tt->arc_max - tt->arc_min));
+    CHECK(fabsf(tt->ang - 3.1416f) < 1e-4f, "barrel snapped to the new centre");
+    for (int k = 0; k < (int)(2.0f / DT); k++) { simp_step(s, DT); def_update(g, DT); }
+    CHECK(def_shots(g) > 0, "re-acquires in the new sector (%d shots)", def_shots(g));
+    *shots_out = def_shots(g);
+    double cks = checksum(s);
+    CHECK(cks < 1e299, "no NaN");
+    def_destroy(g); simp_destroy(s);
+    return cks;
+}
+
 int main(void) {
     test_legacy();
 
@@ -172,6 +200,10 @@ int main(void) {
 
     test_flame();
     test_lure_reload();
+
+    int fs1, fs2;
+    double f1 = test_facing(&fs1), f2 = test_facing(&fs2);
+    CHECK(f1 == f2 && fs1 == fs2, "determinism: set_facing run bit-identical");
 
     if (fails == 0) printf("test_turret_mag: OK\n");
     else            printf("test_turret_mag: %d FAILURES\n", fails);

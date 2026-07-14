@@ -43,7 +43,7 @@ static int roundtrip(void) {
     a.exits[1] = (SceneExit){ 27, 4, 2, 8, 6.0f, 0.0f, 0 };  /* no delay, inf pool */
     a.has_lz = 1; a.lz_x = 15.0f; a.lz_y = 10.0f; a.lz_yaw = 31.0f;
     a.mission = (SceneMission){ SCENE_MISSION_SURVIVE, 300.0f, 90.0f, 500.0f };
-    a.bio_stock = 2;                                         /* biostock (BIOMASS) */
+    a.bio_start = 120.0f; a.bio_cap = 800.0f;                /* biotank (BIOMASS v2) */
 
     int ok = scene_save(TMP, &a) == 0;
     Scene b;
@@ -81,7 +81,8 @@ static int roundtrip(void) {
          fabsf(b.mission.survive_s - 300.0f) < 1e-6f &&
          fabsf(b.mission.prep_s - 90.0f) < 1e-6f &&
          fabsf(b.mission.budget - 500.0f) < 1e-6f;
-    ok = ok && b.bio_stock == 2;                             /* biostock roundtrip */
+    ok = ok && fabsf(b.bio_start - 120.0f) < 1e-6f &&        /* biotank roundtrip */
+         fabsf(b.bio_cap - 800.0f) < 1e-6f;
     printf("roundtrip: %dx%d set=%d poly=%d goal=%d prop=%d turret=%d exit=%d | %s\n",
            b.gw, b.gh, b.n_set, b.n_poly, b.n_goal, b.n_prop, b.n_turret, b.n_exit,
            ok ? "ok" : "BAD");
@@ -101,7 +102,8 @@ static int parse_and_instantiate(void) {
           "cost 2 2 2 2 5.0\n"
           "pack 4 1 2 2\n"
           "poly 4.0 solid  3 0 5 0 5 1 3 1\n"     /* wall band: cells (3,0),(4,0) */
-          "prop cart 6 3 45\n",                   /* pure decor: ignored by sim */
+          "prop cart 6 3 45\n"                    /* pure decor: ignored by sim */
+          "biostock 2\n",                         /* v1 leftover: warns, parses, ignored */
           f);
     fclose(f);
 
@@ -112,7 +114,7 @@ static int parse_and_instantiate(void) {
     ok = ok && sc.n_prop == 1 && strcmp(sc.prop[0].key, "cart") == 0;
     ok = ok && sc.mission.kind == SCENE_MISSION_NONE &&      /* legacy scene */
          sc.mission.budget < 0.0f && sc.n_exit == 0 && !sc.has_lz &&
-         sc.bio_stock < 0;                                   /* biostock non dichiarato */
+         sc.bio_start < 0.0f && sc.bio_cap < 0.0f;           /* biotank non dichiarato */
     SimP *s = ok ? scene_instantiate(&sc, 256) : NULL;
     ok = ok && s != NULL;
     if (ok) {

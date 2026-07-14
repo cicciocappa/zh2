@@ -18,7 +18,8 @@
 #     `exit` rect (props rate/delay/pool) -> `exit x y w h rate delay pool`,
 #     `lz` empty (one per level, yaw from rotation) -> `lz x y yaw`,
 #     scene props `mission` (string "survive|clear ..."), `budget` (float),
-#     `biostock` (int) -> their .scn lines.
+#     `biotank` (float = starting biomass) + `biotank_cap` (float) -> their
+#     .scn lines.
 #
 # Validation is BLOCKING (unknown prefix, off-world entity, bad catalog key,
 # format limits): no .scn / glb / zhm is written if any error is found.
@@ -238,8 +239,11 @@ def main():
     if mission is not None and mission.split()[:1] not in (["survive"], ["clear"]):
         err(f"scene property 'mission' must start with 'survive' or 'clear' "
             f"(got '{mission}')")
-    budget   = float(sc["budget"])  if "budget"   in sc.keys() else None
-    biostock = int(sc["biostock"])  if "biostock" in sc.keys() else None
+    budget   = float(sc["budget"])  if "budget"  in sc.keys() else None
+    biotank  = float(sc["biotank"]) if "biotank" in sc.keys() else None
+    biocap   = float(sc["biotank_cap"]) if "biotank_cap" in sc.keys() else None
+    if biocap is not None and biotank is None:
+        biotank = 0.0                      # cap alone still needs the start field
     sets = sorted((k[4:], float(sc[k])) for k in sc.keys()
                   if k.startswith("set_"))
     if len(sets) > SCENE_MAX_SET:
@@ -451,8 +455,9 @@ def main():
         L.append(f"mission {mission}")
     if budget is not None:
         L.append(f"budget {fmt(budget)}")
-    if biostock is not None:
-        L.append(f"biostock {biostock:d}")
+    if biotank is not None:
+        L.append(f"biotank {fmt(biotank)}" +
+                 (f" {fmt(biocap)}" if biocap is not None else ""))
     if lz is not None:
         L.append(f"lz {fmt(lz[1])} {fmt(lz[2])} {fmt(lz[3])}")
     for t in RECT_TYPES:

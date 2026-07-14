@@ -866,6 +866,20 @@ float def_turret_reloading(const DefGame *g, int tid) {
     float r = g->turrets[tid].reload_t;
     return r > 0.0f ? r : 0.0f;
 }
+
+/* REGOLA (BIOMASS_DESIGN §4): re-aim a placed turret. The arc is TRANSLATED —
+ * its width is a property of the mount, only the centre moves — and the barrel
+ * is snapped inside it, so the turret re-acquires from the new sector on the
+ * next step. */
+void def_turret_set_facing(DefGame *g, int tid, float ang) {
+    if (tid < 0 || tid >= g->nturrets) return;
+    DefTurret *t = &g->turrets[tid];
+    float half = (t->arc_max - t->arc_min) * 0.5f;
+    if (half < 0.0f) half = 0.0f;
+    t->arc_min = ang - half;
+    t->arc_max = ang + half;
+    t->ang = ang;
+}
 /* Direct light damage to a live agent (fall damage, future scripted hazards).
  * Handle-resolved so it survives reordering between the step and the call. */
 void def_damage_agent(DefGame *g, SimPHandle h, float dmg) {

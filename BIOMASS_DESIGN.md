@@ -1,17 +1,24 @@
 # Biomassa — economia di partita (design tecnico)
 
-> **STATO: v2 RIDISEGNATA 2026-07-12, da implementare.** La v1 (convertitore
-> a output selezionabile + store per item, dettata il 2026-07-09 e
-> implementata il 2026-07-10) è nel codice e funziona (`bio.c`, caricatori
-> defense, wiring host, `test_bio`, `test_turret_mag`) ma la sua UX è
-> bocciata sul campo: barra d'assalto affollata (azioni del giocatore
-> mescolate alle card di produzione) e il convertitore a output fisso
-> obbliga a sorvegliare lo spreco proprio mentre l'attenzione deve stare
-> sull'orda — micromanagement nel momento sbagliato. La v2 elimina il
-> convertitore: **biomassa = valuta unica, spesa diretta a domanda**.
-> Le parti v1 che SOPRAVVIVONO invariate: caricatori torretta (§5 v1 →
-> qui §5, con default più severi), `def_struct_repair`, rese per body,
-> separazione budget $ / biomassa. Il §13 elenca cosa si smonta.
+> **STATO: v2 IMPLEMENTATA 2026-07-14** (§1–§6, §8–§10). La v1 (convertitore
+> a output selezionabile + store per item) è stata SMONTATA: la sua UX era
+> bocciata sul campo — barra d'assalto affollata (azioni del giocatore
+> mescolate alle card di produzione) e output fisso da sorvegliare proprio
+> mentre l'attenzione deve stare sull'orda. La v2 elimina il convertitore:
+> **biomassa = valuta unica, spesa diretta a domanda**.
+>
+> Nel codice: `bio.c/.h` riscritti (serbatoio + `bio_add`/`bio_take`),
+> `def_turret_set_facing` in defense, `biotank` in scene.c (`biostock`
+> parsato e ignorato con warning), barra a 3 verbi + riparazione a
+> mantenimento + REGOLA + barra di reload world-space in `vat_horde`;
+> `test_bio` riscritto, caso REGOLA in `test_turret_mag`.
+> **RESTA DA FARE: §7 (pannello upgrade al debrief)** — aspetta gli assi
+> torretta del Blocco 3 e la risposta a Q2 (persistenza in campagna); oggi
+> `tank_cap` si alza solo da scena/`bio_set_cap`.
+>
+> Parti v1 sopravvissute invariate: caricatori torretta (§5, con
+> `reload_s` 12 s), `def_struct_repair`, rese per body, separazione
+> budget $ / biomassa.
 
 ## 1. Principio (v2)
 
@@ -228,15 +235,20 @@ di architettura.
    giocando; annotare in balance.cfg che sono le due manopole da tarare
    INSIEME (comprano entrambe "sopravvivenza adesso").
 
-## 13. Smontaggio della v1 (ordine di lavoro)
+## 13. Smontaggio della v1 (FATTO, 2026-07-14)
 
-1. `bio.c/h`: via `bio_set_output/count/cost/cap` per item, store,
-   upgrade ricorsivo, callback produced; dentro `bio_add` con clamp+spreco
-   e `bio_take(n)` su valuta unica. `test_bio` riscritto.
-2. defense.c: solo il default `reload_s` (5 → 12 via host/balance) e
-   `def_turret_set_facing`. Nessun altro tocco.
-3. vat_horde: via le 7 card, il tasto O, i rami upgrade in barra, gli
-   store del mortaio; dentro i 3 pulsanti-verbo + cursori + barra reload
-   + riparazione a mantenimento + REGOLA + pannello debrief.
-4. scene.c: `biotank`, deprecazione `biostock`.
-5. CLAUDE.md e questo doc aggiornati a implementazione fatta.
+1. ✅ `bio.c/h`: via output/store/item/costi per item/upgrade ricorsivo/
+   callback produced; dentro `bio_init(start,cap)`, `bio_add` (ritorna lo
+   sprecato) e `bio_take(cost)` su valuta unica. `test_bio` riscritto.
+2. ✅ defense.c: default `reload_s` 12 s (lato host) + `def_turret_set_facing`
+   (arco traslato, ampiezza conservata). Nessun altro tocco.
+3. ✅ vat_horde: via le 7 card, il tasto O, i rami upgrade in barra, gli store
+   del mortaio; dentro i 3 pulsanti-verbo + cursore-icona + barra di reload
+   world-space + riparazione a mantenimento + REGOLA (assalto E prep, Q3).
+   I costi stanno in testa al file (`BIO_MORTAR_COST`, `BIO_REPAIR_RATE`,
+   `BIO_RELOAD_COST[]`, `BIO_ADJUST_COST`) finché non arriva balance.cfg.
+4. ✅ scene.c: `biotank [start] [cap]`; `biostock` parsato, ignorato, warning.
+   `gfx/export_scn.py`: custom property `biotank` (+ `biotank_cap`).
+5. ✅ CLAUDE.md e questo doc aggiornati.
+6. ⏳ Pannello upgrade al debrief (§7): rimandato al Blocco 3 (serve avere
+   assi torretta da comprare) + decisione Q2 sulla persistenza.
