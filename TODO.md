@@ -493,6 +493,69 @@ design → test headless → aggancio vat_horde → verifica visiva → commit.
 - [ ] **Fase H — Contenuto e tuning**: mappe strada/piazza/campi (editor),
       bilanciamento tabelle. Meta/campagna = doc futuro.
 
+## Idee da implementare (proposte 14 lug 2026)
+
+- [ ] **Tank a VARIANTI CROMATICHE = resistenze leggibili a vista.** Oggi il
+      tank (`BT_TANK`) è un solo corpo con HP alti e basta. Idea: più varianti
+      di tank, ognuna con un COLORE che comunica la sua resistenza ai tre canali
+      di danno già esistenti — proiettile (`TUR_LIGHT`/`TUR_HEAVY`), fuoco
+      (`TUR_FLAME` + DoT `DST_BURNING`), acido (`TUR_ACID` + `DST_ACID`).
+      Il colore È la statistica: il giocatore legge la minaccia da lontano e
+      capisce quale torretta ha senso, invece di sparare a caso.
+      Aggancio: moltiplicatori di danno per canale nella tabella `EnemyDef` di
+      `defense.c` (già indicizzata per body/slot), applicati ai punti dove il
+      danno entra oggi — colpo hitscan leggero/pesante, tick del cono
+      flame/acid, tick del DoT di stato. La tinta la porta il renderer
+      (`vat_layer`, tinta/outfit per slot: la macchina c'è già per ferite e
+      status).
+      Da decidere: (a) resistenza = moltiplicatore (0.25 = incassa poco) o
+      soglia/immunità secca; (b) quante varianti — proposta minima: 3
+      mono-canale (blindato→resiste ai proiettili, ustionato/asbesto→resiste al
+      fuoco, chimico→resiste all'acido) più il tank base; (c) se ogni variante
+      ha anche una DEBOLEZZA (danno ×2 sul canale opposto) — è quello che rende
+      la lettura del colore una DECISIONE e non solo un avviso; (d) se sono
+      `DefBody` distinti (semplice, ma il body oggi guida anche il VAT) o un
+      campo `armor`/`variant` per-slot ortogonale al body (più flessibile:
+      varrebbe anche per gli altri corpi).
+
+- [ ] **Torrette su PALO (supporto alto) vs a terra.** Al piazzamento si sceglie
+      il supporto: basso (com'è oggi) o alto (palo/traliccio). La torretta su
+      palo spara SOPRA i muri (vede l'orda dietro le barriere) e ha gittata
+      MAGGIORE, ma paga tre prezzi: è FRAGILE (pochi HP, il palo si abbatte),
+      ha una GITTATA MINIMA (anello morto attorno alla base: gli zombie sotto
+      di lei sono intoccabili) e va quindi DIFESA da altro — una torretta bassa
+      di scorta, o barricate che tengano l'orda fuori dall'anello morto.
+      È la coppia tattica che il gioco non ha ancora: copertura profonda contro
+      copertura ravvicinata.
+      Aggancio: campo `mount`/`mount_h` + `range_min` in `DefTurret`
+      (l'acquisizione scarta i bersagli sotto `range_min`); fragilità =
+      `def_turret_make_destructible` con HP bassi; scelta del supporto in
+      `place.c` (`PL_TURRET` + variante, costo diverso per supporto) e nella UI
+      di PREP; render = mesh del palo sotto il nodo `base` del glb torretta.
+      **"Spara oltre il muro" — DECISO (14 lug 2026)**: niente altezze, niente
+      geometria corretta. La torretta alta IGNORA l'occlusione dei muri
+      DISTRUTTIBILI (barricate, cancellate, mura del giocatore) e resta occlusa
+      dagli INDISTRUTTIBILI (palazzi, roccia, statici del terreno). La regola è
+      di gioco, non di fisica: "se si può abbattere, ci spari sopra".
+      Il discriminante ESISTE GIÀ come dato per-cella e non richiede stato nuovo
+      nel core: `wall_cost` (`simp_wall_cost_arr`, pubblico). `prop_world.c`
+      forza ogni prop `hp inf`/0 al tier palazzo (`PROP_WORLD_PALAZZO_MULT`,
+      10× base — un bersaglio insfondabile non deve vincere l'asta d'assedio),
+      mentre distruttibili e barricate stanno al loro `cost_mult` basso.
+      Quindi "indistruttibile" ⇔ "tier ≥ palazzo" per-cella.
+      Implementazione: un ray che occlude solo sopra una soglia di costo
+      (variante di `simp_wall_ray`, stesso DDA + un parametro `min_cost`; idem
+      per la LoS dentro `simp_query_ray`). La torretta bassa passa 0 = si
+      comporta ESATTAMENTE come oggi (bit-compatibile, come `mag_size` 0 e
+      `aim_tol` <= 0); quella alta passa la soglia palazzo.
+      Trappola da tenere a mente: accoppia il costo di NAV alla LoS — una
+      "barricata robusta" a `cost_mult` alto comincerebbe a bloccare anche il
+      fuoco dei pali. Oggi l'invariante è imposta in un solo punto
+      (`prop_world`), quindi regge; se un domani stona, il piano B è un bit
+      per-cella esplicito nel core sul modello di `opacity` (default = specchia
+      `solid`, override dopo `simp_set_wall`), con l'host che lo azzera sulle
+      celle delle strutture distruttibili (le conosce: `def_struct_cell`).
+
 ## M8 — Scala estrema / GPU (solo se serve oltre ~100k o per liberare la CPU)
 
 - [ ] Port dei passi a compute shader GL 4.3 (counting sort con atomics, PBD a
