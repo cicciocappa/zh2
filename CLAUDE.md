@@ -465,6 +465,16 @@ eseguibili si lanciano dalla root del progetto.
   rotte), roundtrip save→load bit-identico, file assente intoccato, e il
   cfg SHIPPED deve parsare a zero errori. I rate/pool delle exit e la
   missione restano nel `.scn` (per-livello, non global balance).
+- `LOOP_DESIGN.md` — **salvataggio del loop d'assalto** (DECISO 2026-07-15,
+  dal playtest "assalto noioso"): diagnosi (manca il circolo TD
+  minaccia↑/potere↑, cecità informativa, mortaio slot-machine) + pacchetto
+  D→B→C→A→playtest→E/F. **D FATTA** (mortaio: `mortar.bio_yield` 0.1 — i
+  kill da mortaio non alimentano più il farm; cratere timbra sangue-paura
+  `mortar.fear` 16 / `fear_radius` 8 → il mortaio NEGA UNA STRADA ~30 s,
+  strumento di rotta). Restano: B rotte previste in PREP, C costruzione in
+  assalto a biomassa (+50%, catalogo a sblocco: light+barricata), A ondate
+  annunciate con "chiama la prossima"+bonus, E screamer lampeggiante +
+  click-priorità, F soldato (SOLDIER_DESIGN, dopo il playtest).
 - `OUTFIT_DESIGN.md` — pipeline texture outfit zombie a BAKE DI PROIEZIONE
   (DECISO 2026-07-10, da implementare): basta dipingere a mano nello spazio
   UV scomodo — collage fronte/retro su sagoma + `gfx/outfit_bake.py`

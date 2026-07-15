@@ -50,7 +50,9 @@ typedef struct {
              strength, up_ratio, arm_s; } mine;
 
     struct { float cost, delay, min_range, max_range, cooldown,
-             blast_r, blast_damage; } mortar;    /* cost in biomass          */
+             blast_r, blast_damage,
+             bio_yield,           /* biomass yield mult on mortar kills (1 = full) */
+             fear_w, fear_r; } mortar; /* crater danger stamp: weight, radius (m) */
 
     struct { float cap, repair_rate, adjust_cost;
              float yield[BT_COUNT]; } bio;       /* yield per DefBody kill   */

@@ -1819,6 +1819,11 @@ static int  gAdjOn = 0;                   // REGOLA (V): click su torretta = rio
 static int  gAdjTid = -1;                 // torretta col cono in mano (drag in corso)
 static float gAdjFacing = 0.0f;
 static float gBioFlash = 0.0f;            // > 0: serbatoio pieno, kill SPRECATO
+// LOOP_DESIGN D: resa scalata per i kill da mortaio (mortar.bio_yield). Vale
+// SOLO dentro la host_blast del colpo (settato prima, ripristinato subito
+// dopo: def_blast è sincrono). I kill da caduta dei lanciati arrivano step
+// dopo e pagano resa piena (leak minore, annotato). Mine/RMB: resa piena.
+static float gBioYieldMul = 1.0f;
 // costi delle azioni (§6): manopole balance.cfg (mortar.cost, bio.*,
 // turret.*.reload_cost), resa per body da bio.yield.*
 #define BIO_MORTAR_COST  (gBal.mortar.cost)      // un colpo di mortaio
@@ -1827,7 +1832,7 @@ static float gBioFlash = 0.0f;            // > 0: serbatoio pieno, kill SPRECATO
 #define BIO_RELOAD_COST(k) (gBal.tur[k].reload_cost)   // per kind
 static void host_bio_kill(DefBody body){
     if (gApp.state != APP_ASSAULT) return;    // biomassa = valuta dell'ASSALTO
-    float lost = bio_add(&gBio,
+    float lost = bio_add(&gBio, gBioYieldMul *
                          gBal.bio.yield[((int)body >= 0 && body < BT_COUNT) ? body : BT_MAN]);
     if (lost > 0.0f) gBioFlash = 0.5f;        // §3: lo spreco lampeggia, non chiede nulla
 }
@@ -4536,9 +4541,17 @@ int main(int argc, char **argv){
                 for(int i=0;i<STRIKE_MAX;i++) if(gStrikes[i].on){
                     gStrikes[i].t-=FIXED_DT;
                     if(gStrikes[i].t<=0.0f){ gStrikes[i].on=0;
-                        if(host_blast(g,s,&sc,&gCatalog,&dz,&fx,vl,gStrikes[i].x,gStrikes[i].y,
-                                      BLAST_R,BLAST_DMG,blast_str,blast_up))
-                            prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g);
+                        // LOOP_DESIGN D: resa bio ridotta sui kill del colpo +
+                        // il cratere timbra sangue-paura (mortaio = nega la
+                        // strada per ~danger_hl, non farm di biomassa).
+                        gBioYieldMul=gBal.mortar.bio_yield;
+                        int pch=host_blast(g,s,&sc,&gCatalog,&dz,&fx,vl,gStrikes[i].x,gStrikes[i].y,
+                                           BLAST_R,BLAST_DMG,blast_str,blast_up);
+                        gBioYieldMul=1.0f;
+                        if(gBal.mortar.fear_w>0.0f && gBal.mortar.fear_r>0.0f)
+                            simp_add_danger(s,gStrikes[i].x,gStrikes[i].y,
+                                            gBal.mortar.fear_r,gBal.mortar.fear_w);
+                        if(pch) prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g);
                         continue; }
                     // posizione lungo l'arco a questo step
                     float p=1.0f-gStrikes[i].t/gStrikes[i].ttot;   // 0 lancio -> 1 impatto

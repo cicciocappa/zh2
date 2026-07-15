@@ -32,6 +32,12 @@ void balance_defaults(Balance *b) {
     b->mortar.min_range = 12.0f; b->mortar.max_range = 90.0f;
     b->mortar.cooldown = 5.0f;
     b->mortar.blast_r = 8.0f; b->mortar.blast_damage = 180.0f;
+    /* LOOP_DESIGN D (2026-07-15): mortar kills yield a fraction of biomass
+     * (the blast pulverizes it — kills the self-feeding farm loop) and the
+     * crater stamps blood-fear (route-denial tool: 2x danger_ref stays
+     * saturated for ~one half-life, ~30 s with core defaults). */
+    b->mortar.bio_yield = 0.1f;
+    b->mortar.fear_w = 16.0f; b->mortar.fear_r = 8.0f;
 
     b->bio.cap = 500.0f; b->bio.repair_rate = 100.0f; b->bio.adjust_cost = 0.0f;
     b->bio.yield[BT_OBESE] = 2.0f; b->bio.yield[BT_MAN]   = 1.0f;
@@ -113,6 +119,9 @@ static const BalKey KEYS[] = {
     KF("mortar.cooldown",       mortar.cooldown),
     KF("mortar.blast_radius",   mortar.blast_r),
     KF("mortar.blast_damage",   mortar.blast_damage),
+    KF("mortar.bio_yield",      mortar.bio_yield),
+    KF("mortar.fear",           mortar.fear_w),
+    KF("mortar.fear_radius",    mortar.fear_r),
 
     KF("bio.cap",               bio.cap),
     KF("bio.repair_rate",       bio.repair_rate),
