@@ -32,6 +32,40 @@ typedef enum { BT_OBESE, BT_MAN, BT_WOMAN, BT_CHILD, BT_TANK, BT_COUNT } DefBody
  * outfit/body VAT; CRAWLING also slows the agent via simp_set_vpref. */
 typedef enum { DW_NONE, DW_BLOODY, DW_MAIMED_ARM, DW_CRAWLING } DefWound;
 
+/* ---- runtime tuning (Blocco 3 / balance.cfg) ----
+ *
+ * Every compiled combat number that shapes attack vs defense, per game
+ * instance. def_create fills it with the historical defaults (existing tests
+ * and callers change by not one bit); the host overwrites fields BEFORE
+ * spawning/stepping (enemy stats are read at spawn time, the rest live).
+ * The aggregation with the host-side knobs and the `key = value` file
+ * parser live in balance.h/.c — defense stays self-contained. */
+typedef struct {
+    int   hp_max;
+    float radius, v_pref, mass;   /* metres, m/s, walker units               */
+    int   heavy_hits;             /* heavy-turret hits to gib (tank > 1)     */
+} DefEnemyStat;
+
+typedef struct {
+    DefEnemyStat enemy[BT_COUNT];
+    float v_crawl;                /* crawl preferred speed (DW_CRAWLING)     */
+    float p_corpse;               /* light kill leaves a corpse with this prob. */
+    float corpse_ttl;             /* s                                       */
+    float burn_dps, burn_dur;     /* flame DoT (DST_BURNING)                 */
+    float acid_dps, acid_dur;     /* acid DoT (DST_ACID)                     */
+    float attack_period;          /* s between siege hits per pressing agent */
+    float attack_damage;          /* structure HP per siege hit              */
+    float danger_r, danger_w;     /* blood-fear stamp per death (radius m, weight) */
+    /* §8 director body mix: tank% = base + ramp·wave (capped), else obese% =
+     * base + ramp·wave (capped), then man/woman fixed slices, child = rest. */
+    int   mix_tank_base, mix_tank_ramp, mix_tank_cap;
+    int   mix_obese_base, mix_obese_ramp, mix_obese_cap;
+    int   mix_man_pct, mix_woman_pct;
+} DefTuning;
+
+/* Fill with the historical compiled defaults (also what def_create installs). */
+void def_tuning_defaults(DefTuning *t);
+
 /* Turret kind (torrette 2.0, Blocco 2). LIGHT/HEAVY = the hitscan pair
  * (heavy gibs). FLAME/ACID = cone-AoE status throwers: no ray, no tracer —
  * each shot tick hits EVERY live agent in range within ±cone_half of the
@@ -94,6 +128,11 @@ typedef struct DefGame DefGame;
 /* cap must match the core's max_agents (per-slot arrays are slot-indexed). */
 DefGame *def_create(SimP *s, int cap);
 void     def_destroy(DefGame *g);
+
+/* The game's live tuning table (mutable; defaults installed by def_create).
+ * Overwrite before spawning: enemy stats are copied at def_spawn, the other
+ * knobs are read live every update. */
+DefTuning *def_tuning(DefGame *g);
 
 /* Spawn a typed enemy: simp_spawn_desc + per-slot HP/body/wound init.
  * Returns its handle, or SIMP_HANDLE_INVALID if the core refused (full/wall). */

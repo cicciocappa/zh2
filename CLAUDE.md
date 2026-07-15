@@ -435,16 +435,36 @@ eseguibili si lanciano dalla root del progetto.
   (25/35/30/30). La torretta in ricarica porta una **barra di reload
   world-space** (transitoria e actionable — le barre HP permanenti restano
   bandite) e reload default **12 s**: la finestra muta deve far male.
-  Costi in testa a vat_horde.c (`BIO_MORTAR_COST`, `BIO_REPAIR_RATE`,
-  `BIO_RELOAD_COST[]`, `BIO_ADJUST_COST`) finché non arriva balance.cfg;
-  mag default per kind 40/12/30/25 (`VAT_HORDE_MAG`/`VAT_HORDE_RELOAD`;
-  sandbox non-shell = infiniti salvo env). Scene: `biotank [start] [cap]`
+  Costi/mag/resa ora in **`assets/balance.cfg`** (modulo `balance.h/.c`,
+  2026-07-15: chiavi `mortar.cost`, `bio.*`, `turret.*.mag/reload_cost`);
+  mag default per kind 40/12/30/25 (`VAT_HORDE_MAG`/`VAT_HORDE_RELOAD`
+  vincono sul file; sandbox non-shell = infiniti salvo env). Scene: `biotank [start] [cap]`
   (`biostock` v1 = parsato, ignorato, warning). Budget $ (PREP) e biomassa
   (ASSALTO) NON si convertono. Gli **upgrade escono dall'assalto**: pannello
   al debrief (§7) DA FARE col Blocco 3. `test_bio` (add/cap/spreco esatto,
   take/rifiuto, cap knob, determinismo) + `test_turret_mag` (guardia legacy,
   ciclo colpi→silenzio→ripresa, reload_now, tick flame, lure spento in
   ricarica, REGOLA, determinismo).
+- `balance.h` / `balance.c` — **tabella di bilanciamento runtime**
+  (Blocco 3, 2026-07-15): TUTTI i numeri attacco/difesa in una struct
+  `Balance` caricata da **`assets/balance.cfg`** (`chiave = valore`, `#`
+  commenti, chiavi mancanti = default compilati, ignote = warning e skip;
+  `VAT_HORDE_BALANCE` cambia il path, le env `VAT_HORDE_*` vincono sul
+  file). Riletta a OGNI `build_world` → si tara live cambiando livello o
+  col rebuild, senza ricompilare. Embedda `DefTuning` (nuova, in
+  defense.h: tabella nemici, DoT fuoco/acido, assedio strutture,
+  sangue→paura, mix del director — default via `def_tuning_defaults`,
+  installati da `def_create`, override con `*def_tuning(g)=…`; i test
+  storici non cambiano di un bit) + manopole host: torrette per kind
+  (range/fp/danno/arco/hp/costo/mag/reload_cost — UNIFICATE piazzamento e
+  scena: la light di scena era 0.10s/55HP, ora `turret.light.*` 0.12/40),
+  barricata/cancellata/mina (patch di `PL_CAT_GAME`, ora non-const),
+  mortaio (costo/volo/gittate/cooldown/blast), biomassa (cap/resa/ripara),
+  lure, contact-siege, director legacy, budget/LZ/danno da caduta.
+  `test_balance` = default deterministici, parser (override/commenti/righe
+  rotte), roundtrip save→load bit-identico, file assente intoccato, e il
+  cfg SHIPPED deve parsare a zero errori. I rate/pool delle exit e la
+  missione restano nel `.scn` (per-livello, non global balance).
 - `OUTFIT_DESIGN.md` — pipeline texture outfit zombie a BAKE DI PROIEZIONE
   (DECISO 2026-07-10, da implementare): basta dipingere a mano nello spazio
   UV scomodo — collage fronte/retro su sagoma + `gfx/outfit_bake.py`

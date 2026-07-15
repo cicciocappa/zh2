@@ -44,6 +44,7 @@
 #include "place.h"
 #include "anim.h"
 #include "bio.h"      // economia biomassa (BIOMASS_DESIGN): usata dalla shell
+#include "balance.h"  // tabella di bilanciamento runtime (assets/balance.cfg)
 #include "audio.h"    // sia sandbox che game (la sandbox ora suona: SFX vetro/boom)
 #ifdef GAME_SHELL
 // GAME_SHELL (GAME_APP_DESIGN.md): stessa sorgente compilata come eseguibile
@@ -763,7 +764,10 @@ static const PlItem PL_CAT[] = {
 // 1.0 m (>= 2 celle: niente pinch diagonali nella scala rasterizzata). La
 // cancellata è il cover semi-trasparente dell'asse C: opacità 0.3, le torrette
 // sparano attraverso (test_cover). Parametri combat a 0 = default di place.c.
-static const PlItem PL_CAT_GAME[] = {
+/* NON-const: host_apply_balance riscrive costi/hp/combat da balance.cfg a ogni
+ * build_world (pl_init tiene il puntatore, quindi le righe patchate valgono
+ * anche per un pl_init già fatto). I numeri sotto = default compilati. */
+static PlItem PL_CAT_GAME[] = {
     /* kind        name          cost   w     h    radius  hp     mass   kind° range per dmg  opac  trap: trig blastR dmg str up arm | arc°
      * (la colonna "heavy" porta l'intero DefTurretKind: 0/1 legacy, 2 fiamme, 3 acido) */
     { PL_TURRET,    "Leggera",    100,  1.0f, 1.0f, 0.5f,   0.0f,  0.0f, 0,    0,0,0,         0,    0,0,0,0,0,0,  90.0f },
@@ -1136,12 +1140,18 @@ static int prop_box_lean(float *buf, int c, float cx, float cz, float ox, float 
 // SCENE_MAX_PROP), stato di distruzione opzionale (NULL = tutti intatti, es. in
 // EDIT). Ritorna il conteggio vertici. Niente malloc: durante un topple viene
 // richiamata a ogni step della sim.
+// Tabella di bilanciamento (balance.h): default compilati sovrascritti da
+// assets/balance.cfg (o VAT_HORDE_BALANCE=path) a OGNI build_world — si tara
+// senza ricompilare. Le env VAT_HORDE_* restano prioritarie sul file.
+static Balance gBal;
 // default granata/RMB (EXPLOSION_DESIGN §10.4: R=8, D0=180); danno da caduta
 // costante v1 (§3.4: il buffer landed dà solo handle, non la v d'impatto → una
-// costante ragionevole, si tara a occhio nel sandbox).
-#define BLAST_R    8.0f
-#define BLAST_DMG  180.0f
-#define FALL_DMG   25.0f
+// costante ragionevole, si tara a occhio nel sandbox). Ora chiavi mortar.*/
+// game.fall_damage di balance.cfg (il colpo di mortaio e l'RMB condividono
+// il blast di default).
+#define BLAST_R    (gBal.mortar.blast_r)
+#define BLAST_DMG  (gBal.mortar.blast_damage)
+#define FALL_DMG   (gBal.fall_damage)
 
 // Crateri scorch (EXPLOSION_DESIGN §7 v1): ring buffer host di dischi scuri a
 // terra timbrati da host_blast, resi con lo shader dei decal di sangue (colore
@@ -1168,9 +1178,10 @@ static float gReloadDef = 12.0f;    // §5 v2: la finestra muta deve far MALE
 static int   gTurMagSeen = 0;             // torrette gia' equipaggiate
 static void host_init_mag_defaults(void){
 #ifdef GAME_SHELL
-    // colpi per caricatore ~4-6 s di fuoco continuo per kind (da tarare)
-    gMagDef[0]=40; gMagDef[1]=12; gMagDef[2]=30; gMagDef[3]=25;
+    // caricatori ON nel GAME: colpi per kind da balance.cfg (turret.*.mag)
+    for(int k=0;k<4;k++) gMagDef[k]=gBal.tur[k].mag;
 #endif
+    gReloadDef=gBal.turret_reload_s;
     if(getenv("VAT_HORDE_MAG"))
         sscanf(getenv("VAT_HORDE_MAG"),"%d,%d,%d,%d",
                &gMagDef[0],&gMagDef[1],&gMagDef[2],&gMagDef[3]);
@@ -1196,7 +1207,7 @@ static void host_apply_mags(DefGame *g){
 // che dopo MORTAR_DELAY esplode via host_blast sul punto mirato. Stato qui (serve
 // a build_world per il reset); barra/aiming più sotto. La formalizzazione (modulo
 // strikes.c + test + biomassa + dispersione) arriva con la gestione base / fase F.
-#define MORTAR_DELAY 1.8f          // tempo di volo (s): arco lobato ben leggibile
+#define MORTAR_DELAY (gBal.mortar.delay)  // tempo di volo (s): arco lobato ben leggibile
 #define MORTAR_APEX  22.0f         // altezza extra dell'arco al culmine (m)
 #define STRIKE_MAX   8
 // Colpo in volo (BASE_DESIGN §3): parte dal container (ox,oy) e ATTERRA su (x,y)
@@ -1222,6 +1233,43 @@ static float gMortMinR = 12.0f, gMortMaxR = 90.0f;
 // rifiutato e il pulsante lo dice. Env VAT_HORDE_MORTAR_CD.
 static float gMortCdMax = 5.0f, gMortCd = 0.0f;
 #endif
+
+// Applica la tabella balance alle manopole host (chiamata da build_world dopo
+// balance_load, quindi rieseguita a ogni rebuild: il file si ritara live).
+// Le env VAT_HORDE_* vincono sul file, applicate qui sopra i valori caricati.
+static void host_apply_balance(void){
+#ifdef GAME_SHELL
+    // catalogo PREP: righe patchate da balance (identità per nome, stabile)
+    for(int i=0;i<PL_NCAT_GAME;i++){ PlItem *it=&PL_CAT_GAME[i];
+        if(it->kind==PL_TURRET && it->heavy>=0 && it->heavy<4){
+            const BalTurret *bt=&gBal.tur[it->heavy];
+            it->cost=bt->cost; it->hp=bt->hp; it->range=bt->range;
+            it->fire_period=bt->fire_period; it->damage=bt->damage;
+            it->arc_deg=bt->arc_deg;
+        } else if(it->kind==PL_BARRICADE && strcmp(it->name,"Cancellata")==0){
+            it->cost=gBal.fence.cost; it->hp=gBal.fence.hp;
+            it->mass=gBal.fence.mass; it->opacity=gBal.fence.opacity;
+        } else if(it->kind==PL_BARRICADE){
+            it->cost=gBal.barricade.cost; it->hp=gBal.barricade.hp;
+            it->mass=gBal.barricade.mass;
+        } else if(it->kind==PL_TRAP){
+            it->cost=gBal.mine.cost; it->trig_r=gBal.mine.trigger_r;
+            it->blast_r=gBal.mine.blast_r; it->blast_dmg=gBal.mine.damage;
+            it->strength=gBal.mine.strength; it->up_ratio=gBal.mine.up_ratio;
+            it->arm_delay=gBal.mine.arm_s;
+        }
+    }
+    gMortMinR=gBal.mortar.min_range; gMortMaxR=gBal.mortar.max_range;
+    gMortCdMax=gBal.mortar.cooldown;
+    if(getenv("VAT_HORDE_MORTAR_MIN")) gMortMinR=atof(getenv("VAT_HORDE_MORTAR_MIN"));
+    if(getenv("VAT_HORDE_MORTAR_MAX")) gMortMaxR=atof(getenv("VAT_HORDE_MORTAR_MAX"));
+    if(getenv("VAT_HORDE_MORTAR_CD"))  gMortCdMax=atof(getenv("VAT_HORDE_MORTAR_CD"));
+    if(gMortMinR<0) gMortMinR=0;
+    if(gMortMaxR<gMortMinR+1.0f) gMortMaxR=gMortMinR+1.0f;
+    if(gMortCdMax<0.0f) gMortCdMax=0.0f;
+#endif
+    host_init_mag_defaults();   // caricatori (BIOMASS §5): balance + env
+}
 
 // Esplosione lato host (EXPLOSION_DESIGN.md §3): la verità di gioco (def_blast:
 // agenti/strutture/cadaveri, con gli eventi DEF_EV_* che accendono gib+sangue)
@@ -1771,17 +1819,16 @@ static int  gAdjOn = 0;                   // REGOLA (V): click su torretta = rio
 static int  gAdjTid = -1;                 // torretta col cono in mano (drag in corso)
 static float gAdjFacing = 0.0f;
 static float gBioFlash = 0.0f;            // > 0: serbatoio pieno, kill SPRECATO
-// costi delle azioni (§6; manopole balance.cfg quando arriverà il Blocco 3)
-#define BIO_MORTAR_COST  40.0f            // un colpo di mortaio
-#define BIO_REPAIR_RATE 100.0f            // HP/s a mantenimento (1 bio = 1 HP)
-#define BIO_ADJUST_COST   0.0f            // REGOLA: gratis in v1
-static const float BIO_RELOAD_COST[4] = { 25.0f, 35.0f, 30.0f, 30.0f }; // per kind
-// resa per body (§6: walker 1, tank 8; obeso 2 in proporzione agli HP)
-static const float BIO_YIELD[BT_COUNT] = { 2.0f, 1.0f, 1.0f, 1.0f, 8.0f };
+// costi delle azioni (§6): manopole balance.cfg (mortar.cost, bio.*,
+// turret.*.reload_cost), resa per body da bio.yield.*
+#define BIO_MORTAR_COST  (gBal.mortar.cost)      // un colpo di mortaio
+#define BIO_REPAIR_RATE  (gBal.bio.repair_rate)  // HP/s a mantenimento (1 bio = 1 HP)
+#define BIO_ADJUST_COST  (gBal.bio.adjust_cost)  // REGOLA: gratis in v1
+#define BIO_RELOAD_COST(k) (gBal.tur[k].reload_cost)   // per kind
 static void host_bio_kill(DefBody body){
     if (gApp.state != APP_ASSAULT) return;    // biomassa = valuta dell'ASSALTO
     float lost = bio_add(&gBio,
-                         BIO_YIELD[((int)body >= 0 && body < BT_COUNT) ? body : BT_MAN]);
+                         gBal.bio.yield[((int)body >= 0 && body < BT_COUNT) ? body : BT_MAN]);
     if (lost > 0.0f) gBioFlash = 0.5f;        // §3: lo spreco lampeggia, non chiede nulla
 }
 #ifdef GAME_SHELL
@@ -2116,7 +2163,7 @@ static void build_lz_core(DefGame *g, SimP *s, const Scene *sc){
     float lx[4]={-hw,hw,hw,-hw}, ly[4]={-hd,-hd,hd,hd}, vx[4], vy[4];
     for(int k=0;k<4;k++){ vx[k]=sc->lz_x+lx[k]*ca-ly[k]*sa;
                           vy[k]=sc->lz_y+lx[k]*sa+ly[k]*ca; }
-    float hp=getenv("VAT_HORDE_LZ_HP")?atof(getenv("VAT_HORDE_LZ_HP")):1500.0f;
+    float hp=getenv("VAT_HORDE_LZ_HP")?atof(getenv("VAT_HORDE_LZ_HP")):gBal.lz_hp;
     int sid=def_add_structure(g,hp,1);
     if(sid<0) return;
     int ccx=(int)(sc->lz_x/cell), ccy=(int)(sc->lz_y/cell);
@@ -2140,6 +2187,15 @@ static void hole_wall_cb(void *u, int cx, int cy){
 
 static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx,
                        SimP **ps, DefGame **pg, DefDirector **pdir){
+    // tabella balance: default compilati + assets/balance.cfg, RILETTA a ogni
+    // rebuild (cambio livello, EDIT->PLAY): si tara senza riavviare.
+    balance_defaults(&gBal);
+    { const char *bp=getenv("VAT_HORDE_BALANCE"); if(!bp) bp="assets/balance.cfg";
+      int bbad=0, bn=balance_load(&gBal,bp,&bbad);
+      if(bn>=0) printf("balance: %s, %d chiavi%s\n",bp,bn,
+                       bbad?" (righe ignorate: vedi warning)":"");
+      else printf("balance: %s assente, default compilati\n",bp); }
+    host_apply_balance();
     SimP *s = scene_instantiate(sc, MAXA);
     if(!s){ fprintf(stderr,"scene_instantiate fail\n"); return -1; }
     spctx->s = s; spctx->vl = vl;
@@ -2151,7 +2207,7 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     // serbatoio biomassa (BIOMASS_DESIGN v2 §3+§8): `biotank [start] [cap]`
     // della scena (omesso = vuoto, capienza di default). Verbi tutti spenti.
     bio_mode_set(0,0,0); gBioFlash = 0.0f;
-    bio_init(&gBio, sc->bio_start, sc->bio_cap);
+    bio_init(&gBio, sc->bio_start, sc->bio_cap>0.0f?sc->bio_cap:gBal.bio.cap);
 #endif
     gTurMagSeen = 0;                      // caricatori: ri-equipaggia le torrette
 
@@ -2163,6 +2219,7 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
             printf("statici terreno: %d celle-muro (tier palazzo) dai buchi ZHM2\n", hc.n); } }
 
     DefGame *g = def_create(s, MAXA);
+    *def_tuning(g) = gBal.def;      // nemici/DoT/assedio/mix da balance.cfg
     def_set_event_cb(g, on_def_event, spctx);   // hit/death -> animazioni one-shot
     float bcx=sc->world_w*0.5f, bcy=sc->world_h*0.5f;
     if(sc->n_goal>0){ float sx=0,sy=0; for(int k=0;k<sc->n_goal;k++){
@@ -2171,7 +2228,7 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     gBaseOX=bcx; gBaseOY=bcy;                 // fallback origine mortaio (il container lo sovrascrive)
     float mn = sc->world_w<sc->world_h?sc->world_w:sc->world_h;
     float TR_R = 0.22f*mn;
-    def_set_budget(g, getenv("VAT_HORDE_BUDGET")?atoi(getenv("VAT_HORDE_BUDGET")):1000);
+    def_set_budget(g, getenv("VAT_HORDE_BUDGET")?atoi(getenv("VAT_HORDE_BUDGET")):gBal.budget);
     int placed=0;
     // a "designed" scene (walls, turrets, or a declared mission) owns its turrets: place
     // ONLY the scene's (possibly zero). A legacy scene gets the demo auto-ring.
@@ -2181,20 +2238,21 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     // destructible turrets: a turret becomes a 1-cell solid the horde sieges to
     // reach the goal beyond -> exposed turrets in a breached ring get assaulted
     // and silenced (def_turret_make_destructible). HP from env, 0 = indestructible.
-    float turret_hp = getenv("VAT_HORDE_TURRET_HP")?atof(getenv("VAT_HORDE_TURRET_HP")):250.0f;
+    float turret_hp_env = getenv("VAT_HORDE_TURRET_HP")?(float)atof(getenv("VAT_HORDE_TURRET_HP")):-1.0f;
     memset(gTurWasDead,0,sizeof gTurWasDead);         // mondo nuovo: nessun crollo visto
+    int any_destr=0;                                  // almeno una torretta distruttibile
     // contact-siege tuning (def_set_turret_contact): 0 = keep default. Lets the
     // turrets be made tougher/weaker to the swarm at a glance, HP unchanged.
     // Reach di gioco 2.0 m (default defense 0.9): chi passa nel corridoio
     // adiacente morde la torretta — insieme al lure sotto, le torrette nel
     // flusso si pagano (2026-07-04).
     def_set_turret_contact(g,
-        getenv("VAT_HORDE_TURRET_DPS")?atof(getenv("VAT_HORDE_TURRET_DPS")):0.0f,
-        getenv("VAT_HORDE_TURRET_REACH")?atof(getenv("VAT_HORDE_TURRET_REACH")):2.0f);
+        getenv("VAT_HORDE_TURRET_DPS")?atof(getenv("VAT_HORDE_TURRET_DPS")):gBal.contact.turret_dps,
+        getenv("VAT_HORDE_TURRET_REACH")?atof(getenv("VAT_HORDE_TURRET_REACH")):gBal.contact.turret_reach);
     // richiamo da fuoco (def_set_fire_lure): le torrette che sparano ATTIRANO
     // l'orda (rumore) — cost_user negativo attorno finché sparano, rimozione
     // esatta al silenzio/crollo. VAT_HORDE_LURE="w,r,linger" (w>=0 = off).
-    { float lw=-0.5f, lr=6.0f, ll=2.5f;
+    { float lw=gBal.lure.weight, lr=gBal.lure.radius, ll=gBal.lure.linger;
       if(getenv("VAT_HORDE_LURE")) sscanf(getenv("VAT_HORDE_LURE"),"%f,%f,%f",&lw,&lr,&ll);
       def_set_fire_lure(g,lw,lr,ll); }
     if(designed){
@@ -2210,20 +2268,25 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
                 t.ang=0.0f; t.arc_min=-3.1416f; t.arc_max=3.1416f;
             }
             t.sweep_dir=1; t.sweep_speed=3.0f; t.range=st->range;
-            // la colonna heavy della scena porta l'intero kind (0/1/2/3)
+            // la colonna heavy della scena porta l'intero kind (0/1/2/3);
+            // combat per-kind dalla tabella balance (stessa del piazzamento —
+            // unificata 2026-07-15: la light di scena era 0.10s/55HP)
             t.kind=st->heavy; t.piercing=0;
-            if(t.kind==TUR_FLAME){ t.fire_period=0.15f; t.damage=6.0f; }
-            else if(t.kind==TUR_ACID){ t.fire_period=0.25f; t.damage=4.0f; }
-            else { t.fire_period=st->heavy?0.5f:0.10f; t.damage=st->heavy?0.0f:55.0f; }
+            const BalTurret *bt=&gBal.tur[(t.kind>=0&&t.kind<4)?t.kind:0];
+            t.fire_period=bt->fire_period; t.damage=bt->damage;
+            if(t.range<=0.0f) t.range=bt->range;
             if(getenv("VAT_HORDE_TFIRE")) t.fire_period=atof(getenv("VAT_HORDE_TFIRE"));
             if(getenv("VAT_HORDE_TDMG"))  t.damage=atof(getenv("VAT_HORDE_TDMG"));
             int tid=def_add_turret(g,&t);
-            float hp = st->hp>0.0f ? st->hp : turret_hp;   // per-turret HP, else default
-            if(hp>0.0f) def_turret_make_destructible(g,tid,hp);
+            // per-turret HP di scena, poi env (0 = indistruttibili), poi balance per kind
+            float hp = st->hp>0.0f ? st->hp
+                     : (turret_hp_env>=0.0f ? turret_hp_env
+                                            : gBal.tur[(t.kind>=0&&t.kind<4)?t.kind:0].hp);
+            if(hp>0.0f){ def_turret_make_destructible(g,tid,hp); any_destr=1; }
             placed++; }
-        if(turret_hp>0.0f) simp_terrain_commit(s);        // commit turret walls
+        if(any_destr) simp_terrain_commit(s);             // commit turret walls
         printf("torrette (scena): %d%s\n", placed,
-               turret_hp>0.0f?" (distruttibili)":"");
+               any_destr?" (distruttibili)":"");
     } else {
         int nt_want=getenv("VAT_HORDE_TURRETS")?atoi(getenv("VAT_HORDE_TURRETS")):NT;
         if(nt_want>NT)nt_want=NT; if(nt_want<0)nt_want=0;
@@ -2287,11 +2350,13 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     DefDirector *dir=NULL;
     if(!gMissionOn && !fillN && ndr>0){ DefDirectorCfg dc={0};
         dc.rects=drects; dc.nrects=ndr; dc.spawn_radius=0.34f;
-        dc.base_rate=getenv("VAT_HORDE_RATE")?atof(getenv("VAT_HORDE_RATE")):16.0f;
-        dc.rate_ramp=8.0f; dc.wave_period=15.0f; dc.seed=0x5EED1234u;
+        dc.base_rate=getenv("VAT_HORDE_RATE")?atof(getenv("VAT_HORDE_RATE")):gBal.director.base_rate;
+        dc.rate_ramp=gBal.director.rate_ramp; dc.wave_period=gBal.director.wave_period;
+        dc.seed=0x5EED1234u;
         dc.on_spawn=on_director_spawn; dc.user=spctx;
         dir=def_director_create(g,&dc);
-        printf("director: %d rect, base %.0f/s +%.0f/ondata (15s)\n",ndr,(double)dc.base_rate,(double)dc.rate_ramp); }
+        printf("director: %d rect, base %.0f/s +%.0f/ondata (%.0fs)\n",ndr,
+               (double)dc.base_rate,(double)dc.rate_ramp,(double)dc.wave_period); }
 
     *ps=s; *pg=g; *pdir=dir; return 0;
 }
@@ -3611,15 +3676,8 @@ int main(int argc, char **argv){
     // base container + mortaio (BASE_DESIGN §3/§5): solo parsing CPU, il
     // rendering passa dal buffer strutture (build_struct_mesh).
     load_base_model("assets/models/base_and_mortar.glb", &gBaseM);
-#ifdef GAME_SHELL
-    if(getenv("VAT_HORDE_MORTAR_MIN")) gMortMinR=atof(getenv("VAT_HORDE_MORTAR_MIN"));
-    if(getenv("VAT_HORDE_MORTAR_MAX")) gMortMaxR=atof(getenv("VAT_HORDE_MORTAR_MAX"));
-    if(getenv("VAT_HORDE_MORTAR_CD"))  gMortCdMax=atof(getenv("VAT_HORDE_MORTAR_CD"));
-    if(gMortMinR<0) gMortMinR=0;
-    if(gMortMaxR<gMortMinR+1.0f) gMortMaxR=gMortMinR+1.0f;
-    if(gMortCdMax<0.0f) gMortCdMax=0.0f;
-#endif
-    host_init_mag_defaults();   // caricatori (BIOMASS §5): default kind + env
+    // mortaio/caricatori: balance.cfg + env, applicati in host_apply_balance
+    // (dentro build_world, così il rebuild ricarica il file).
     printf("torrette 3D: light=%s heavy=%s flame=%s acid=%s (scala %.2f)\n",
            gTurM[0].ok?"ok":"pilastrino", gTurM[1].ok?"ok":"pilastrino",
            gTurM[2].ok?"ok":"pilastrino", gTurM[3].ok?"ok":"pilastrino",
@@ -4060,7 +4118,7 @@ int main(int argc, char **argv){
                             tid=reload_pick_turret(g,wx,wy);
                         if(tid>=0){
                             DefTurret *t=def_turret(g,tid);
-                            float cost=BIO_RELOAD_COST[(t->kind>=0&&t->kind<4)?t->kind:0];
+                            float cost=BIO_RELOAD_COST((t->kind>=0&&t->kind<4)?t->kind:0);
                             if(bio_take(&gBio,cost)){
                                 def_turret_reload_now(g,tid);
                                 au_play(SND_MENU_SELECT);

@@ -5,25 +5,38 @@
 #include <string.h>
 #include <math.h>
 
-/* Body table: hp_max, radius, v_pref, mass (walker units), heavy_hits, bounty. */
-typedef struct {
-    int   hp_max;
-    float radius, v_pref, mass;
-    int   heavy_hits;     /* heavy-turret hits to gib (normals = 1, tank > 1) */
-    int   biomass;        /* bounty (economy, slice 2 — stored, unused here)  */
-} DefEnemyDef;
+/* Tunable combat numbers live in DefTuning (defense.h, Blocco 3/balance.cfg):
+ * def_tuning_defaults below IS the historical compiled table. */
+void def_tuning_defaults(DefTuning *t) {
+    memset(t, 0, sizeof *t);           /* padding zeroed: memcmp-comparable */
+    static const DefEnemyStat E[BT_COUNT] = {
+        /* OBESE */ { 160, 0.34f, 1.1f,  1.6f,  1 },
+        /* MAN   */ { 100, 0.30f, 1.4f,  1.0f,  1 },
+        /* WOMAN */ {  80, 0.27f, 1.5f,  0.85f, 1 },
+        /* CHILD */ {  50, 0.22f, 1.7f,  0.5f,  1 },
+        /* TANK  */ { 600, 0.55f, 1.0f, 10.0f,  4 },
+    };
+    memcpy(t->enemy, E, sizeof E);
+    t->v_crawl    = 0.35f;   /* crawl preferred speed (maimed_legs)          */
+    t->p_corpse   = 0.25f;   /* light kill leaves a corpse with this prob.   */
+    t->corpse_ttl = 9.0f;
+    /* FLAME/ACID DoT: fire kills a default walker in ~6 s of sustained
+     * burning; acid is slower but lasts longer. */
+    t->burn_dps = 16.0f; t->burn_dur = 5.0f;
+    t->acid_dps = 12.0f; t->acid_dur = 8.0f;
+    /* §7 siege of structures — same discrete-attack model as test_siege.c */
+    t->attack_period = 0.8f; /* s between hits while an agent presses        */
+    t->attack_damage = 5.0f; /* HP per hit                                   */
+    /* blood-fear (CORPSE_DESIGN.md 2026-06-25): every death stains the cell;
+     * ~4 deaths in a cell saturate the cost term. */
+    t->danger_r = 0.7f;      /* deposit radius (m) per death                 */
+    t->danger_w = 0.25f;     /* added per death (saturates at 1)             */
+    /* §8 director body mix ramp (director_body) */
+    t->mix_tank_base  = 2;  t->mix_tank_ramp  = 2; t->mix_tank_cap  = 15;
+    t->mix_obese_base = 12; t->mix_obese_ramp = 2; t->mix_obese_cap = 30;
+    t->mix_man_pct = 30; t->mix_woman_pct = 25;
+}
 
-static const DefEnemyDef ENEMY[BT_COUNT] = {
-    /* OBESE */ { 160, 0.34f, 1.1f,  1.6f, 1,  30 },
-    /* MAN   */ { 100, 0.30f, 1.4f,  1.0f, 1,  20 },
-    /* WOMAN */ {  80, 0.27f, 1.5f,  0.85f,1,  18 },
-    /* CHILD */ {  50, 0.22f, 1.7f,  0.5f, 1,  12 },
-    /* TANK  */ { 600, 0.55f, 1.0f, 10.0f, 4, 100 },
-};
-
-#define V_CRAWL   0.35f      /* crawl preferred speed (maimed_legs)          */
-#define P_CORPSE  0.25f      /* light kill leaves a corpse with this prob.   */
-#define CORPSE_TTL 9.0f
 #define GIB_RADIUS 1.0f      /* heavy-kill knockback radius                  */
 #define GIB_PUSH   6.0f      /* heavy-kill knockback strength                */
 #define DISMEMBER_NAV 0.5f   /* gore-nav weight of a gibbed body vs a corpse:
@@ -32,25 +45,11 @@ static const DefEnemyDef ENEMY[BT_COUNT] = {
                               * §7-bis). No physical disc (torn apart).        */
 #define MAXPIERCE  64        /* max agents a piercing shot resolves          */
 #define TURRET_CAP 256
-/* FLAME/ACID (Blocco 2): status DoT + cone defaults. Compiled numbers for
- * now — Blocco 3 moves them into the balance table. Fire kills a default
- * walker in ~6 s of sustained burning; acid is slower but lasts longer. */
-#define BURN_DPS   16.0f
-#define BURN_DUR    5.0f
-#define ACID_DPS   12.0f
-#define ACID_DUR    8.0f
 #define CONE_HALF_DEF 0.21f  /* rad (~12°, 24° total jet)                    */
 #define CORPSE_CLEAR_PERIOD 1.0f /* s of sustained jetting per corpse sweep  */
-/* blood-fear (CORPSE_DESIGN.md, 2026-06-25): every death stains the cell; the
- * horde's animal instinct reroutes around bloody killzones. ~4 deaths in a
- * cell saturate the cost term. Deposited where the blood decal is emitted. */
-#define DANGER_R   0.7f      /* blood-fear deposit radius (m) per death       */
-#define DANGER_W   0.25f     /* blood-fear added per death (saturates at 1)   */
 
 /* §7 siege of structures — same discrete-attack model as test_siege.c */
 #define STRUCT_CAP    192   /* walls + destructible turrets + siegeable props */
-#define ATTACK_PERIOD 0.8f   /* s between hits while an agent presses        */
-#define ATTACK_DAMAGE 5.0f   /* HP per hit                                   */
 #define ATTACK_MIN_P  0.006f /* min wall_pressure to count as a real attack
                               * (gates out the tangential grazing leak)      */
 /* Turrets are attacked by CONTACT (the swarm mobbing the emplacement), not by
@@ -76,6 +75,7 @@ typedef struct {
 struct DefGame {
     SimP *s;
     int   cap;
+    DefTuning tun;      /* live tuning table (def_tuning), defaults at create */
     int     *hp;        /* per slot */
     uint8_t *body;      /* per slot: DefBody */
     uint8_t *wound;     /* per slot: DefWound */
@@ -128,6 +128,7 @@ static inline uint32_t hash_u32(uint32_t x) {
 DefGame *def_create(SimP *s, int cap) {
     DefGame *g = (DefGame *)calloc(1, sizeof(DefGame));
     g->s = s; g->cap = cap;
+    def_tuning_defaults(&g->tun);
     g->hp    = (int *)calloc((size_t)cap, sizeof(int));
     g->body  = (uint8_t *)calloc((size_t)cap, 1);
     g->wound = (uint8_t *)calloc((size_t)cap, 1);
@@ -161,8 +162,10 @@ void def_destroy(DefGame *g) {
     free(g);
 }
 
+DefTuning *def_tuning(DefGame *g) { return &g->tun; }
+
 SimPHandle def_spawn(DefGame *g, float x, float y, DefBody body) {
-    const DefEnemyDef *d = &ENEMY[body];
+    const DefEnemyStat *d = &g->tun.enemy[body];
     SimPAgentDesc desc = { d->radius, d->v_pref, d->mass };
     int i = simp_spawn_desc(g->s, x, y, &desc);
     if (i < 0) return SIMP_HANDLE_INVALID;
@@ -218,7 +221,7 @@ static void gib(DefGame *g, int i) {           /* heavy kill: no intact corpse *
      * Same effective radius (r*0.9) as a normal corpse so DISMEMBER_NAV reads as
      * a clean fraction of one: 0.5 -> 8 splats == 4 corpses. */
     simp_corpse_splat(g->s, x, y, r * 0.9f, DISMEMBER_NAV);
-    simp_add_danger(g->s, x, y, DANGER_R, DANGER_W);     /* bloody killzone */
+    simp_add_danger(g->s, x, y, g->tun.danger_r, g->tun.danger_w); /* bloody killzone */
     if (g->ev_cb) g->ev_cb(g->ev_user, simp_slot_of(g->s, i), i,
                            (DefBody)g->body[simp_slot_of(g->s, i)], DEF_EV_GIB);
     simp_kill(g->s, i);
@@ -229,9 +232,9 @@ static void die_light(DefGame *g, int i, int slot) {
     float x = simp_px(g->s)[i], y = simp_py(g->s)[i];
     float r = simp_radius_arr(g->s)[i];
     uint32_t h = hash_u32((uint32_t)slot * 2654435761u ^ 0x00C0FFEEu);
-    if ((h & 1023u) < (uint32_t)(P_CORPSE * 1024.0f))
-        simp_corpse_add(g->s, x, y, r * 0.9f, CORPSE_TTL);
-    simp_add_danger(g->s, x, y, DANGER_R, DANGER_W);     /* bloody killzone */
+    if ((h & 1023u) < (uint32_t)(g->tun.p_corpse * 1024.0f))
+        simp_corpse_add(g->s, x, y, r * 0.9f, g->tun.corpse_ttl);
+    simp_add_danger(g->s, x, y, g->tun.danger_r, g->tun.danger_w); /* bloody killzone */
     if (g->ev_cb) g->ev_cb(g->ev_user, slot, i, (DefBody)g->body[slot], DEF_EV_DEATH);
     simp_kill(g->s, i);
     g->kills++;
@@ -243,7 +246,7 @@ static void wound_roll(DefGame *g, int i, int slot) {
     uint32_t r = hash_u32((uint32_t)slot * 2654435761u + 0x9E3779B9u) % 3u;
     DefWound w = (r == 0) ? DW_BLOODY : (r == 1) ? DW_MAIMED_ARM : DW_CRAWLING;
     g->wound[slot] = (uint8_t)w;
-    if (w == DW_CRAWLING) simp_set_vpref(g->s, i, V_CRAWL);
+    if (w == DW_CRAWLING) simp_set_vpref(g->s, i, g->tun.v_crawl);
 }
 
 /* Light (non-heavy) damage of `dmg` HP to the live agent at index i / slot.
@@ -287,7 +290,7 @@ static void apply_damage(DefGame *g, SimPHandle h, const DefTurret *t,
          * proportionally more. transmit 1 = today's behaviour exactly. */
         g->hheat[slot] += transmit;
         if (g->body[slot] == BT_TANK) {
-            if ((int)g->hheat[slot] < ENEMY[BT_TANK].heavy_hits)
+            if ((int)g->hheat[slot] < g->tun.enemy[BT_TANK].heavy_hits)
                 return;                        /* tank survives this hit */
         } else if (g->hheat[slot] < 1.0f) {
             return;                            /* cover soaked this one */
@@ -319,7 +322,7 @@ static void apply_status(DefGame *g, int i, int slot, DefStatus st) {
                                st == DST_BURNING ? DEF_EV_IGNITE : DEF_EV_ACID);
     }
     if (g->status[slot] == (uint8_t)st)
-        g->status_t[slot] = (st == DST_BURNING) ? BURN_DUR : ACID_DUR;
+        g->status_t[slot] = (st == DST_BURNING) ? g->tun.burn_dur : g->tun.acid_dur;
 }
 
 /* FLAME/ACID shot tick: every live agent inside range, within ±cone_half of
@@ -369,7 +372,7 @@ static void status_tick(DefGame *g, float dt) {
         int slot = simp_slot_of(s, i);
         if (g->status[slot] == DST_NONE) continue;
         g->status_t[slot] -= dt;
-        float dps = (g->status[slot] == DST_BURNING) ? BURN_DPS : ACID_DPS;
+        float dps = (g->status[slot] == DST_BURNING) ? g->tun.burn_dps : g->tun.acid_dps;
         g->dot_acc[slot] += dps * dt;
         int whole = (int)g->dot_acc[slot];
         if (whole >= 1) {
@@ -647,9 +650,9 @@ static void siege_update(DefGame *g, float dt) {
         if (sid >= 0 && g->structs[sid].is_turret) sid = -1;   /* turrets: contact, not flow */
         if (p >= ATTACK_MIN_P && sid >= 0 && !g->structs[sid].collapsed) {
             g->atk_timer[slot] += dt;
-            if (g->atk_timer[slot] >= ATTACK_PERIOD) {
-                g->atk_timer[slot] -= ATTACK_PERIOD;
-                g->structs[sid].hp -= ATTACK_DAMAGE;
+            if (g->atk_timer[slot] >= g->tun.attack_period) {
+                g->atk_timer[slot] -= g->tun.attack_period;
+                g->structs[sid].hp -= g->tun.attack_damage;
                 if (g->structs[sid].hp <= 0.0f) collapse_structure(g, sid);
             }
         } else {
@@ -1010,16 +1013,20 @@ static inline uint32_t xs32(uint32_t *s) {
     uint32_t x = *s; x ^= x << 13; x ^= x >> 17; x ^= x << 5; *s = x; return x;
 }
 
-/* Body mix that toughens with the wave: tanks and obese grow, children shrink. */
-static DefBody director_body(uint32_t *rng, int wave) {
+/* Body mix that toughens with the wave: tanks and obese grow, children shrink.
+ * Percentages from the game's tuning table (DefTuning mix_*). */
+static DefBody director_body(const DefTuning *t, uint32_t *rng, int wave) {
     uint32_t k = xs32(rng) % 100u;
-    int tank_pct = 2 + wave * 2; if (tank_pct > 15) tank_pct = 15;
+    int tank_pct = t->mix_tank_base + wave * t->mix_tank_ramp;
+    if (tank_pct > t->mix_tank_cap) tank_pct = t->mix_tank_cap;
     if (k < (uint32_t)tank_pct) return BT_TANK;
     uint32_t r2 = xs32(rng) % 100u;
-    int obese_pct = 12 + wave * 2; if (obese_pct > 30) obese_pct = 30;
-    if (r2 < (uint32_t)obese_pct)            return BT_OBESE;
-    if (r2 < (uint32_t)(obese_pct + 30))     return BT_MAN;
-    if (r2 < (uint32_t)(obese_pct + 55))     return BT_WOMAN;
+    int obese_pct = t->mix_obese_base + wave * t->mix_obese_ramp;
+    if (obese_pct > t->mix_obese_cap) obese_pct = t->mix_obese_cap;
+    if (r2 < (uint32_t)obese_pct)                          return BT_OBESE;
+    if (r2 < (uint32_t)(obese_pct + t->mix_man_pct))       return BT_MAN;
+    if (r2 < (uint32_t)(obese_pct + t->mix_man_pct + t->mix_woman_pct))
+        return BT_WOMAN;
     return BT_CHILD;
 }
 
@@ -1063,7 +1070,7 @@ void def_director_update(DefDirector *d, float dt) {
         float x = rc->x + fx * rc->w, y = rc->y + fy * rc->h;
         if (!simp_free_at(s, x, y, d->radius)) continue;   /* burst-free throttle */
         unsigned roll = xs32(&d->rng);
-        DefBody body = director_body(&d->rng, wave);
+        DefBody body = director_body(&d->g->tun, &d->rng, wave);
         SimPHandle h = def_spawn(d->g, x, y, body);
         if (h == SIMP_HANDLE_INVALID) continue;
         d->emitted++;
