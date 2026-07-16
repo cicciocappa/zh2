@@ -30,6 +30,11 @@
  *     prop  bench 24 30 90                            # decor: catalog key x y rot(deg)
  *     exit  2 20 4 30 12 5 400        # fase A: spawn rect + director script:
  *                                     #   x y w h rate [delay] [pool 0=inf]
+ *     wave  1 0 40 6 tank 10          # LOOP_DESIGN A: scripted wave entry:
+ *                                     #   n exit_idx count rate [tank pct]
+ *                                     #   [obese pct] — entries sharing n fire
+ *                                     #   together; any wave line turns the
+ *                                     #   exits into pure spawn rects
  *     lz    50 35                     # helicopter LZ (one per level): host makes
  *                                     #   it the core structure + central goal
  *     mission survive 300 prep 90 budget 500   # or: mission clear 0 [prep N]…
@@ -70,6 +75,7 @@
 #define SCENE_MAX_RECT       64
 #define SCENE_MAX_PROP       256
 #define SCENE_PROP_KEY_LEN   24
+#define SCENE_MAX_WAVE       64
 
 typedef struct {
     float vx[SCENE_POLY_MAX_VERTS], vy[SCENE_POLY_MAX_VERTS];  /* meters */
@@ -102,6 +108,15 @@ typedef struct { char key[SCENE_PROP_KEY_LEN]; float x, y, rot; } SceneProp;
  * (total agents; 0 = unlimited). Applied by the host (mission.c), like walls. */
 typedef struct { float x, y, w, h, rate, delay; int pool; } SceneExit;
 
+/* Scripted assault wave entry (LOOP_DESIGN A). wave = group number (>= 1,
+ * groups run in ascending order; entries sharing a number fire together),
+ * exit_idx = index of the `exit` line the entry emits from, count = agents
+ * (finite by construction), rate = agents/s while emitting. tank_pct /
+ * obese_pct < 0 = tuning-default mix. When a scene declares ANY wave line the
+ * exits become pure spawn rects: their own rate/delay/pool are ignored. */
+typedef struct { int wave, exit_idx, count; float rate;
+                 int tank_pct, obese_pct; } SceneWave;
+
 /* Mission declaration (fase A). kind NONE = legacy demo scene (no mission
  * machine; the host keeps its old behavior). prep_s 0 = unlimited PREP (the
  * player launches the assault); budget < 0 = not declared (host default). */
@@ -131,6 +146,7 @@ typedef struct {
     SceneTurret turret[SCENE_MAX_RECT]; int n_turret; /* fixed turrets (host-side) */
     SceneProp prop[SCENE_MAX_PROP];   int n_prop;   /* pure-decor instances (render-only) */
     SceneExit exits[SCENE_MAX_RECT];  int n_exit;   /* scripted exits (host-side, fase A) */
+    SceneWave waves[SCENE_MAX_WAVE];  int n_wave;   /* scripted waves (host-side, LOOP A) */
     SceneMission mission;             /* kind NONE = legacy demo scene      */
     float lz_x, lz_y, lz_yaw; int has_lz; /* base LZ: pos + yaw(deg) (host: container core + goal) */
     /* `biotank [start] [cap]` (BIOMASS_DESIGN v2 §8): initial biomass and tank

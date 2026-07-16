@@ -175,6 +175,23 @@ decisioni spaziali).
    (TORRETTA L 150 bio, BARRICATA 18 bio/m) esclusive coi verbi.
    `test_place` caso 17 (wallet) + asserzione in `test_mission`.
 4. **A** — 1–2 sessioni, la curva di minaccia (director a ondate + HUD).
+   **FATTA (2026-07-16)**: righe `wave n exit_idx count rate [tank pct]
+   [obese pct]` nel `.scn` (stesso n = partono insieme; con le wave le exit
+   diventano puri rect di spawn) → mission.c le raggruppa e in ASSALTO va a
+   sequenza PAUSA-ANNUNCIO (`wave.pause` in balance, default 15 s) →
+   ONDATA (un director per entry, pool finito, mix scriptabile via
+   `mix_override` del director) → pausa della successiva; CLEAR = ondate
+   finite + mappa pulita. `mission_call_next` = "chiama la prossima"
+   (ritorna i secondi risparmiati; INVIO in assalto, bonus = s × `wave.bonus`
+   bio, flash HUD verde). HUD: banner pulsante "ONDATA k/N - X NEMICI
+   [+TANK +OBESI] DA <bussola> - Ns | INVIO: SUBITO", contatore k/N nella
+   riga di fase, bordi delle exit in arrivo lampeggianti durante l'annuncio
+   (streamline restano solo-PREP, decisione 4). Test: test_mission §5
+   (annuncio, exit mute in pausa, conteggi esatti, gruppo multi-exit, 10
+   tank esatti con tank 100, saved esatto, determinismo), test_scene
+   roundtrip. Banco: `assets/scenes/wave_demo.scn` (4 ondate a escalation).
+   NOTA da verificare a occhio: la bussola del banner assume +y = NORD —
+   se in gioco esce ribaltata si inverte `dy` in `exit_compass`.
 5. **Playtest** → decidere E (screamer primo) ed F (soldato).
 
 **Playtest intermedio D+B+C (2026-07-16, positivo).** Col danno light

@@ -41,6 +41,10 @@ static int roundtrip(void) {
     a.n_exit = 2;                                            /* fase A entities */
     a.exits[0] = (SceneExit){ 1, 4, 2, 8, 12.0f, 5.0f, 400 };
     a.exits[1] = (SceneExit){ 27, 4, 2, 8, 6.0f, 0.0f, 0 };  /* no delay, inf pool */
+    a.n_wave = 3;                                            /* LOOP A waves */
+    a.waves[0] = (SceneWave){ 1, 0, 40, 6.0f, -1, -1 };      /* default mix   */
+    a.waves[1] = (SceneWave){ 2, 1, 60, 8.0f, 10, -1 };      /* tank only     */
+    a.waves[2] = (SceneWave){ 2, 0, 20, 4.0f, 0, 25 };       /* both (tank 0) */
     a.has_lz = 1; a.lz_x = 15.0f; a.lz_y = 10.0f; a.lz_yaw = 31.0f;
     a.mission = (SceneMission){ SCENE_MISSION_SURVIVE, 300.0f, 90.0f, 500.0f };
     a.bio_start = 120.0f; a.bio_cap = 800.0f;                /* biotank (BIOMASS v2) */
@@ -75,6 +79,12 @@ static int roundtrip(void) {
          fabsf(b.exits[0].rate - 12.0f) < 1e-6f && fabsf(b.exits[0].delay - 5.0f) < 1e-6f &&
          b.exits[0].pool == 400 && b.exits[1].pool == 0 &&
          fabsf(b.exits[1].x - 27.0f) < 1e-6f;
+    ok = ok && b.n_wave == 3 &&                              /* LOOP A roundtrip */
+         b.waves[0].wave == 1 && b.waves[0].exit_idx == 0 && b.waves[0].count == 40 &&
+         fabsf(b.waves[0].rate - 6.0f) < 1e-6f &&
+         b.waves[0].tank_pct == -1 && b.waves[0].obese_pct == -1 &&
+         b.waves[1].tank_pct == 10 && b.waves[1].obese_pct == -1 &&
+         b.waves[2].tank_pct == 0 && b.waves[2].obese_pct == 25;
     ok = ok && b.has_lz && fabsf(b.lz_x - 15.0f) < 1e-6f && fabsf(b.lz_y - 10.0f) < 1e-6f
             && fabsf(b.lz_yaw - 31.0f) < 1e-6f;
     ok = ok && b.mission.kind == SCENE_MISSION_SURVIVE &&

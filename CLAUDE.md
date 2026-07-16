@@ -408,11 +408,17 @@ eseguibili si lanciano dalla root del progetto.
   perde ovunque. Formato `.scn` esteso: `exit x y w h rate [delay] [pool]`,
   `lz x y` (in vat_horde → core assediabile 5×5 + goal, `build_lz_core`, HP
   `VAT_HORDE_LZ_HP` def 1500), `mission survive|clear s [prep N] [budget N]`,
-  `budget N`. Con GAME_SHELL comanda la shell (in APP_PREP missione
-  congelata, START_ASSAULT → `mission_go`); senza, INVIO. `def_struct_damage`
+  `budget N`, `wave n exit_idx count rate [tank pct] [obese pct]`
+  (LOOP_DESIGN A 2026-07-16: assalto a ondate annunciate — stesso n =
+  partono insieme, con le `wave` le exit sono puri rect di spawn; in
+  ASSALTO pausa-annuncio `wave.pause` → ondata → pausa; `mission_call_next`
+  salta la pausa e ritorna i secondi risparmiati → bonus bio `wave.bonus`;
+  API HUD `mission_wave_total/current/pending`). Con GAME_SHELL comanda la
+  shell (in APP_PREP missione congelata, START_ASSAULT → `mission_go`);
+  senza, INVIO. `def_struct_damage`
   = danno diretto pubblico (nato qui, serve a EXPLOSION_DESIGN §8).
-  `test_mission` = vinta/persa/CLEAR/pool esatti/determinismo; banco
-  `assets/scenes/mission_demo.scn`.
+  `test_mission` = vinta/persa/CLEAR/pool esatti/ondate/determinismo; banchi
+  `assets/scenes/mission_demo.scn` e `wave_demo.scn`.
 - `bio.h` / `bio.c` — economia biomassa **v2** (BIOMASS_DESIGN.md, riscritta
   2026-07-14; la v1 col convertitore a output selezionabile è stata smontata,
   UX bocciata). Modulo game-side zero-dep: UN serbatoio di UNA valuta.
@@ -478,9 +484,14 @@ eseguibili si lanciano dalla root del progetto.
   hook `PlWallet` in place.c (`pl_set_wallet`, NULL = budget legacy),
   wallet bio agganciato solo in APP_ASSAULT con `bio.build_markup` 1.5,
   card COSTRUISCI light+barricata nella barra d'assalto esclusive coi
-  verbi; `test_place` §17). Restano: A ondate
-  annunciate con "chiama la prossima"+bonus, E screamer lampeggiante +
-  click-priorità, F soldato (SOLDIER_DESIGN, dopo il playtest).
+  verbi; `test_place` §17). **A FATTA** (2026-07-16: ondate annunciate —
+  righe `wave n exit count rate [tank pct] [obese pct]` nel `.scn`,
+  mission.c a sequenza pausa-annuncio→ondata (`wave.pause`/`wave.bonus`
+  in balance), `mission_call_next` = INVIO in assalto → bonus bio sui
+  secondi risparmiati, banner + bordi exit lampeggianti; banco
+  `wave_demo.scn`, test in `test_mission`). Restano: E screamer
+  lampeggiante + click-priorità, F soldato (SOLDIER_DESIGN), entrambi
+  DOPO il playtest di A.
 - `OUTFIT_DESIGN.md` — pipeline texture outfit zombie a BAKE DI PROIEZIONE
   (DECISO 2026-07-10, da implementare): basta dipingere a mano nello spazio
   UV scomodo — collage fronte/retro su sagoma + `gfx/outfit_bake.py`

@@ -2180,6 +2180,72 @@ static int build_struct_mesh(DefGame *g, float cell, float *buf, int maxV){
 // scena legacy -> director unico di demo come sempre.
 static Mission gMission; static int gMissionOn=0;
 
+// ondate scriptate (LOOP_DESIGN A): flash HUD del bonus "chiama la prossima"
+static float gWaveMsgT = 0.0f;
+#ifdef GAME_SHELL
+static char  gWaveMsg[64];
+#endif
+
+// INVIO in assalto = "chiama la prossima": l'ondata annunciata parte SUBITO e
+// i secondi di pausa risparmiati diventano biomassa (wave.bonus, alla Kingdom
+// Rush). No-op se nessuna ondata e' in annuncio.
+static void host_call_next_wave(void){
+    if(!gMissionOn) return;
+    float saved = mission_call_next(&gMission);
+    if(saved <= 0.0f) return;
+#ifdef GAME_SHELL
+    int bonus = (int)(saved*gBal.wave.bonus_per_s + 0.5f);
+    if(bonus > 0) bio_add(&gBio,(float)bonus);
+    if(bonus > 0)
+        snprintf(gWaveMsg,sizeof gWaveMsg,"ONDATA CHIAMATA: +%d BIOMASSA",bonus);
+    else
+        snprintf(gWaveMsg,sizeof gWaveMsg,"ONDATA CHIAMATA");
+    gWaveMsgT = 2.5f;
+    au_play(SND_MENU_SELECT);
+#endif
+    printf("ondata chiamata: %.1fs risparmiati\n",(double)saved);
+}
+
+#ifdef GAME_SHELL
+// direzione bussola del centro-exit rispetto alla LZ (o al centro mondo),
+// per il banner d'annuncio. Convenzione assi mondo: +x = EST, +y = NORD.
+static const char *exit_compass(const Scene *sc,int ei){
+    static const char *N8[8]={"EST","NORD-EST","NORD","NORD-OVEST",
+                              "OVEST","SUD-OVEST","SUD","SUD-EST"};
+    if(ei < 0 || ei >= sc->n_exit) return "?";
+    const SceneExit *ex=&sc->exits[ei];
+    float cx = sc->has_lz ? sc->lz_x : sc->world_w*0.5f;
+    float cy = sc->has_lz ? sc->lz_y : sc->world_h*0.5f;
+    float dx = ex->x+0.5f*ex->w-cx, dy = ex->y+0.5f*ex->h-cy;
+    const float PI8 = 0.39269908f;                    /* pi/8 */
+    int k = (int)floorf((atan2f(dy,dx)+PI8)/(2.0f*PI8));
+    return N8[((k%8)+8)%8];
+}
+
+// riga del banner d'annuncio ("ONDATA 2/4 - 60 NEMICI (TANK!) DA OVEST E SUD
+// - 12 S | INVIO: SUBITO (+BIO)"); 0 = nessuna ondata in annuncio.
+static int wave_banner(const Scene *sc,char *out,size_t n){
+    MissionWaveInfo wi;
+    if(!gMissionOn || !mission_wave_pending(&gMission,&wi)) return 0;
+    int tot=0, tank=0, obese=0;
+    char dirs[64]=""; int nd=0;
+    for(int k=0;k<wi.n;k++){
+        tot += wi.e[k].count;
+        if(wi.e[k].tank_pct  > 0) tank = 1;
+        if(wi.e[k].obese_pct > 0) obese = 1;
+        const char *d = exit_compass(sc,wi.e[k].exit_idx);
+        if(!strstr(dirs,d)){                 // dedupe (due entry, stessa exit)
+            if(nd++) strncat(dirs," E ",sizeof dirs-strlen(dirs)-1);
+            strncat(dirs,d,sizeof dirs-strlen(dirs)-1);
+        }
+    }
+    snprintf(out,n,"ONDATA %d/%d - %d NEMICI%s%s DA %s - %d S | INVIO: SUBITO (+BIO)",
+             wi.index,wi.total,tot,tank?" +TANK":"",obese?" +OBESI":"",
+             dirs,(int)(wi.countdown+0.5f));
+    return 1;
+}
+#endif /* GAME_SHELL */
+
 // entita' `lz x y` (fase A): goal centrale 3x3 (profondo >=2 celle, trappola
 // tank di M3.5) + anello 5x5 di celle-core assediabili (is_core: crollo =
 // sconfitta). L'elicottero e' fiction renderer-side (placeholder: pilastrino
@@ -2379,14 +2445,20 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     if(gMissionOn){ mission_destroy(&gMission); gMissionOn=0; }
     gMissionOn = (mission_create(&gMission, sc, s, g, on_director_spawn, spctx)==0);
     if(gMissionOn){
+        gMission.wave_pause = gBal.wave.pause;   // LOOP A: annuncio da balance
+        gWaveMsgT = 0.0f;
         if(sc->has_lz) build_lz_core(g,s,sc);
         char pool[24]="inf";
         if(gMission.pool_total>0) snprintf(pool,sizeof pool,"%d",gMission.pool_total);
-        printf("missione: %s %.0fs prep %s, %d exit (pool %s), budget %d%s\n",
+        printf("missione: %s %.0fs prep %s, %d exit (pool %s), budget %d%s",
                gMission.kind==SCENE_MISSION_SURVIVE?"SURVIVE":"CLEAR",
                (double)gMission.survive_s,
                gMission.prep_s>0.0f?"a tempo":"illimitata (INVIO=via)",
-               gMission.ndir, pool, def_budget(g), sc->has_lz?" + LZ":"");
+               sc->n_exit, pool, def_budget(g), sc->has_lz?" + LZ":"");
+        if(mission_wave_total(&gMission)>0)
+            printf(", %d ondate (pausa %.0fs, INVIO=chiama)",
+                   mission_wave_total(&gMission),(double)gMission.wave_pause);
+        printf("\n");
     }
 
     DefRect drects[16]; int ndr=sc->n_spawn<16?sc->n_spawn:16;
@@ -3326,9 +3398,32 @@ static void shell_build_ui(int SW,int SH,DefGame *g,float mpx,float mpy){
                 snprintf(line,sizeof line,"ASSALTO - RESISTI ANCORA %d S | KILLS %d%s",
                          (int)(left+0.5f),def_kills(g),
                          (gShellCore>=0&&def_struct_hp(g,gShellCore)<def_struct_hp_max(g,gShellCore))
-                         ?" | IL NUCLEO E' SOTTO ATTACCO":""); }
+                         ?" | IL NUCLEO E' SOTTO ATTACCO":"");
+            // LOOP A: contatore ondate nella riga di fase (k/N; N+1 = mop-up)
+            if(gMissionOn && mission_wave_total(&gMission)>0){
+                int wc=mission_wave_current(&gMission), wt=mission_wave_total(&gMission);
+                char wl[32];
+                if(wc>wt) snprintf(wl,sizeof wl," | ONDATE FINITE");
+                else      snprintf(wl,sizeof wl," | ONDATA %d/%d",wc,wt);
+                strncat(line,wl,sizeof line-strlen(line)-1);
+            } }
         ui_quad(0,0,W,28,0,0,0,0.55f);
         ui_text(10,8,2,line,1,1,1,1);
+        // LOOP A: banner d'annuncio (pausa fra ondate = finestra decisionale)
+        // o, subito dopo la chiamata, il flash del bonus biomassa.
+        if(st==APP_ASSAULT){
+            char wb[160];
+            if(wave_banner(gHost.sc,wb,sizeof wb)){
+                float s=2.6f,w=ui_text_w(s,wb);
+                float pulse=0.72f+0.28f*sinf(gRouteT*5.0f);
+                ui_quad((W-w)*0.5f-12,36,w+24,s*FONT8_H+14,0.32f,0.03f,0.03f,0.78f);
+                ui_text_c(W*0.5f,43,s,wb,1.0f,0.55f+0.35f*pulse,0.25f,1);
+            } else if(gWaveMsgT>0.0f){
+                float s=2.6f,w=ui_text_w(s,gWaveMsg);
+                ui_quad((W-w)*0.5f-12,36,w+24,s*FONT8_H+14,0.02f,0.22f,0.05f,0.70f);
+                ui_text_c(W*0.5f,43,s,gWaveMsg,0.45f,1.0f,0.45f,1);
+            }
+        }
         if(st==APP_PREP) prep_bar_draw(SW,SH,g,mpx,mpy);   // barra PREP (§3)
         else if(st==APP_ASSAULT) strikes_bar_draw(SW,SH);  // barra verbi (BIOMASS §4)
         reload_bars_draw();                                // torrette in ricarica (§5)
@@ -4382,6 +4477,10 @@ int main(int argc, char **argv){
                     continue;
                 }
                 if(e.key.key==SDLK_RETURN||e.key.key==SDLK_KP_ENTER||e.key.key==SDLK_ESCAPE){
+                    // LOOP A: in ASSALTO INVIO = "chiama la prossima" (per
+                    // app.c CONFIRM in assalto e' comunque un no-op)
+                    if(e.key.key!=SDLK_ESCAPE && gApp.state==APP_ASSAULT){
+                        host_call_next_wave(); continue; }
                     shell_do_act(app_input(&gApp,
                         e.key.key==SDLK_ESCAPE?APP_IN_BACK:APP_IN_CONFIRM));
                     continue;
@@ -4475,6 +4574,8 @@ int main(int argc, char **argv){
                     if(gMissionOn && gMission.state==MISSION_PREP){
                         mission_go(&gMission); plc.active=0;
                         printf("missione: ASSALTO\n"); }
+                    else if(gMissionOn && gMission.state==MISSION_ASSAULT)
+                        host_call_next_wave();         // LOOP A: chiama la prossima
                     break;
                 case SDLK_P:    // piazzamento runtime: attiva/disattiva (budget di prova se 0)
                     if(gMissionOn && !mission_placement_open(&gMission)){
@@ -4548,6 +4649,7 @@ int main(int argc, char **argv){
                               || gApp.state==APP_EXTRACT);
         combat = (gApp.state==APP_ASSAULT);
         if(gBioFlash>0.0f) gBioFlash-=(float)frame_t;   // flash HUD dello spreco
+        if(gWaveMsgT>0.0f) gWaveMsgT-=(float)frame_t;   // flash bonus "chiama"
         if(gMortCd>0.0f){ gMortCd-=(float)frame_t; if(gMortCd<0.0f) gMortCd=0.0f; }
         // RIPARA a mantenimento (§4): la spesa è un flusso, va nel frame body
         // (dt reale) — non negli eventi. Fuori dall'assalto non si ripara.
@@ -5160,6 +5262,31 @@ int main(int argc, char **argv){
 #else
             prep_on = gMissionOn && mission_state(&gMission)==MISSION_PREP;
 #endif
+            // LOOP A: durante l'ANNUNCIO le exit dell'ondata in arrivo
+            // lampeggiano (bordo che pulsa). Niente streamline in assalto
+            // (decisione 4): solo il "da dove", il resto lo mostra l'orda.
+            MissionWaveInfo pwi;
+            if(!prep_on && gMissionOn && mission_wave_pending(&gMission,&pwi)){
+                gRouteT+=(float)frame_t;
+                float pulse=0.35f+0.65f*(0.5f+0.5f*sinf(gRouteT*6.0f));
+                int ov=0;
+                for(int k=0;k<pwi.n;k++){
+                    if(pwi.e[k].exit_idx>=sc.n_exit || ov+16>EDOVL_MAXV) break;
+                    const SceneExit *ex=&sc.exits[pwi.e[k].exit_idx];
+                    float ex1=ex->x+ex->w, ey1=ex->y+ex->h;
+                    float r=0.98f*pulse, gg=0.22f*pulse, b=0.10f*pulse;
+                    ov=ed_push_bar(edovl,ov,ex->x,ex->y,ex1,ex->y,0.45f,r,gg,b);
+                    ov=ed_push_bar(edovl,ov,ex1,ex->y,ex1,ey1,0.45f,r,gg,b);
+                    ov=ed_push_bar(edovl,ov,ex1,ey1,ex->x,ey1,0.45f,r,gg,b);
+                    ov=ed_push_bar(edovl,ov,ex->x,ey1,ex->x,ex->y,0.45f,r,gg,b);
+                }
+                if(ov){ glDisable(GL_DEPTH_TEST);
+                    glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
+                    glBindVertexArray(ovVao);glBindBuffer(GL_ARRAY_BUFFER,ovVbo);
+                    glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)ov*9*sizeof(float),edovl);
+                    glDrawArrays(GL_TRIANGLES,0,ov);
+                    glEnable(GL_DEPTH_TEST); }
+            }
             if(prep_on){
                 gRouteT+=(float)frame_t;
                 float phase=fmodf(gRouteT*3.0f,ROUTE_GAP);   // ~3 m/s verso il goal
@@ -5348,7 +5475,7 @@ int main(int argc, char **argv){
                 snprintf(base,sizeof base, def_lost(g)?" | LZ PERSA":" | LZ %d%%", pc<0?0:pc); }
             else if(gStructOn){ int ns=def_struct_count(g),up=0; for(int q=0;q<ns;q++) if(!def_struct_collapsed(g,q)) up++;
                 snprintf(base,sizeof base," | mura %d/%d", up, ns); }
-            char wv[80]="";
+            char wv[128]="";
             if(dir) snprintf(wv,sizeof wv," | ondata %d budget %d",def_director_wave(dir),def_budget(g));
             else if(gMissionOn){                        // fase A: fase/timer/pool
                 float tl=mission_time_left(&gMission);
@@ -5359,7 +5486,17 @@ int main(int argc, char **argv){
                 const char *mst = gMission.state==MISSION_PREP?"PREP (INVIO=via)":
                                   gMission.state==MISSION_ASSAULT?"ASSALTO":
                                   gMission.state==MISSION_WON?"VINTA":"PERSA";
-                snprintf(wv,sizeof wv," | %s%s%s budget %d",mst,tls,pls,def_budget(g)); }
+                char ws[40]="";                    // LOOP A: k/N (+countdown)
+                if(mission_wave_total(&gMission)>0){
+                    MissionWaveInfo pwi;
+                    if(mission_wave_pending(&gMission,&pwi))
+                        snprintf(ws,sizeof ws," ondata %d/%d tra %.0fs (INVIO=subito)",
+                                 pwi.index,pwi.total,(double)pwi.countdown);
+                    else snprintf(ws,sizeof ws," ondata %d/%d",
+                                  mission_wave_current(&gMission),
+                                  mission_wave_total(&gMission));
+                }
+                snprintf(wv,sizeof wv," | %s%s%s%s budget %d",mst,tls,pls,ws,def_budget(g)); }
             char pl[96]="";
             if(plc.active){ const PlItem *it=pl_selected(&plc);
                 const char *why = plc.reason==PL_NOFUNDS?"$":plc.reason==PL_BLOCKED?"statico":plc.reason==PL_OVERLAP?"occupato":"ok";

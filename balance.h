@@ -61,6 +61,8 @@ typedef struct {
     struct { float weight, radius, linger; } lure;   /* fire lure (w>=0 off) */
     struct { float turret_dps, turret_reach; } contact; /* turret mob siege  */
     struct { float base_rate, rate_ramp, wave_period; } director; /* legacy demo */
+    struct { float pause, bonus_per_s; } wave;  /* LOOP A: announcement pause
+                                     (s) + call-next biomass per second saved */
 
     int   budget;        /* default PREP budget (scene `budget` overrides)   */
     float lz_hp;         /* LZ core HP                                       */

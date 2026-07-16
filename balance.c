@@ -49,6 +49,7 @@ void balance_defaults(Balance *b) {
     b->contact.turret_dps = 12.0f; b->contact.turret_reach = 2.0f;
     b->director.base_rate = 16.0f; b->director.rate_ramp = 8.0f;
     b->director.wave_period = 15.0f;
+    b->wave.pause = 15.0f; b->wave.bonus_per_s = 2.0f;
 
     b->budget = 1000;
     b->lz_hp = 1500.0f;
@@ -147,6 +148,9 @@ static const BalKey KEYS[] = {
     KF("director.base_rate",    director.base_rate),
     KF("director.rate_ramp",    director.rate_ramp),
     KF("director.wave_period",  director.wave_period),
+
+    KF("wave.pause",            wave.pause),
+    KF("wave.bonus",            wave.bonus_per_s),
     KI("director.tank_base",    def.mix_tank_base),
     KI("director.tank_ramp",    def.mix_tank_ramp),
     KI("director.tank_cap",     def.mix_tank_cap),

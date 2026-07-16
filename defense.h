@@ -339,6 +339,10 @@ typedef struct {
     /* scripted exits (GAME_PLAN fase A / TODO M5b — one director per exit): */
     float start_delay;                /* s of silence before the first spawn  */
     int   pool;                       /* total agents to emit; 0 = unlimited  */
+    /* scripted waves (LOOP_DESIGN A): mix_override != 0 pins the body mix to
+     * fixed tank/obese percentages (no wave ramp; man/woman split still from
+     * tuning). Zero-init = legacy tuning ramp, bit-identical. */
+    int   mix_override, tank_pct, obese_pct;
 } DefDirectorCfg;
 
 typedef struct DefDirector DefDirector;

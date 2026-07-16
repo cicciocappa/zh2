@@ -1004,6 +1004,7 @@ struct DefDirector {
     DefSpawnFn on_spawn; void *user;
     float    start_delay;      /* s of silence before the first spawn        */
     int      pool;             /* total to emit; 0 = unlimited (legacy)      */
+    int      mix_override, tank_pct, obese_pct;   /* scripted wave mix       */
     float    time, accum;
     int      emitted;
     uint32_t rng;
@@ -1014,15 +1015,19 @@ static inline uint32_t xs32(uint32_t *s) {
 }
 
 /* Body mix that toughens with the wave: tanks and obese grow, children shrink.
- * Percentages from the game's tuning table (DefTuning mix_*). */
-static DefBody director_body(const DefTuning *t, uint32_t *rng, int wave) {
+ * Percentages from the game's tuning table (DefTuning mix_*), or pinned by a
+ * scripted wave (LOOP_DESIGN A: mix override, no ramp). */
+static DefBody director_body(const DefDirector *d, uint32_t *rng, int wave) {
+    const DefTuning *t = &d->g->tun;
     uint32_t k = xs32(rng) % 100u;
-    int tank_pct = t->mix_tank_base + wave * t->mix_tank_ramp;
-    if (tank_pct > t->mix_tank_cap) tank_pct = t->mix_tank_cap;
+    int tank_pct = d->mix_override ? d->tank_pct
+                 : t->mix_tank_base + wave * t->mix_tank_ramp;
+    if (!d->mix_override && tank_pct > t->mix_tank_cap) tank_pct = t->mix_tank_cap;
     if (k < (uint32_t)tank_pct) return BT_TANK;
     uint32_t r2 = xs32(rng) % 100u;
-    int obese_pct = t->mix_obese_base + wave * t->mix_obese_ramp;
-    if (obese_pct > t->mix_obese_cap) obese_pct = t->mix_obese_cap;
+    int obese_pct = d->mix_override ? d->obese_pct
+                  : t->mix_obese_base + wave * t->mix_obese_ramp;
+    if (!d->mix_override && obese_pct > t->mix_obese_cap) obese_pct = t->mix_obese_cap;
     if (r2 < (uint32_t)obese_pct)                          return BT_OBESE;
     if (r2 < (uint32_t)(obese_pct + t->mix_man_pct))       return BT_MAN;
     if (r2 < (uint32_t)(obese_pct + t->mix_man_pct + t->mix_woman_pct))
@@ -1042,6 +1047,9 @@ DefDirector *def_director_create(DefGame *g, const DefDirectorCfg *cfg) {
     d->on_spawn = cfg->on_spawn; d->user = cfg->user;
     d->start_delay = cfg->start_delay > 0.0f ? cfg->start_delay : 0.0f;
     d->pool = cfg->pool > 0 ? cfg->pool : 0;
+    d->mix_override = cfg->mix_override;
+    d->tank_pct  = cfg->tank_pct  > 0 ? cfg->tank_pct  : 0;
+    d->obese_pct = cfg->obese_pct > 0 ? cfg->obese_pct : 0;
     d->rng = cfg->seed ? cfg->seed : 0xD17EC709u;
     return d;
 }
@@ -1070,7 +1078,7 @@ void def_director_update(DefDirector *d, float dt) {
         float x = rc->x + fx * rc->w, y = rc->y + fy * rc->h;
         if (!simp_free_at(s, x, y, d->radius)) continue;   /* burst-free throttle */
         unsigned roll = xs32(&d->rng);
-        DefBody body = director_body(&d->g->tun, &d->rng, wave);
+        DefBody body = director_body(d, &d->rng, wave);
         SimPHandle h = def_spawn(d->g, x, y, body);
         if (h == SIMP_HANDLE_INVALID) continue;
         d->emitted++;

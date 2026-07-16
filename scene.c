@@ -197,6 +197,25 @@ int scene_load(const char *path, Scene *sc) {
                             (float)atof(t[4]), dl ? (float)atof(dl) : 0.0f,
                             pl ? atoi(pl) : 0 };
             sc->exits[sc->n_exit++] = e;
+        } else if (!strcmp(key, "wave")) {             /* LOOP A: scripted wave */
+            if (sc->n_wave >= SCENE_MAX_WAVE) { err = -2; break; }
+            char *t[4]; int ok = 1;            /* n exit_idx count rate mandatory */
+            for (int i = 0; i < 4; i++) { t[i] = strtok_r(NULL, " \t", &save); if (!t[i]) ok = 0; }
+            if (!ok) { err = -2; break; }
+            SceneWave w = { atoi(t[0]), atoi(t[1]), atoi(t[2]),
+                            (float)atof(t[3]), -1, -1 };
+            if (w.wave < 1 || w.exit_idx < 0 || w.count < 1 || w.rate <= 0.0f)
+                { err = -2; break; }
+            char *opt;                                 /* [tank P] [obese P]    */
+            while ((opt = strtok_r(NULL, " \t", &save)) != NULL) {
+                char *v = strtok_r(NULL, " \t", &save);
+                if (!v) { err = -2; break; }
+                if (!strcmp(opt, "tank"))       w.tank_pct = atoi(v);
+                else if (!strcmp(opt, "obese")) w.obese_pct = atoi(v);
+                else { err = -2; break; }
+            }
+            if (err) break;
+            sc->waves[sc->n_wave++] = w;
         } else if (!strcmp(key, "lz")) {               /* base LZ: x y [yaw(deg)] */
             char *x = strtok_r(NULL, " \t", &save), *y = strtok_r(NULL, " \t", &save);
             char *yaw = strtok_r(NULL, " \t", &save);  /* optional container orientation */
@@ -244,6 +263,9 @@ int scene_load(const char *path, Scene *sc) {
     fclose(f);
 
     if (!err && (sc->world_w <= 0.0f || sc->world_h <= 0.0f)) err = -2;
+    if (!err)                       /* waves may precede their exit lines:    */
+        for (int k = 0; k < sc->n_wave; k++)           /* validate at the end */
+            if (sc->waves[k].exit_idx >= sc->n_exit) { err = -2; break; }
     if (err) { scene_free(sc); return err; }
     scene_derive_grid(sc);
     return 0;
@@ -296,6 +318,13 @@ int scene_save(const char *path, const Scene *sc) {
         fprintf(f, "exit %g %g %g %g %g %g %d\n", (double)sc->exits[k].x,
                 (double)sc->exits[k].y, (double)sc->exits[k].w, (double)sc->exits[k].h,
                 (double)sc->exits[k].rate, (double)sc->exits[k].delay, sc->exits[k].pool);
+    for (int k = 0; k < sc->n_wave; k++) {
+        const SceneWave *w = &sc->waves[k];
+        fprintf(f, "wave %d %d %d %g", w->wave, w->exit_idx, w->count, (double)w->rate);
+        if (w->tank_pct  >= 0) fprintf(f, " tank %d",  w->tank_pct);
+        if (w->obese_pct >= 0) fprintf(f, " obese %d", w->obese_pct);
+        fputc('\n', f);
+    }
     if (sc->has_lz) fprintf(f, "lz %g %g %g\n", (double)sc->lz_x, (double)sc->lz_y,
                             (double)sc->lz_yaw);
     if (sc->mission.kind != SCENE_MISSION_NONE) {
