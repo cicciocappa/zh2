@@ -55,9 +55,26 @@ void pl_init(Placement *p, const PlItem *catalog, int n) {
     p->blocked = 0; p->blocked_user = 0;
     p->undo = 0;
     p->traps = 0;
+    p->wallet = 0;
 }
 
 void pl_set_traps(Placement *p, Traps *t) { p->traps = t; }
+
+void pl_set_wallet(Placement *p, const PlWallet *w) { p->wallet = w; }
+
+/* ---- currency (place.h PlWallet): default = defense budget -------------- */
+
+static int wprice(const Placement *p, int cost) {
+    return (p->wallet && p->wallet->price)
+         ? p->wallet->price(p->wallet->user, cost) : cost;
+}
+static int wavail(const Placement *p, DefGame *g) {
+    return p->wallet ? p->wallet->avail(p->wallet->user) : (int)def_budget(g);
+}
+static void wspend(Placement *p, DefGame *g, int amount) {
+    if (p->wallet) p->wallet->spend(p->wallet->user, amount);
+    else def_spend(g, amount);
+}
 
 /* ---- PREP undo (place.h) ------------------------------------------------ */
 
@@ -139,8 +156,9 @@ int pl_validate(Placement *p, DefGame *g, SimP *s) {
     const PlItem *it = pl_selected(p);
     if (!it) { p->valid = 0; p->reason = PL_BADITEM; return 0; }
 
-    /* 1. budget */
-    if (def_budget(g) < it->cost) { p->valid = 0; p->reason = PL_NOFUNDS; return 0; }
+    /* 1. funds (wallet: budget in PREP, biomass in ASSAULT) */
+    if (wavail(p, g) < wprice(p, it->cost)) {
+        p->valid = 0; p->reason = PL_NOFUNDS; return 0; }
 
     /* 2. on a static (host veto) — checked at the cursor */
     if (p->blocked && p->blocked(p->blocked_user, p->cx, p->cy)) {
@@ -351,6 +369,7 @@ int pl_line_validate(Placement *p, DefGame *g, SimP *s,
         p->reason = PL_BADITEM; if (out) { out->nmod = 0; out->cost = 0; }
         return 0;
     }
+    pl.cost = wprice(p, pl.cost);              /* plan cost in active currency */
     if (out) *out = pl;                        /* default: full plan (refusal ghost) */
     float cs = simp_cell_size(s), hv = 0.5f * it->h;
     float dx = x1 - x0, dy = y1 - y0, raw = sqrtf(dx * dx + dy * dy);
@@ -361,6 +380,7 @@ int pl_line_validate(Placement *p, DefGame *g, SimP *s,
      * segment self-degenerates once it shrinks below one module). */
     for (int iter = 0; iter < 2 * PL_LINE_MAX_MODULES + 4; iter++) {
         if (!pl_line_plan(it, x0, y0, x1, y1, &pl)) { reason = PL_OVERLAP; break; }
+        pl.cost = wprice(p, pl.cost);
         float ca = cosf(pl.ang), sa = sinf(pl.ang);
         if (pl_module_status(p, s, &pl, 0, ca, sa, hv, cs) != PL_OK) {
             x0 += ux * STEP; y0 += uy * STEP; continue;              /* slide start in */
@@ -376,7 +396,7 @@ int pl_line_validate(Placement *p, DefGame *g, SimP *s,
         }
         if (mid != PL_OK) { p->reason = mid; return 0; }   /* out keeps full plan (red) */
         if (out) *out = pl;                    /* shortened plan (green ghost) */
-        if (def_budget(g) < pl.cost) { p->reason = PL_NOFUNDS; return 0; }
+        if (wavail(p, g) < pl.cost) { p->reason = PL_NOFUNDS; return 0; }
         if (def_struct_count(g) + pl.nmod > def_struct_cap()) {
             p->reason = PL_BLOCKED; return 0;
         }
@@ -405,7 +425,7 @@ int pl_line_commit(Placement *p, DefGame *g, SimP *s,
         if (it->mass > 0.0f) def_struct_set_debris(g, sid, it->mass);
     }
     simp_terrain_commit(s);                      /* one reroute for the line */
-    def_spend(g, pl.cost);
+    wspend(p, g, pl.cost);                       /* already in active currency */
     undo_push(p, pl.nmod, 0, 0, pl.cost);        /* one record = whole line */
     return 1;
 }
@@ -424,10 +444,11 @@ int pl_commit(Placement *p, DefGame *g, SimP *s) {
         default: break;
     }
     if (ok) {
-        def_spend(g, it->cost);                 /* deduct only on success */
-        if      (it->kind == PL_BARRICADE) undo_push(p, 1, 0, 0, it->cost);
-        else if (it->kind == PL_TURRET)    undo_push(p, 0, 1, 0, it->cost);
-        else if (it->kind == PL_TRAP)      undo_push(p, 0, 0, 1, it->cost);
+        int charged = wprice(p, it->cost);
+        wspend(p, g, charged);                  /* deduct only on success */
+        if      (it->kind == PL_BARRICADE) undo_push(p, 1, 0, 0, charged);
+        else if (it->kind == PL_TURRET)    undo_push(p, 0, 1, 0, charged);
+        else if (it->kind == PL_TRAP)      undo_push(p, 0, 0, 1, charged);
         /* BIN/CAR: no draggable-removal primitive — not recorded (place.h) */
     }
     return ok;

@@ -54,7 +54,8 @@ typedef struct {
              bio_yield,           /* biomass yield mult on mortar kills (1 = full) */
              fear_w, fear_r; } mortar; /* crater danger stamp: weight, radius (m) */
 
-    struct { float cap, repair_rate, adjust_cost;
+    struct { float cap, repair_rate, adjust_cost,
+             build_markup;        /* assault-build bio price = ceil(markup·$) */
              float yield[BT_COUNT]; } bio;       /* yield per DefBody kill   */
 
     struct { float weight, radius, linger; } lure;   /* fire lure (w>=0 off) */

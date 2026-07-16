@@ -67,6 +67,8 @@ MissionState mission_state(const Mission *m);
 float mission_time_left(const Mission *m);
 int   mission_emitted(const Mission *m);    /* total spawned by all exits    */
 int   mission_pool(const Mission *m);       /* pool_total (0 = unlimited)    */
-int   mission_placement_open(const Mission *m);  /* 1 = building allowed (PREP) */
+int   mission_placement_open(const Mission *m);  /* 1 = building allowed
+                                     (PREP + ASSAULT since LOOP_DESIGN C;
+                                     the host picks currency and subset) */
 
 #endif /* MISSION_H */

@@ -198,6 +198,37 @@ void vat_layer_destroy(VatLayer *vl){ if(!vl)return;
     free(vl->kx);free(vl->ky);free(vl->ksz);free(vl->kr);free(vl->kg);free(vl->kb);
     free(vl->qx);free(vl->qy);free(vl->qhd);free(vl->qsz);free(vl->qvar);free(vl->qpose);free(vl->qout);free(vl->qtr);free(vl->qtg);free(vl->qtb);
     free(vl); }
+/* mondo nuovo (rebuild/retry livello): svuota TUTTO il transiente — pool
+   decedenti/gib/mesh-gib, decal persistenti (sangue + sagome-cadavere) e lo
+   stato per-slot. Senza, i cadaveri del tentativo fallito restano a terra; e
+   `seen` va invalidato perche' un SimP nuovo riparte con le stesse coppie
+   slot+generation (handle collisi = stato stantio su agenti nuovi). */
+void vat_layer_reset(VatLayer *vl){
+    if(!vl) return;
+    int n=vl->max;
+    memset(vl->seen,0,(size_t)n*sizeof(SimPHandle));
+    memset(vl->hx,0,(size_t)n*4); memset(vl->hy,0,(size_t)n*4);
+    memset(vl->spd,0,(size_t)n*4); memset(vl->phaseA,0,(size_t)n*4);
+    memset(vl->phaseB,0,(size_t)n*4); memset(vl->blendF,0,(size_t)n*4);
+    memset(vl->hmul,0,(size_t)n*4);
+    memset(vl->tpitch,0,(size_t)n*4); memset(vl->troll,0,(size_t)n*4);
+    memset(vl->clipA,0,(size_t)n*sizeof(int)); memset(vl->clipB,0,(size_t)n*sizeof(int));
+    memset(vl->pin,0,(size_t)n*sizeof(int));
+    for(int i=0;i<n;i++) vl->force_clip[i]=-1;
+    memset(vl->state,0,(size_t)n); memset(vl->target,0,(size_t)n);
+    memset(vl->blending,0,(size_t)n); memset(vl->outfit,0,(size_t)n);
+    memset(vl->var,0,(size_t)n);
+    memset(vl->tr,0,(size_t)n); memset(vl->tg,0,(size_t)n); memset(vl->tb,0,(size_t)n);
+    memset(vl->osT,0,(size_t)n*4); memset(vl->osPh,0,(size_t)n*4);
+    memset(vl->osClip,0,(size_t)n*sizeof(int)); memset(vl->osF0,0,(size_t)n*sizeof(int));
+    memset(vl->osLen,0,(size_t)n*sizeof(int));
+    memset(vl->atk,0,(size_t)n*4);
+    memset(vl->dactive,0,(size_t)vl->dmax); vl->dwrite=0;   /* decedenti  */
+    memset(vl->gact,0,(size_t)vl->gmax);    vl->gwrite=0;   /* gib        */
+    memset(vl->mgact,0,(size_t)vl->mgmax);  vl->mgwrite=0;  /* mesh-gib   */
+    vl->kcount=0; vl->kwrite=0;                             /* sangue     */
+    vl->qcount=0; vl->qwrite=0;                             /* sagome     */
+}
 int vat_layer_nvariants(const VatLayer *vl){ return vl->nvar; }
 const VatMeta *vat_layer_meta_variant(const VatLayer *vl, int variant){
     if(variant<0||variant>=vl->nvar)variant=0; return &vl->m[variant]; }

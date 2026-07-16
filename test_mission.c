@@ -47,6 +47,8 @@ static int scenario_survive_won(void) {
         if (m.state == MISSION_PREP && simp_count(s) > 0) prep_silent = 0;
         if (m.state == MISSION_ASSAULT && m.t_state < 1.9f && simp_count(s) > 0)
             delay_silent = 0;                       /* exit delay 2 s honored */
+        if (m.state == MISSION_ASSAULT && !mission_placement_open(&m))
+            ok = 0;                       /* LOOP_DESIGN C: build during assault */
         if (t < 3.9f && m.state != MISSION_PREP) ok = 0;   /* prep 4 s holds  */
     }
     ok = ok && m.state == MISSION_WON && prep_silent && delay_silent &&

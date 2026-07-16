@@ -471,8 +471,14 @@ eseguibili si lanciano dalla root del progetto.
   D→B→C→A→playtest→E/F. **D FATTA** (mortaio: `mortar.bio_yield` 0.1 — i
   kill da mortaio non alimentano più il farm; cratere timbra sangue-paura
   `mortar.fear` 16 / `fear_radius` 8 → il mortaio NEGA UNA STRADA ~30 s,
-  strumento di rotta). Restano: B rotte previste in PREP, C costruzione in
-  assalto a biomassa (+50%, catalogo a sblocco: light+barricata), A ondate
+  strumento di rotta). **B FATTA** (2026-07-16: marker exit + streamline a
+  trattini animati exit→goal via `simp_sample_flow`, solo PREP, live sul
+  commit nav; verificata a occhio). **C FATTA** (2026-07-16: costruzione in
+  assalto a biomassa — `mission_placement_open` aperta anche in ASSAULT,
+  hook `PlWallet` in place.c (`pl_set_wallet`, NULL = budget legacy),
+  wallet bio agganciato solo in APP_ASSAULT con `bio.build_markup` 1.5,
+  card COSTRUISCI light+barricata nella barra d'assalto esclusive coi
+  verbi; `test_place` §17). Restano: A ondate
   annunciate con "chiama la prossima"+bonus, E screamer lampeggiante +
   click-priorità, F soldato (SOLDIER_DESIGN, dopo il playtest).
 - `OUTFIT_DESIGN.md` — pipeline texture outfit zombie a BAKE DI PROIEZIONE

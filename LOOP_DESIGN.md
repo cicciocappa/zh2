@@ -160,10 +160,35 @@ decisioni spaziali).
 1. **D** — mezza giornata, ferma subito l'exploit del mortaio. **FATTA
    (2026-07-15)**: `mortar.bio_yield`/`fear`/`fear_radius` in balance,
    `gBioYieldMul` + timbro danger al cratere in vat_horde.
-2. **B** — 1 sessione, trasforma PREP e rende leggibile il motore.
-3. **C** — 1 sessione, chiude il circolo TD (policy + prezzi).
+2. **B** — 1 sessione, trasforma PREP e rende leggibile il motore. **FATTA
+   (2026-07-16)**: marker rossi sulle exit (PREP+ASSALTO) + streamline a
+   trattini animati exit→goal integrando `simp_sample_flow` (solo PREP,
+   decisione 4), in vat_horde (`push_route_dashes`); si risposta da sola a
+   ogni piazzamento (commit nav del core). Verificata a occhio dall'utente.
+3. **C** — 1 sessione, chiude il circolo TD (policy + prezzi). **FATTA
+   (2026-07-16)**: `mission_placement_open` aperta anche in ASSAULT;
+   hook valuta `PlWallet` in place.c (`pl_set_wallet`: price/avail/spend,
+   NULL = budget legacy — validate, commit, linea e HUD passano tutti di
+   lì); in vat_horde il wallet biomassa (`bio.build_markup` 1.5 in
+   balance.cfg, prezzo = ceil(1.5·$)) è agganciato solo in APP_ASSAULT,
+   e la barra d'assalto ha le card COSTRUISCI del sottoinsieme a sblocco
+   (TORRETTA L 150 bio, BARRICATA 18 bio/m) esclusive coi verbi.
+   `test_place` caso 17 (wallet) + asserzione in `test_mission`.
 4. **A** — 1–2 sessioni, la curva di minaccia (director a ondate + HUD).
 5. **Playtest** → decidere E (screamer primo) ed F (soldato).
+
+**Playtest intermedio D+B+C (2026-07-16, positivo).** Col danno light
+raddoppiato (10→20) e HP torrette 250→600 il livello di test è diventato
+"interessante": torrette durate abbastanza, alla prima distrutta la biomassa
+bastava a rimpiazzarla (il circolo C funziona), e un colpo di mortaio ben
+piazzato sull'ingresso affollato è stato decisivo (D funziona: strumento,
+non farm). DUBBIO APERTO: ricarica e riparazione sembrano verbi deboli —
+cliccare una torretta per risparmiare ~5 s di pausa non è né urgente né
+decisivo, e il bisogno di riparare non si VEDE. Decisione: si lasciano
+com'è per ora, si rivaluta dopo A. Alternative annotate: ricarica manuale
+GRATIS senza auto-reload (whack-a-mole, rischio: poco avvincente);
+pulsante RIPARA-TUTTO a costo biomassa; danno strutturale reso visibile
+nel render prima di dare peso a RIPARA.
 
 D+B+C+A insieme sono la risposta diretta alla diagnosi: minaccia che cresce
 (A+E), potere che cresce (C), informazione per decidere (B), niente azione

@@ -98,6 +98,30 @@ static int push_aim_cone(float *buf, int v, int maxv, float x, float y,
     return v;
 }
 
+// rotte previste (LOOP_DESIGN B): streamline dal centro di una exit integrando
+// il flow field COMMITTATO (simp_sample_flow, zero API nuove) ed emessa come
+// trattini che marciano verso il goal (phase in metri). Termina su flow nullo
+// (muro o cella goal: phi piatto), fuori mondo o cap di passi. Un piazzamento
+// in PREP forza il ricalcolo nav -> la rotta si sposta da sola al frame dopo.
+#define ROUTE_GAP 2.2f          // passo del pattern trattini (m)
+static float gRouteT=0.0f;      // clock dell'animazione (solo UI)
+static int push_route_dashes(float *buf, int v, int maxv, const SimP *sim,
+                             float x0, float y0, float ww, float wh,
+                             float phase, float r, float g, float b){
+    const float STEP=0.6f, DASH=1.2f;
+    float x=x0, y=y0, dist=0.0f;
+    for(int it=0; it<2500 && v+6<=maxv; it++){
+        float dx,dy; simp_sample_flow(sim,x,y,&dx,&dy);
+        if(dx*dx+dy*dy<1e-6f) break;
+        float nx=x+dx*STEP, ny=y+dy*STEP;
+        if(nx<0.0f||ny<0.0f||nx>=ww||ny>=wh) break;
+        float m=fmodf(dist-phase,ROUTE_GAP); if(m<0.0f) m+=ROUTE_GAP;
+        if(m<DASH) v=ed_push_bar(buf,v,x,y,nx,ny,0.35f,r,g,b);
+        x=nx; y=ny; dist+=STEP;
+    }
+    return v;
+}
+
 // I body type disponibili (asset bakati in vat/assets/). Texture placeholder: la
 // skirt non ha ancora il _diffuse.png -> rende flat-shaded (tintata), corretto.
 // Gli ULTIMI due (crawler, tank) sono body "di gioco": non assegnati a caso, solo
@@ -1843,6 +1867,20 @@ static void bio_mode_set(int mort, int rep, int adj){
     if (!rep) gRepairHold = 0;
     if (!adj) gAdjTid = -1;
 }
+// LOOP_DESIGN C: in ASSALTO si costruisce pagando BIOMASSA a prezzo maggiorato
+// (ceil(markup × costo $), bio.build_markup; budget e bio NON convertibili).
+// Il wallet viene agganciato a plc solo in APP_ASSAULT (per-frame nel main
+// loop); in PREP resta il budget legacy. Catalogo d'assalto = sottoinsieme
+// "da campo" a sblocco progressivo (decisione 2): per ora light + barricata.
+static int  bio_wallet_price(void *u, int cost){ (void)u;
+    return (int)ceilf((float)cost * gBal.bio.build_markup); }
+static int  bio_wallet_avail(void *u){ (void)u; return (int)bio_tank(&gBio); }
+static void bio_wallet_spend(void *u, int amount){ (void)u;
+    bio_take(&gBio, (float)amount); }
+static const PlWallet gBioWallet =
+    { bio_wallet_price, bio_wallet_avail, bio_wallet_spend, 0 };
+static const int BUILD_CAT[] = { 0 /*Leggera*/, 4 /*Barricata*/ };
+#define BUILD_NCAT ((int)(sizeof(BUILD_CAT)/sizeof(BUILD_CAT[0])))
 #endif
 
 // quota a cui la BASE del container appeso tocca terra alla lz
@@ -2204,6 +2242,8 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     SimP *s = scene_instantiate(sc, MAXA);
     if(!s){ fprintf(stderr,"scene_instantiate fail\n"); return -1; }
     spctx->s = s; spctx->vl = vl;
+    if(vl) vat_layer_reset(vl);   // retry/rebuild: via cadaveri, decal, gib e
+                                  // slot stantii (il SimP nuovo riusa gli handle)
     gScorchN = gScorchHead = 0;                     // crateri scorch: mondo pulito
 #ifdef GAME_SHELL
     for(int i=0;i<STRIKE_MAX;i++) gStrikes[i].on = 0;                // reset mortaio
@@ -2914,6 +2954,7 @@ static void prep_bar_draw(int SW,int SH,DefGame *g,float mpx,float mpy){
 // il serbatoio di biomassa (una barra, un numero). Niente card di produzione:
 // il convertitore v1 non esiste più. Layout on demand come la barra PREP.
 static UiRect gMortR, gRepR, gAdjR; static float gStrikeBarY = 1e9f;
+static UiRect gBldR[BUILD_NCAT];     // card COSTRUISCI (LOOP_DESIGN C)
 #define VERB_W 132.0f
 static void strikes_ui_layout(int SW, int SH) {
     (void)SW;
@@ -2921,6 +2962,10 @@ static void strikes_ui_layout(int SW, int SH) {
     gMortR = (UiRect){ 10.0f,               y0 + 36, VERB_W, PREP_CARD_H };
     gRepR  = (UiRect){ 10.0f + VERB_W + 8,  y0 + 36, VERB_W, PREP_CARD_H };
     gAdjR  = (UiRect){ 10.0f + 2*(VERB_W+8),y0 + 36, VERB_W, PREP_CARD_H };
+    // card di costruzione: dopo i verbi, staccate da un gap (gruppo diverso)
+    for (int i = 0; i < BUILD_NCAT; i++)
+        gBldR[i] = (UiRect){ 10.0f + 3*(VERB_W+8) + 26 + i*(VERB_W+8),
+                             y0 + 36, VERB_W, PREP_CARD_H };
 }
 // pulsante-verbo: cornice accesa in modalità, titolo + tasto + costo
 static void verb_button(const UiRect *r, int on, int afford,
@@ -2975,23 +3020,57 @@ static void strikes_bar_draw(int SW, int SH) {
     verb_button(&gRepR, gAimRepair, tank > 0.0f, "RIPARA", "R", "1 BIO / HP");
     verb_button(&gAdjR, gAdjOn, 1, "REGOLA", "V",
                 BIO_ADJUST_COST > 0.0f ? "COSTO" : "GRATIS");
+    // card COSTRUISCI (LOOP_DESIGN C): il circolo TD — kill -> biomassa ->
+    // più difese. Prezzo bio maggiorato (wallet), barricata prezzata al metro.
+    { Placement *p = gHost.plc;
+      static const char *bt[BUILD_NCAT] = { "TORRETTA L", "BARRICATA" };
+      for (int i = 0; i < BUILD_NCAT; i++) {
+          const PlItem *it = &PL_CAT_GAME[BUILD_CAT[i]];
+          int price = bio_wallet_price(0, it->cost);
+          char c[24];
+          snprintf(c, sizeof c, it->kind == PL_BARRICADE ? "%d BIO/M" : "%d BIO",
+                   price);
+          int on = p && p->active && p->sel == BUILD_CAT[i];
+          verb_button(&gBldR[i], on, tank >= (float)price, bt[i], "", c);
+      } }
     // riga hint contestuale in fondo alla barra
+    Placement *pp = gHost.plc;
+    int building = pp && pp->active;
+    char lhint[96]; lhint[0] = 0;
+    if (building && gLineOn)             // drag di linea: costo live (§5)
+        snprintf(lhint, sizeof lhint, "LINEA %.1f M - %d BIO%s",
+                 (double)gLineLen, gLineCost, gLineValid ? "" : " - NON VALIDA");
     const char *hint =
         gAimMort   ? "MIRA COL MOUSE - CLICK SINISTRO = FUOCO (RMB/M ANNULLA)" :
         gAimRepair ? "TIENI PREMUTO SU UNA STRUTTURA = RIPARA (RMB/R ANNULLA)" :
         gAdjOn     ? "TRASCINA DA UNA TORRETTA = NUOVA DIREZIONE (RMB/V ANNULLA)" :
+        lhint[0]   ? lhint :
+        building   ? "PIAZZA SUL TERRENO - RMB ANNULLA" :
         "CLICK SU UNA TORRETTA IN RICARICA = RICARICA SUBITO - M MORTAIO - R RIPARA - V REGOLA";
     ui_text_c((float)SW * 0.5f, y0 + 101, 1, hint, 0.65f, 0.65f, 0.65f, 1);
 }
 static int strikes_ui_click(float mx, float my, int SW, int SH) {
     strikes_ui_layout(SW, SH);
     if (my < gStrikeBarY) return 0;
-    if (ui_hit(&gMortR, mx, my)) {
-        bio_mode_set(!gAimMort, 0, 0); au_play(SND_MENU_SELECT); return 1; }
+    Placement *p = gHost.plc;
+    if (ui_hit(&gMortR, mx, my)) {                  // i verbi spengono il ghost
+        bio_mode_set(!gAimMort, 0, 0);
+        if (gAimMort && p) p->active = 0;
+        au_play(SND_MENU_SELECT); return 1; }
     if (ui_hit(&gRepR, mx, my)) {
-        bio_mode_set(0, !gAimRepair, 0); au_play(SND_MENU_SELECT); return 1; }
+        bio_mode_set(0, !gAimRepair, 0);
+        if (gAimRepair && p) p->active = 0;
+        au_play(SND_MENU_SELECT); return 1; }
     if (ui_hit(&gAdjR, mx, my)) {
-        bio_mode_set(0, 0, !gAdjOn); au_play(SND_MENU_SELECT); return 1; }
+        bio_mode_set(0, 0, !gAdjOn);
+        if (gAdjOn && p) p->active = 0;
+        au_play(SND_MENU_SELECT); return 1; }
+    for (int i = 0; i < BUILD_NCAT; i++)            // card = seleziona E attiva
+        if (p && ui_hit(&gBldR[i], mx, my)) {
+            if (p->active && p->sel == BUILD_CAT[i]) p->active = 0;  // toggle
+            else { bio_mode_set(0, 0, 0);
+                   pl_select(p, BUILD_CAT[i]); p->active = 1; }
+            au_play(SND_MENU_SELECT); return 1; }
     return 1;                                       // sfondo barra: consumato (mai mondo)
 }
 
@@ -3975,6 +4054,12 @@ int main(int argc, char **argv){
     glBindVertexArray(0);
 #endif
     while(running){
+#ifdef GAME_SHELL
+        // LOOP_DESIGN C: in ASSALTO il piazzamento paga in biomassa (prezzo
+        // maggiorato), altrove il budget legacy. Prima degli eventi: click e
+        // validate del frame devono già vedere la valuta giusta.
+        pl_set_wallet(&plc, gApp.state==APP_ASSAULT ? &gBioWallet : NULL);
+#endif
         SDL_Event e; while(SDL_PollEvent(&e)){
             if(e.type==SDL_EVENT_QUIT){ running=0; continue; }
             // --- rotellina = zoom (entrambe le modalità) ---
@@ -4048,6 +4133,7 @@ int main(int argc, char **argv){
                         if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN &&
                            e.button.button==SDL_BUTTON_LEFT)
                             strikes_ui_click(mxf,myf,SW,SH);
+                        if(e.type==SDL_EVENT_MOUSE_BUTTON_UP) plineOn=0;
                         continue;
                     }
                     if(gAimMort){
@@ -4108,7 +4194,8 @@ int main(int argc, char **argv){
                     // fuori da ogni modalità: click su una torretta in ricarica =
                     // ricarica ISTANTANEA pagando il costo del suo kind (§5). Il
                     // bersaglio è autoevidente (ha la barra di reload addosso).
-                    if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN &&
+                    // Col ghost di costruzione attivo il click è del piazzamento.
+                    if(!plc.active && e.type==SDL_EVENT_MOUSE_BUTTON_DOWN &&
                        e.button.button==SDL_BUTTON_LEFT){
                         // hover prima del pick a terra: il click sul corpo del
                         // modello unprojetta DIETRO la torretta
@@ -4368,11 +4455,13 @@ int main(int argc, char **argv){
                 case SDLK_M:  // MORTAIO: entra/esci dall'aiming
                     if(gApp.state==APP_ASSAULT){
                         bio_mode_set(!gAimMort,0,0);
+                        if(gAimMort) plc.active=0;    // esclusiva col ghost
                         au_play(gAimMort?SND_MENU_SELECT:SND_MENU_MOVE); }
                     break;
                 case SDLK_R:  // RIPARA: tieni premuto su una struttura = flusso bio->HP
                     if(gApp.state==APP_ASSAULT){
                         bio_mode_set(0,!gAimRepair,0);
+                        if(gAimRepair) plc.active=0;  // esclusiva col ghost
                         au_play(gAimRepair?SND_MENU_SELECT:SND_MENU_MOVE); }
                     break;
                 case SDLK_V:  // REGOLA: riorienta una torretta (anche in PREP, §12.Q3)
@@ -4394,8 +4483,12 @@ int main(int argc, char **argv){
                     if(plc.active && def_budget(g)<=0){ def_set_budget(g,99999); printf("placement ON (budget di prova)\n"); }
                     break;
 #ifdef GAME_SHELL
-                case SDLK_LEFTBRACKET:  if(plc.active) prep_cycle(-1); break;
-                case SDLK_RIGHTBRACKET: if(plc.active) prep_cycle(+1); break;
+                // [ ] ciclano la tab PREP: in assalto la scelta è solo le card
+                // (il ciclo uscirebbe dal sottoinsieme di LOOP_DESIGN C)
+                case SDLK_LEFTBRACKET:
+                    if(plc.active && gApp.state==APP_PREP) prep_cycle(-1); break;
+                case SDLK_RIGHTBRACKET:
+                    if(plc.active && gApp.state==APP_PREP) prep_cycle(+1); break;
                 case SDLK_1: if(gApp.state==APP_PREP) prep_tab_set(0,g); break;
                 case SDLK_2: if(gApp.state==APP_PREP) prep_tab_set(1,g); break;
                 case SDLK_3: if(gApp.state==APP_PREP) prep_tab_set(2,g); break;
@@ -5054,6 +5147,44 @@ int main(int argc, char **argv){
                 glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)ov*9*sizeof(float),edovl);
                 glDrawArrays(GL_TRIANGLES,0,ov);
                 glEnable(GL_DEPTH_TEST); }
+        }
+        // rotte previste + marker exit (LOOP_DESIGN B, decisione 4): SOLO in
+        // PREP ogni exit mostra bordo + streamline animata lungo il flow
+        // field — piazzi un muro, il commit nav sposta la rotta davanti agli
+        // occhi. In assalto niente overlay (verdetto 2026-07-16: l'orda
+        // stessa mostra rotte e provenienza, il rettangolo è rumore).
+        if(!ed.active && sc.n_exit>0){
+            int prep_on=0;
+#ifdef GAME_SHELL
+            prep_on=(gApp.state==APP_PREP);
+#else
+            prep_on = gMissionOn && mission_state(&gMission)==MISSION_PREP;
+#endif
+            if(prep_on){
+                gRouteT+=(float)frame_t;
+                float phase=fmodf(gRouteT*3.0f,ROUTE_GAP);   // ~3 m/s verso il goal
+                int ov=0;
+                for(int ei=0; ei<sc.n_exit; ei++){
+                    const SceneExit *ex=&sc.exits[ei];
+                    float ex1=ex->x+ex->w, ey1=ex->y+ex->h;
+                    if(ov+24>EDOVL_MAXV) break;
+                    // bordo del rect exit (rosso)
+                    ov=ed_push_bar(edovl,ov,ex->x,ex->y,ex1,ex->y,0.30f,0.95f,0.20f,0.15f);
+                    ov=ed_push_bar(edovl,ov,ex1,ex->y,ex1,ey1,0.30f,0.95f,0.20f,0.15f);
+                    ov=ed_push_bar(edovl,ov,ex1,ey1,ex->x,ey1,0.30f,0.95f,0.20f,0.15f);
+                    ov=ed_push_bar(edovl,ov,ex->x,ey1,ex->x,ex->y,0.30f,0.95f,0.20f,0.15f);
+                    ov=push_route_dashes(edovl,ov,EDOVL_MAXV,s,
+                                         ex->x+0.5f*ex->w,ex->y+0.5f*ex->h,
+                                         sc.world_w,sc.world_h,phase,
+                                         0.95f,0.38f,0.12f);
+                }
+                if(ov){ glDisable(GL_DEPTH_TEST);
+                    glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
+                    glBindVertexArray(ovVao);glBindBuffer(GL_ARRAY_BUFFER,ovVbo);
+                    glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)ov*9*sizeof(float),edovl);
+                    glDrawArrays(GL_TRIANGLES,0,ov);
+                    glEnable(GL_DEPTH_TEST); }
+            }
         }
 #ifdef GAME_SHELL
         // X di mira del mortaio: due barre incrociate sul punto mirato (aiming

@@ -104,4 +104,9 @@ int mission_emitted(const Mission *m) {
 
 int mission_pool(const Mission *m) { return m->pool_total; }
 
-int mission_placement_open(const Mission *m) { return m->state == MISSION_PREP; }
+/* LOOP_DESIGN C (2026-07-16): building is allowed DURING the assault too —
+ * the host swaps the placement wallet to biomass (pl_set_wallet) and offers
+ * the field subset of the catalog. Terminal states stay closed. */
+int mission_placement_open(const Mission *m) {
+    return m->state == MISSION_PREP || m->state == MISSION_ASSAULT;
+}

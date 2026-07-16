@@ -29,6 +29,10 @@
  *                       (is_turret, wall cell raised, HP from the row / 250
  *                       default); the contact siege collapses it (disabled,
  *                       cell freed); undo tears down turret+structure coupled.
+ *  17) WALLET (LOOP_DESIGN C) — pl_set_wallet swaps the currency (assault
+ *                       biomass, price = ceil(1.5·$)): refusal/deduction on
+ *                       the wallet, budget untouched, line plan cost in the
+ *                       active currency, NULL = legacy budget.
  */
 #define _POSIX_C_SOURCE 199309L
 #include "place.h"
@@ -726,6 +730,67 @@ static void test_turret_destructible(void) {
     def_destroy(g); simp_destroy(s);
 }
 
+/* ---- case 17: wallet (LOOP_DESIGN C) ------------------------------------
+ * A wallet swaps the currency: price() marks up the catalog cost (assault
+ * biomass = ceil(1.5·$)), avail()/spend() hit the wallet, the budget is
+ * NEVER touched. Refusal on short funds, exact deduction on success, line
+ * plan cost reported in the active currency, NULL wallet = legacy budget. */
+static int  wtank;                              /* fake biomass tank */
+static int  wprice_15(void *u, int cost) { (void)u;
+    return (int)ceilf((float)cost * 1.5f); }
+static int  wavail_tank(void *u) { (void)u; return wtank; }
+static void wspend_tank(void *u, int amount) { (void)u; wtank -= amount; }
+static void test_wallet(void) {
+    printf("[17] wallet (assault biomass)\n");
+    SimP *s = simp_create(GW, GH, CELL, MAXA);
+    simp_terrain_commit(s);
+    DefGame *g = def_create(s, MAXA);
+    def_set_budget(g, 77);                      /* sentinel: must never move */
+    Placement p; pl_init(&p, CAT, NCAT); p.sel = I_TUR;   /* turret: 100$ */
+    const PlWallet w = { wprice_15, wavail_tank, wspend_tank, 0 };
+    pl_set_wallet(&p, &w);
+
+    wtank = 149;                                /* price = ceil(150) = 150: short */
+    pl_set_cursor(&p, 20.0f, 20.0f);
+    pl_validate(&p, g, s);
+    CHECK(!p.valid && p.reason == PL_NOFUNDS,
+          "149 bio vs price 150 should be PL_NOFUNDS (reason=%d)", p.reason);
+    CHECK(!pl_commit(&p, g, s), "commit must refuse on short wallet");
+    CHECK(wtank == 149, "refusal must not spend (tank %d)", wtank);
+
+    wtank = 150;                                /* exactly affordable */
+    pl_validate(&p, g, s);
+    CHECK(p.valid && p.reason == PL_OK, "150 bio should afford price 150");
+    CHECK(pl_commit(&p, g, s), "commit should place with exact funds");
+    CHECK(wtank == 0, "exact deduction expected (tank %d)", wtank);
+    CHECK(def_turret_count(g) == 1, "turret placed via wallet");
+    CHECK(def_budget(g) == 77, "budget must be untouched (%d)", def_budget(g));
+
+    /* line: plan cost reported and charged in the active currency */
+    p.sel = I_LINE;                             /* 12 $/m */
+    wtank = 1000;
+    PlLinePlan lp;
+    CHECK(pl_line_validate(&p, g, s, 60.0f, 20.0f, 71.0f, 20.0f, &lp),
+          "11 m line should validate (reason=%d)", p.reason);
+    int dollars = 4 * (int)lroundf(2.5f * 12.0f) + (int)lroundf(1.0f * 12.0f);
+    CHECK(lp.cost == (int)ceilf((float)dollars * 1.5f),
+          "line cost should be marked up (%d vs $%d)", lp.cost, dollars);
+    CHECK(pl_line_commit(&p, g, s, 60.0f, 20.0f, 71.0f, 20.0f),
+          "line should commit via wallet");
+    CHECK(wtank == 1000 - lp.cost, "line must charge plan cost (tank %d)", wtank);
+    CHECK(def_budget(g) == 77, "budget still untouched (%d)", def_budget(g));
+
+    /* NULL wallet = legacy budget behavior */
+    pl_set_wallet(&p, NULL);
+    p.sel = I_TUR;
+    def_set_budget(g, 100);
+    pl_set_cursor(&p, 40.0f, 40.0f);
+    CHECK(pl_commit(&p, g, s), "legacy commit should place");
+    CHECK(def_budget(g) == 0, "legacy commit spends budget (%d)", def_budget(g));
+    CHECK(any_nan(s) == 0, "NaN after wallet case");
+    def_destroy(g); simp_destroy(s);
+}
+
 int main(void) {
     test_budget();
     test_space();
@@ -743,6 +808,7 @@ int main(void) {
     test_mine();
     test_line_autoshorten();
     test_turret_destructible();
+    test_wallet();
     if (fails == 0) printf("test_place: ALL PASS\n");
     else            printf("test_place: %d FAIL\n", fails);
     return fails ? 1 : 0;

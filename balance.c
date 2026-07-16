@@ -40,6 +40,7 @@ void balance_defaults(Balance *b) {
     b->mortar.fear_w = 16.0f; b->mortar.fear_r = 8.0f;
 
     b->bio.cap = 500.0f; b->bio.repair_rate = 100.0f; b->bio.adjust_cost = 0.0f;
+    b->bio.build_markup = 1.5f;
     b->bio.yield[BT_OBESE] = 2.0f; b->bio.yield[BT_MAN]   = 1.0f;
     b->bio.yield[BT_WOMAN] = 1.0f; b->bio.yield[BT_CHILD] = 1.0f;
     b->bio.yield[BT_TANK]  = 8.0f;
@@ -126,6 +127,7 @@ static const BalKey KEYS[] = {
     KF("bio.cap",               bio.cap),
     KF("bio.repair_rate",       bio.repair_rate),
     KF("bio.adjust_cost",       bio.adjust_cost),
+    KF("bio.build_markup",      bio.build_markup),
     KF("bio.yield.obese",       bio.yield[BT_OBESE]),
     KF("bio.yield.man",         bio.yield[BT_MAN]),
     KF("bio.yield.woman",       bio.yield[BT_WOMAN]),

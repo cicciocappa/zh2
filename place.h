@@ -69,6 +69,22 @@ typedef struct {
  * NULL = nothing blocked by statics. vat_horde binds this to ter_blocked. */
 typedef int (*PlBlockedFn)(void *user, float wx, float wy);
 
+/* ---- currency hook (LOOP_DESIGN C) ----------------------------------------
+ * Placement charges the defense budget by default. During the ASSAULT the
+ * host swaps the wallet to BIOMASS: price() maps a catalog $ cost to the
+ * active currency (e.g. ceil(1.5·$)), avail()/spend() read and deduct it.
+ * PlLinePlan.cost and validate/commit all go through the wallet, so the HUD
+ * shows the active currency for free. Undo refunds do NOT go through the
+ * wallet (they restore the budget): swapping wallets invalidates outstanding
+ * undo records — clear the stack at the swap (the shell already clears it
+ * when the assault starts). NULL wallet = legacy budget behavior. */
+typedef struct {
+    int  (*price)(void *user, int cost);  /* catalog $ -> active currency    */
+    int  (*avail)(void *user);            /* spendable units right now       */
+    void (*spend)(void *user, int amount);
+    void *user;
+} PlWallet;
+
 /* ---- PREP undo (PREP_UI_DESIGN §6) ----------------------------------------
  * Optional LIFO stack of this-session placements. Attach one with
  * pl_set_undo(): successful pl_commit / pl_line_commit push a record; a full
@@ -101,9 +117,11 @@ typedef struct {
     PlBlockedFn blocked; void *blocked_user;
     PlUndo *undo;                    /* optional (NULL = no recording)       */
     Traps  *traps;                   /* PL_TRAP target (NULL = trap commit no-op) */
+    const PlWallet *wallet;          /* optional (NULL = defense budget)     */
 } Placement;
 
 void pl_set_traps(Placement *p, Traps *t);      /* attach the mine table     */
+void pl_set_wallet(Placement *p, const PlWallet *w);  /* NULL = budget      */
 void pl_set_undo(Placement *p, PlUndo *u);      /* attach/detach; resets it  */
 int  pl_undo_pop(Placement *p, DefGame *g, SimP *s);   /* 1 = one undone     */
 void pl_undo_clear(Placement *p);               /* assault begun: keep spent */

@@ -188,6 +188,12 @@ int  vat_layer_fill_corpse_decals(VatLayer *vl, float *out, int max_out);
  * cadavere lo riusa. Speculare a simp_corpse_clear per la parte VISIVA. */
 void vat_layer_clear_corpses(VatLayer *vl, float x, float y, float r);
 
+/* Mondo nuovo (rebuild/retry livello): svuota tutto il transiente — pool
+ * decedenti/gib/mesh-gib, decal persistenti (sangue + sagome) e stato
+ * per-slot (`seen` compreso: un SimP nuovo riusa slot+generation, gli handle
+ * vecchi collidono). Chiamare accanto a scene_instantiate. */
+void vat_layer_reset(VatLayer *vl);
+
 /* Riempie inst_buf (12 float/istanza: pos.xyz, heading, scala, gA, gB, mix,
  * outfit, tint.rgb) con i SOLI agenti assegnati a `variant`. Ritorna il numero
  * di istanze: il chiamante lo disegna con mesh/texture di quella variante. */
