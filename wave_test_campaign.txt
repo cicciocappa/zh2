@@ -1,0 +1,10 @@
+# wave_test_campaign.txt — campagna a un livello per il banco delle ondate
+# annunciate (LOOP_DESIGN A). Uso: ./game wave_test_campaign.txt
+# Obiettivo/timer vengono dalla riga `mission` della scena.
+
+level assets/scenes/wave_demo.scn
+name  Banco ondate
+brief Quattro ondate annunciate, a escalation. In PREP piazza le difese e
+brief premi INVIO per iniziare. In assalto ogni ondata e' preceduta da una
+brief pausa col banner: INVIO la chiama in anticipo e ti paga il tempo
+brief risparmiato in biomassa.
