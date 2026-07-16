@@ -58,6 +58,17 @@ typedef struct {
              build_markup;        /* assault-build bio price = ceil(markup·$) */
              float yield[BT_COUNT]; } bio;       /* yield per DefBody kill   */
 
+    /* playable soldier (SOLDIER_DESIGN.md): module knobs = SoldierDef fields;
+     * grenade knobs are host-side (bio_take + host_blast at the aim point). */
+    struct { float hp, speed, accel, radius, mass,
+             touch_dps, touch_knock,
+             gun_range, gun_period, gun_damage, down_s,
+             lure_w, lure_r,
+             grenade_cost, grenade_range, grenade_r, grenade_damage,
+             grenade_strength, grenade_up,
+             bio_yield;         /* biomass yield mult on soldier kills */
+    } soldier;
+
     struct { float weight, radius, linger; } lure;   /* fire lure (w>=0 off) */
     struct { float turret_dps, turret_reach; } contact; /* turret mob siege  */
     struct { float base_rate, rate_ramp, wave_period; } director; /* legacy demo */

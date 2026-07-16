@@ -1582,6 +1582,12 @@ void simp_drag_clear(SimP *s) {
     s->grid_stale = true;
 }
 
+void simp_drag_set_vel(SimP *s, int i, float vx, float vy) {
+    if (i < 0 || i >= s->drag_count) return;
+    s->dvx[i] = vx;
+    s->dvy[i] = vy;
+}
+
 int simp_drag_count(const SimP *s) { return s->drag_count; }
 const float *simp_drag_px(const SimP *s)  { return s->dpx; }
 const float *simp_drag_py(const SimP *s)  { return s->dpy; }

@@ -36,6 +36,7 @@ test_mission
 test_prop_world
 test_bio
 test_balance
+test_soldier
 test_turret_mag
 bench_sim
 considerazioni.txt

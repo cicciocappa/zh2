@@ -45,6 +45,7 @@
 #include "anim.h"
 #include "bio.h"      // economia biomassa (BIOMASS_DESIGN): usata dalla shell
 #include "balance.h"  // tabella di bilanciamento runtime (assets/balance.cfg)
+#include "soldier.h"  // soldato giocabile (SOLDIER_DESIGN, LOOP_DESIGN F)
 #include "audio.h"    // sia sandbox che game (la sandbox ora suona: SFX vetro/boom)
 #ifdef GAME_SHELL
 // GAME_SHELL (GAME_APP_DESIGN.md): stessa sorgente compilata come eseguibile
@@ -1433,6 +1434,10 @@ static int upload_prop_mesh(GLuint vbo, const Scene *sc, const PropCatalog *cat,
 // layout 9-float del flat shader. Restituisce il conteggio vertici.
 #define DRAG_VERTS_EACH 30           // prop_box: top(6) + 4 pareti(24)
 #define DRAG_DRAW_CAP   256          // cassonetti renderizzati al massimo
+#ifdef GAME_SHELL
+static Soldier *gSol;                // fwd (definito nella sezione biomassa):
+                                     // il suo disco draggable si disegna soldato
+#endif
 static int build_drag_mesh(SimP *s, float *buf){
     int ndtot=simp_drag_count(s);
     int nd=ndtot; if(nd>DRAG_DRAW_CAP) nd=DRAG_DRAW_CAP;
@@ -1458,11 +1463,20 @@ static int build_drag_mesh(SimP *s, float *buf){
                    0.62f,0.18f,0.16f);  // rosso scuro = vernice auto
     }
     // cassonetti singoli (dischi non legati a un'auto): acciaio sporco, su velocità
+    int sol=-1;
+#ifdef GAME_SHELL
+    if(gSol) sol=soldier_body_index(gSol);   // il corpo del soldato non è un cassonetto
+#endif
     for(int i=0;i<nd;i++){
         if(is_car[i]) continue;
         float r=rad[i];
         float a=(vx[i]*vx[i]+vy[i]*vy[i]>1e-4f)?atan2f(vy[i],vx[i]):0.0f;
         float ca=cosf(a),sa=sinf(a), zb=ter_z(px[i],py[i]);
+        if(i==sol){   // soldato: sagoma in piedi verde militare (placeholder v1)
+            c=prop_box(buf,c, px[i],py[i], 0,0, zb, r*0.85f, r*0.55f, 1.80f, ca,sa,
+                       0.28f,0.42f,0.22f);
+            continue;
+        }
         c=prop_box(buf,c, px[i],py[i], 0,0, zb, r*0.95f, r*0.78f, r*2.0f, ca,sa,
                    0.40f,0.43f,0.48f);
     }
@@ -1848,12 +1862,61 @@ static float gBioFlash = 0.0f;            // > 0: serbatoio pieno, kill SPRECATO
 // dopo: def_blast è sincrono). I kill da caduta dei lanciati arrivano step
 // dopo e pagano resa piena (leak minore, annotato). Mine/RMB: resa piena.
 static float gBioYieldMul = 1.0f;
+// --- soldato giocabile (SOLDIER_DESIGN, LOOP_DESIGN F) --------------------
+// Corpo = draggable nel core (invisibile a torrette/goal/missione, shovato
+// dal PBD); modalità ESCLUSIVA coi verbi: dentro WASD muove, mouse mira,
+// LMB mitra, RMB granata (bio). INVARIANTE: il corpo esiste solo in modalità
+// (uscire = rientro alla base); il tick nel main loop fa rispettare la regola.
+static Soldier *gSol = NULL;             // creato in build_world (def da balance)
+static int   gSolMode = 0;               // modalità soldato (F / card SOLDATO)
+static int   gSolFire = 0;               // LMB tenuto = mitra
+static float gSolAimX = 0, gSolAimY = 0; // punto di mira (mondo)
+static float gSolLastX = 0, gSolLastY = 0; // ultima pos nota (FX al down)
+static int   gSolWant = 0;               // toggle richiesto (F/card), servito nel
+                                         // frame body (dove s è in scope)
+// granata (RMB): FICTION in volo come il colpo di mortaio, poi host_blast coi
+// numeri di balance. Una sola in aria (il fuse è il rate limiter).
+#define GREN_APEX 2.2f
+static struct { int on; float t, ttot, ox, oy, x, y; } gGren;
+// barra HP world-space del soldato (transitoria come le barre di reload:
+// esiste solo in modalità — le barre permanenti restano bandite)
+static float gSolBarX, gSolBarY, gSolBarF; static int gSolBarOn = 0;
+// deploy: primo punto LIBERO (agenti+muri) su anelli attorno alla base — il
+// container LZ è solido, dentro non si spawna
+static int soldier_spot(SimP *s, float bx, float by, float r,
+                        float *ox, float *oy){
+    for(float rr=2.4f; rr<=10.0f; rr+=0.8f)
+        for(int k=0;k<16;k++){
+            float a=(float)k*(6.2831853f/16.0f);
+            float x=bx+rr*cosf(a), y=by+rr*sinf(a);
+            if(simp_free_at(s,x,y,r)){ *ox=x; *oy=y; return 1; }
+        }
+    return 0;
+}
 // costi delle azioni (§6): manopole balance.cfg (mortar.cost, bio.*,
 // turret.*.reload_cost), resa per body da bio.yield.*
 #define BIO_MORTAR_COST  (gBal.mortar.cost)      // un colpo di mortaio
 #define BIO_REPAIR_RATE  (gBal.bio.repair_rate)  // HP/s a mantenimento (1 bio = 1 HP)
 #define BIO_ADJUST_COST  (gBal.bio.adjust_cost)  // REGOLA: gratis in v1
 #define BIO_RELOAD_COST(k) (gBal.tur[k].reload_cost)   // per kind
+// colpo del mitra (SoldierShotFn): tracer dal petto al punto d'impatto, danno
+// via def_damage_agent (stessa pipeline delle torrette: HP/wound/gib/bounty).
+// La resa bio dei kill è scalata da soldier.bio_yield col pattern del mortaio.
+typedef struct { DefGame *g; SimP *s; } SolShotCtx;
+static void on_soldier_shot(void *ud, float ox, float oy,
+                            float ex, float ey, int hit, float dmg){
+    SolShotCtx *c = (SolShotCtx *)ud;
+    tracer_spawn(ox, ter_z(ox,oy)+1.25f, oy,
+                 ex, ter_z(ex,ey)+(hit>=0?0.95f:0.25f), ey, 0);
+    if(hit >= 0){
+        SimPHandle h = simp_handle_of(c->s, hit);   // indice denso: convertire SUBITO
+        float mul = gBioYieldMul;
+        gBioYieldMul = gBal.soldier.bio_yield;
+        def_damage_agent(c->g, h, dmg);
+        gBioYieldMul = mul;
+    }
+}
+
 static void host_bio_kill(DefBody body){
     if (gApp.state != APP_ASSAULT) return;    // biomassa = valuta dell'ASSALTO
     float lost = bio_add(&gBio, gBioYieldMul *
@@ -1866,6 +1929,8 @@ static void bio_mode_set(int mort, int rep, int adj){
     gAimMort = mort; gAimRepair = rep; gAdjOn = adj;
     if (!rep) gRepairHold = 0;
     if (!adj) gAdjTid = -1;
+    gSolMode = 0; gSolFire = 0;   // il soldato è un verbo: esclusivo come gli
+                                  // altri (il tick del main recalla il corpo)
 }
 // LOOP_DESIGN C: in ASSALTO si costruisce pagando BIOMASSA a prezzo maggiorato
 // (ceil(markup × costo $), bio.build_markup; budget e bio NON convertibili).
@@ -2319,6 +2384,20 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
     // della scena (omesso = vuoto, capienza di default). Verbi tutti spenti.
     bio_mode_set(0,0,0); gBioFlash = 0.0f;
     bio_init(&gBio, sc->bio_start, sc->bio_cap>0.0f?sc->bio_cap:gBal.bio.cap);
+    // soldato giocabile: ricreato col mondo, def dalla tabella balance (il
+    // vecchio è già morto in free_world — mai due corpi nello stesso SimP)
+    { SoldierDef sd; soldier_def_defaults(&sd);
+      sd.radius=gBal.soldier.radius;    sd.mass=gBal.soldier.mass;
+      sd.speed=gBal.soldier.speed;      sd.accel=gBal.soldier.accel;
+      sd.hp_max=gBal.soldier.hp;        sd.touch_dps=gBal.soldier.touch_dps;
+      sd.touch_knock=gBal.soldier.touch_knock;
+      sd.gun_range=gBal.soldier.gun_range;
+      sd.gun_period=gBal.soldier.gun_period;
+      sd.gun_damage=gBal.soldier.gun_damage;
+      sd.lure_w=gBal.soldier.lure_w;    sd.lure_r=gBal.soldier.lure_r;
+      sd.down_s=gBal.soldier.down_s;
+      gSol = soldier_create(s, &sd);
+      gSolMode=0; gSolFire=0; gSolWant=0; gGren.on=0; gSolBarOn=0; }
 #endif
     gTurMagSeen = 0;                      // caricatori: ri-equipaggia le torrette
 
@@ -2479,6 +2558,10 @@ static int build_world(const Scene *sc, VatLayer *vl, int fillN, SpawnCtx *spctx
 }
 
 static void free_world(SimP *s, DefGame *g, DefDirector *dir){
+#ifdef GAME_SHELL
+    if(gSol){ soldier_destroy(gSol); gSol=NULL; }   // prima del SimP: il recall
+                                                    // rimuove corpo e lure
+#endif
     if(dir) def_director_destroy(dir);
     if(g)   def_destroy(g);
     if(s)   simp_destroy(s);
@@ -3025,7 +3108,7 @@ static void prep_bar_draw(int SW,int SH,DefGame *g,float mpx,float mpy){
 // MORTAIO / RIPARA / REGOLA, ognuno una modalità esclusiva col suo costo — più
 // il serbatoio di biomassa (una barra, un numero). Niente card di produzione:
 // il convertitore v1 non esiste più. Layout on demand come la barra PREP.
-static UiRect gMortR, gRepR, gAdjR; static float gStrikeBarY = 1e9f;
+static UiRect gMortR, gRepR, gAdjR, gSolR; static float gStrikeBarY = 1e9f;
 static UiRect gBldR[BUILD_NCAT];     // card COSTRUISCI (LOOP_DESIGN C)
 #define VERB_W 132.0f
 static void strikes_ui_layout(int SW, int SH) {
@@ -3034,9 +3117,10 @@ static void strikes_ui_layout(int SW, int SH) {
     gMortR = (UiRect){ 10.0f,               y0 + 36, VERB_W, PREP_CARD_H };
     gRepR  = (UiRect){ 10.0f + VERB_W + 8,  y0 + 36, VERB_W, PREP_CARD_H };
     gAdjR  = (UiRect){ 10.0f + 2*(VERB_W+8),y0 + 36, VERB_W, PREP_CARD_H };
+    gSolR  = (UiRect){ 10.0f + 3*(VERB_W+8),y0 + 36, VERB_W, PREP_CARD_H };
     // card di costruzione: dopo i verbi, staccate da un gap (gruppo diverso)
     for (int i = 0; i < BUILD_NCAT; i++)
-        gBldR[i] = (UiRect){ 10.0f + 3*(VERB_W+8) + 26 + i*(VERB_W+8),
+        gBldR[i] = (UiRect){ 10.0f + 4*(VERB_W+8) + 26 + i*(VERB_W+8),
                              y0 + 36, VERB_W, PREP_CARD_H };
 }
 // pulsante-verbo: cornice accesa in modalità, titolo + tasto + costo
@@ -3092,6 +3176,12 @@ static void strikes_bar_draw(int SW, int SH) {
     verb_button(&gRepR, gAimRepair, tank > 0.0f, "RIPARA", "R", "1 BIO / HP");
     verb_button(&gAdjR, gAdjOn, 1, "REGOLA", "V",
                 BIO_ADJUST_COST > 0.0f ? "COSTO" : "GRATIS");
+    // SOLDATO (SOLDIER_DESIGN): in lockout la card conta i secondi come il
+    // mortaio in cooldown; il mitra è gratis, la granata paga a colpo.
+    { char c[28]; float dn = gSol ? soldier_down(gSol) : 0.0f;
+      if (dn > 0.0f) snprintf(c, sizeof c, "PRONTO IN %.1f S", (double)dn);
+      else           snprintf(c, sizeof c, gSolMode ? "IN CAMPO" : "GRATIS");
+      verb_button(&gSolR, gSolMode, dn <= 0.0f, "SOLDATO", "F", c); }
     // card COSTRUISCI (LOOP_DESIGN C): il circolo TD — kill -> biomassa ->
     // più difese. Prezzo bio maggiorato (wallet), barricata prezzata al metro.
     { Placement *p = gHost.plc;
@@ -3113,6 +3203,7 @@ static void strikes_bar_draw(int SW, int SH) {
         snprintf(lhint, sizeof lhint, "LINEA %.1f M - %d BIO%s",
                  (double)gLineLen, gLineCost, gLineValid ? "" : " - NON VALIDA");
     const char *hint =
+        gSolMode   ? "WASD MUOVE - MOUSE MIRA - LMB MITRA - RMB GRANATA - F RIENTRA" :
         gAimMort   ? "MIRA COL MOUSE - CLICK SINISTRO = FUOCO (RMB/M ANNULLA)" :
         gAimRepair ? "TIENI PREMUTO SU UNA STRUTTURA = RIPARA (RMB/R ANNULLA)" :
         gAdjOn     ? "TRASCINA DA UNA TORRETTA = NUOVA DIREZIONE (RMB/V ANNULLA)" :
@@ -3137,6 +3228,8 @@ static int strikes_ui_click(float mx, float my, int SW, int SH) {
         bio_mode_set(0, 0, !gAdjOn);
         if (gAdjOn && p) p->active = 0;
         au_play(SND_MENU_SELECT); return 1; }
+    if (ui_hit(&gSolR, mx, my)) {   // SOLDATO: toggle servito nel frame body
+        gSolWant = 1; return 1; }   // (deploy vuole s; suono all'esito, la')
     for (int i = 0; i < BUILD_NCAT; i++)            // card = seleziona E attiva
         if (p && ui_hit(&gBldR[i], mx, my)) {
             if (p->active && p->sel == BUILD_CAT[i]) p->active = 0;  // toggle
@@ -3291,6 +3384,16 @@ static void reload_bars_draw(void){
         ui_quad(x-1,y-1,bw+2,bh+2,0.02f,0.02f,0.03f,0.75f);
         ui_quad(x,y,bw,bh,0.16f,0.16f,0.20f,0.9f);
         ui_quad(x,y,bw*f,bh,0.95f,0.70f,0.20f,1);        // ambra: torretta MUTA
+    }
+    // HP del soldato (SOLDIER_DESIGN): transitoria come le barre di reload —
+    // esiste solo in modalità, verde che vira al rosso sotto il 40%.
+    if(gSolBarOn){
+        float bw=44.0f, bh=6.0f;
+        float x=gSolBarX-bw*0.5f, y=gSolBarY-bh*0.5f;
+        float f=gSolBarF; if(f<0)f=0; if(f>1)f=1;
+        ui_quad(x-1,y-1,bw+2,bh+2,0.02f,0.02f,0.03f,0.75f);
+        ui_quad(x,y,bw,bh,0.16f,0.16f,0.20f,0.9f);
+        ui_quad(x,y,bw*f,bh, f>0.4f?0.30f:0.85f, f>0.4f?0.80f:0.25f, 0.25f,1);
     }
 }
 // icona accanto al cursore: dice in che modalità si è senza guardare la barra
@@ -4286,6 +4389,33 @@ int main(int argc, char **argv){
                         adjust_event(&e,g,vp,mxf,myf,SW,SH);
                         continue;
                     }
+                    if(gSolMode){             // SOLDATO: mouse = mira e grilletto
+                        if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
+                            if(e.button.button==SDL_BUTTON_LEFT) gSolFire=1;
+                            else if(e.button.button==SDL_BUTTON_RIGHT){
+                                // granata: una in aria (il volo è il rate limiter),
+                                // gittata clampata dal corpo, costo bio a colpo
+                                float wx,wy;
+                                if(!gGren.on && gSol && soldier_active(gSol) &&
+                                   pick_y0(vp,mxf,myf,SW,SH,&wx,&wy)){
+                                    float sx=soldier_x(gSol), sy=soldier_y(gSol);
+                                    float dx=wx-sx, dy=wy-sy;
+                                    float d=sqrtf(dx*dx+dy*dy);
+                                    float rng=gBal.soldier.grenade_range;
+                                    if(d>rng && d>1e-3f){
+                                        wx=sx+dx*(rng/d); wy=sy+dy*(rng/d); d=rng; }
+                                    if(bio_take(&gBio,gBal.soldier.grenade_cost)){
+                                        gGren.on=1; gGren.ox=sx; gGren.oy=sy;
+                                        gGren.x=wx; gGren.y=wy;
+                                        gGren.ttot=0.45f+0.05f*d; gGren.t=gGren.ttot;
+                                        au_play(SND_MENU_SELECT);
+                                    } else au_play(SND_MENU_MOVE); // bio insufficiente
+                                } else au_play(SND_MENU_MOVE);     // una alla volta
+                            }
+                        } else if(e.type==SDL_EVENT_MOUSE_BUTTON_UP &&
+                                  e.button.button==SDL_BUTTON_LEFT) gSolFire=0;
+                        continue;         // in modalità il mouse non guida la camera
+                    }
                     // fuori da ogni modalità: click su una torretta in ricarica =
                     // ricarica ISTANTANEA pagando il costo del suo kind (§5). Il
                     // bersaglio è autoevidente (ha la barra di reload addosso).
@@ -4569,6 +4699,9 @@ int main(int argc, char **argv){
                         if(gAdjOn) plc.active=0;      // esclusiva col ghost di piazzamento
                         au_play(gAdjOn?SND_MENU_SELECT:SND_MENU_MOVE); }
                     break;
+                case SDLK_F:  // SOLDATO: entra/esci (servito nel frame body)
+                    if(gApp.state==APP_ASSAULT) gSolWant=1;
+                    break;
 #endif
                 case SDLK_RETURN: case SDLK_KP_ENTER:  // fase A: via all'assalto
                     if(gMissionOn && gMission.state==MISSION_PREP){
@@ -4688,6 +4821,88 @@ int main(int argc, char **argv){
                     mission_update(&gMission,FIXED_DT);
 #endif
                 }
+#ifdef GAME_SHELL
+                // --- soldato (SOLDIER_DESIGN): tick PRIMA di simp_step (scrive
+                // la velocità di drive che lo step integra). Invarianti: corpo
+                // solo in modalità, modalità solo in ASSALTO (bio_mode_set
+                // spegne gSolMode ma non può rimuovere il corpo: lo si fa qui).
+                if(gSol){
+                    if(gSolWant){                    // toggle da F o card SOLDATO
+                        gSolWant=0;
+                        if(gSolMode){ gSolMode=0; gSolFire=0;
+                                      au_play(SND_MENU_MOVE); }
+                        else if(gApp.state==APP_ASSAULT &&
+                                soldier_down(gSol)<=0.0f){
+                            float dxp,dyp;           // primo punto libero attorno alla base
+                            if(soldier_spot(s,gBaseOX,gBaseOY,
+                                            gBal.soldier.radius,&dxp,&dyp) &&
+                               soldier_deploy(gSol,dxp,dyp)){
+                                bio_mode_set(0,0,0); // esclusiva coi verbi...
+                                gSolMode=1;          // ...che azzera anche gSolMode
+                                plc.active=0;        // ...e col ghost di costruzione
+                                gSolLastX=dxp; gSolLastY=dyp;
+                                au_play(SND_MENU_SELECT);
+                            } else au_play(SND_MENU_MOVE);   // base assediata/lockout
+                        } else au_play(SND_MENU_MOVE);
+                    }
+                    if(gSolMode && gApp.state!=APP_ASSAULT){ gSolMode=0; gSolFire=0; }
+                    if(!gSolMode && soldier_active(gSol))    // rientro alla base
+                        soldier_recall(gSol);
+                    float mvx=0.0f,mvy=0.0f;
+                    if(gSolMode){
+                        // WASD relativo allo SCHERMO (la camera è ruotata di az):
+                        // W = verso l'alto dello schermo proiettato a terra
+                        const bool *ks=SDL_GetKeyboardState(NULL);
+                        float fwd=(ks[SDL_SCANCODE_W]?1.0f:0.0f)-(ks[SDL_SCANCODE_S]?1.0f:0.0f);
+                        float rgt=(ks[SDL_SCANCODE_D]?1.0f:0.0f)-(ks[SDL_SCANCODE_A]?1.0f:0.0f);
+                        float sn=sinf(az), cn=cosf(az);
+                        mvx=fwd*(-sn)+rgt*( cn);
+                        mvy=fwd*(-cn)+rgt*(-sn);
+                        pick_y0(vp,mouse_px,mouse_py,SW,SH,&gSolAimX,&gSolAimY);
+                    }
+                    int wasA=soldier_active(gSol);
+                    SolShotCtx sctx={g,s};
+                    soldier_step(gSol,mvx,mvy,gSolAimX,gSolAimY,
+                                 gSolMode&&gSolFire&&combat,FIXED_DT,
+                                 on_soldier_shot,&sctx);
+                    if(soldier_active(gSol)){
+                        gSolLastX=soldier_x(gSol); gSolLastY=soldier_y(gSol);
+                    } else if(wasA && gSolMode){     // sbranato: fuori modalità
+                        gSolMode=0; gSolFire=0;
+                        float lo[3]={gSolLastX,
+                                     ter_z(gSolLastX,gSolLastY)+0.9f,gSolLastY};
+                        fx_emit(&fx,lo,&BLOOD_BURST_DEF,0.0f,-1.0f);
+                        au_play(SND_MENU_MOVE);
+                    }
+                    // granata in volo: arco + fiction billboard come il mortaio;
+                    // all'impatto host_blast coi numeri soldier (resa bio scalata)
+                    if(gGren.on){
+                        gGren.t-=FIXED_DT;
+                        if(gGren.t<=0.0f){ gGren.on=0;
+                            gBioYieldMul=gBal.soldier.bio_yield;
+                            int pch=host_blast(g,s,&sc,&gCatalog,&dz,&fx,vl,
+                                gGren.x,gGren.y,gBal.soldier.grenade_r,
+                                gBal.soldier.grenade_damage,
+                                gBal.soldier.grenade_strength,gBal.soldier.grenade_up);
+                            gBioYieldMul=1.0f;
+                            if(pch) prNV=upload_prop_mesh(prVbo,&sc,&gCatalog,&dz,g);
+                        } else {
+                            float p=1.0f-gGren.t/gGren.ttot;   // 0 lancio -> 1 impatto
+                            float ax=gGren.ox+(gGren.x-gGren.ox)*p;
+                            float azp=gGren.oy+(gGren.y-gGren.oy)*p;
+                            float h0=ter_z(gGren.ox,gGren.oy)+1.2f;
+                            float h1=ter_z(gGren.x,gGren.y)+0.2f;
+                            float ay=h0+(h1-h0)*p+GREN_APEX*4.0f*p*(1.0f-p);
+                            float hp3[3]={ax,ay,azp};
+                            float c0[4]={0.38f,0.45f,0.32f,1.0f};
+                            float c1[4]={0.25f,0.30f,0.22f,0.0f};
+                            float zv[3]={0,0,0};
+                            fx_emit_one(&fx,hp3,zv,0.12f,0.0f,0.0f,c0,c1,
+                                        0.30f,0.16f,-1,0.0f,false,FX_BLEND_ALPHA);
+                        }
+                    }
+                }
+#endif
                 Uint64 t0=SDL_GetPerformanceCounter();
                 simp_step(s,FIXED_DT);
                 Uint64 t1=SDL_GetPerformanceCounter();
@@ -4957,6 +5172,14 @@ int main(int argc, char **argv){
             float kf=1.0f-expf(-HELI_CAM_RATE*(float)frame_t);
             cx+=(tx-cx)*kf; cz+=(tz-cz)*kf;
             hh+=(HELI_CAM_HH-hh)*kf;
+        }
+        // modalità soldato: camera follow (decisione 2, SOLDIER_DESIGN). Stessa
+        // convergenza esponenziale dell'heli — mai salti; all'uscita la camera
+        // resta dov'è ed è di nuovo del pan RTS.
+        if(gSolMode && gSol && soldier_active(gSol) && !ed.active && !gHeli.active
+           && drag_cam!=1){
+            float kf=1.0f-expf(-6.0f*(float)frame_t);
+            cx+=(soldier_x(gSol)-cx)*kf; cz+=(soldier_y(gSol)-cz)*kf;
         }
         // vincoli camera di gioco (GAME_CAM_*): un solo punto di enforcement,
         // a valle di TUTTI gli input (rotella, +/-, frecce, drag RMB, tasto C)
@@ -5417,6 +5640,16 @@ int main(int argc, char **argv){
                 gRelBar[gRelBarN].x=sx; gRelBar[gRelBarN].y=sy;
                 gRelBar[gRelBarN].f=1.0f-left/rs;   // 0 = appena scattata, 1 = pronta
                 gRelBarN++;
+            }
+        }
+        // barra HP del soldato (SOLDIER_DESIGN): sopra la testa, solo in modalità
+        gSolBarOn=0;
+        if(!ed.active && gSolMode && gSol && soldier_active(gSol)){
+            float sx,sy, wx=soldier_x(gSol), wy=soldier_y(gSol);
+            if(world_to_screen(vp,wx,ter_z(wx,wy)+2.2f,wy,SW,SH,&sx,&sy)){
+                gSolBarX=sx; gSolBarY=sy;
+                gSolBarF=soldier_hp(gSol)/soldier_hp_max(gSol);
+                gSolBarOn=1;
             }
         }
         // overlay shell (title/menu/briefing/debrief + barra di fase): 2D in

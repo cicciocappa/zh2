@@ -459,6 +459,12 @@ void  simp_corpse_clear(SimP *s, float x, float y, float radius);
  * The index is NOT stable across simp_drag_remove (swap-and-pop) and there are
  * no handles: game code keying data to a draggable should track its own map. */
 int   simp_drag_add(SimP *s, float x, float y, float radius, float mass);
+/* Overwrite a draggable's velocity (m/s). Host-driven bodies (the playable
+ * soldier, SOLDIER_DESIGN.md): read the current velocity, blend toward the
+ * wanted one, write the result back BEFORE simp_step. Never write the raw
+ * wanted velocity every step — that erases the PBD shove the body just
+ * absorbed (knockback would vanish). drag_damp friction still applies. */
+void  simp_drag_set_vel(SimP *s, int i, float vx, float vy);
 void  simp_drag_remove(SimP *s, int i);   /* swap-and-pop removal */
 void  simp_drag_clear(SimP *s);           /* empty the pool */
 int   simp_drag_count(const SimP *s);

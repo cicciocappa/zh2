@@ -45,6 +45,17 @@ void balance_defaults(Balance *b) {
     b->bio.yield[BT_WOMAN] = 1.0f; b->bio.yield[BT_CHILD] = 1.0f;
     b->bio.yield[BT_TANK]  = 8.0f;
 
+    b->soldier.hp = 120.0f; b->soldier.speed = 4.2f; b->soldier.accel = 30.0f;
+    b->soldier.radius = 0.35f; b->soldier.mass = 15.0f;
+    b->soldier.touch_dps = 15.0f; b->soldier.touch_knock = 20.0f;
+    b->soldier.gun_range = 16.0f; b->soldier.gun_period = 0.10f;
+    b->soldier.gun_damage = 35.0f; b->soldier.down_s = 8.0f;
+    b->soldier.lure_w = -0.8f; b->soldier.lure_r = 10.0f;
+    b->soldier.grenade_cost = 30.0f; b->soldier.grenade_range = 12.0f;
+    b->soldier.grenade_r = 5.0f; b->soldier.grenade_damage = 140.0f;
+    b->soldier.grenade_strength = 18.0f; b->soldier.grenade_up = 0.5f;
+    b->soldier.bio_yield = 1.0f;
+
     b->lure.weight = -0.5f; b->lure.radius = 6.0f; b->lure.linger = 2.5f;
     b->contact.turret_dps = 12.0f; b->contact.turret_reach = 2.0f;
     b->director.base_rate = 16.0f; b->director.rate_ramp = 8.0f;
@@ -141,6 +152,27 @@ static const BalKey KEYS[] = {
     KF("siege.turret_reach",    contact.turret_reach),
     KF("fear.blood_radius",     def.danger_r),
     KF("fear.blood_weight",     def.danger_w),
+    KF("soldier.hp",               soldier.hp),
+    KF("soldier.speed",            soldier.speed),
+    KF("soldier.accel",            soldier.accel),
+    KF("soldier.radius",           soldier.radius),
+    KF("soldier.mass",             soldier.mass),
+    KF("soldier.touch_dps",        soldier.touch_dps),
+    KF("soldier.knockback",        soldier.touch_knock),
+    KF("soldier.gun_range",        soldier.gun_range),
+    KF("soldier.gun_period",       soldier.gun_period),
+    KF("soldier.gun_damage",       soldier.gun_damage),
+    KF("soldier.down_s",           soldier.down_s),
+    KF("soldier.lure_weight",      soldier.lure_w),
+    KF("soldier.lure_radius",      soldier.lure_r),
+    KF("soldier.grenade_cost",     soldier.grenade_cost),
+    KF("soldier.grenade_range",    soldier.grenade_range),
+    KF("soldier.grenade_radius",   soldier.grenade_r),
+    KF("soldier.grenade_damage",   soldier.grenade_damage),
+    KF("soldier.grenade_strength", soldier.grenade_strength),
+    KF("soldier.grenade_up",       soldier.grenade_up),
+    KF("soldier.bio_yield",        soldier.bio_yield),
+
     KF("lure.weight",           lure.weight),
     KF("lure.radius",           lure.radius),
     KF("lure.linger",           lure.linger),

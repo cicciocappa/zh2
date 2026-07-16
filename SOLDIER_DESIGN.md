@@ -1,8 +1,55 @@
-# Soldato giocabile — idea parcheggiata
+# Soldato giocabile — v1 implementata, in lavorazione
 
-**Stato: IDEA, non implementata (2026-07-15).** Da sviluppare SOLO se il
-gameplay con le sole difese passive non risulta interessante e/o impossibile
-da bilanciare. Vedi "Contesto / perché" sotto.
+**Stato: v1 IMPLEMENTATA e committata (2026-07-16), lavoro in corso.**
+Il playtest delle ondate annunciate (LOOP_DESIGN A) è passato; il soldato è
+la F del pacchetto. **PROSSIMA FEATURE (dal primo playtest): lo
+SCAVALCAMENTO dei muri.** Oggi il soldato è correttamente bloccato dalla
+collisione SDF come tutti — ma così resta confinato dentro la cinta della
+base: deve poter scavalcare (vault sui muri bassi del giocatore, wall_h
+2 m — piste: hop balistico host-side sopra la cella muro quando preme
+contro, o uno stato "flying" per i draggable sul modello di SIMP_FLYING).
+
+Com'è fatto: modulo game-side `soldier.h/.c` (zero-dep sul core, verificato da
+`test_soldier`: drive/knockback, mitra con occlusione/trasmittanza, contatto→
+HP→DOWN→lockout, lure mobile bit-esatto alla rimozione, determinismo); unica
+aggiunta core `simp_drag_set_vel`; manopole `soldier.*` in `assets/balance.cfg`
+(HP 120, speed 4.2, mitra 35 HP/0.10 s/16 m gratis, granata 30 bio,
+lockout 8 s). Host cablato in `vat_horde` (GAME_SHELL, solo ASSALTO):
+card **SOLDATO / tasto F** nella barra dei verbi (esclusiva con
+mortaio/ripara/regola/costruisci; in lockout la card conta i secondi), deploy
+sul primo punto libero ad anelli attorno alla base, **WASD** relativo allo
+schermo, mouse mira, **LMB** mitra (tracer + `def_damage_agent`, resa bio
+`soldier.bio_yield`), **RMB** granata (una in aria, arco fiction come il
+mortaio → `host_blast`), **camera follow** esponenziale (il pan manuale vince
+durante il drag), barra HP world-space transitoria (verde→rossa sotto 40%),
+al down burst di sangue + rientro in modalità RTS. Render placeholder: sagoma
+in piedi verde militare sul disco draggable (`build_drag_mesh`).
+
+Decisioni prese con l'utente (2026-07-16):
+
+1. **Contatto = HP + knockback** (lo shove del PBD arriva gratis dal corpo
+   fisico; morte secca scartata come ingiusta con un'orda fisica).
+2. **Camera follow** sul soldato in modalità, ritorno al pan RTS all'uscita.
+3. **Modalità esclusiva**: card/hotkey entra-esce; dentro WASD muove, mouse
+   mira, LMB mitra, RMB granata. Mortaio/ripara/regola restano fuori modalità.
+4. **Economia: mitra gratis, granata a biomassa** (costo in balance.cfg).
+   I kill del soldato fruttano bio a resa piena (`soldier.bio_yield` 1.0,
+   tarabile come `mortar.bio_yield` se il farm degenera).
+5. **Corpo = DRAGGABLE, non agente** — deviazione MOTIVATA dalla
+   raccomandazione "agente ad alta massa" della decisione 3 storica (sotto):
+   un agente vero viene BERSAGLIATO dalle torrette, DRENATO dalle celle goal
+   (la LZ lo ucciderebbe al primo passaggio) e CONTATO dalla missione (CLEAR
+   non scatterebbe mai). Il draggable è già il ghost giusto: invisibile a
+   query/impulsi/nav/missione, collide con orda e muri, viene shovato con
+   momento reale (knockback gratis), frenato da drag_damp. Unica aggiunta
+   core: `simp_drag_set_vel` (setter di velocità); il drive è un blend
+   host-side (accelera verso la velocità voluta, MAI sovrascrivere secca:
+   sovrascrivere cancellerebbe lo shove appena ricevuto).
+6. **Aggro locale (decisione 1 storica) RIMANDATO al playtest**: si parte
+   col lure a costo-nav (drift morbido); se risulta troppo molle si valuta
+   l'override di steering nel core.
+
+Il resto del doc è il materiale originale (2026-07-15), valido come contesto.
 
 ## L'idea
 
