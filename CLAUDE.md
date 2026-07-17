@@ -400,6 +400,22 @@ eseguibili si lanciano dalla root del progetto.
   interazione col sangue misurata (k_danger 400 → 174: la paura attenua ma
   non azzera, e continua a dirottare la massa — perno anti-killbox intatto),
   rimozione bit-esatta, determinismo.
+- `vat/model.h` / `model.c` — **skeletal animation per il soldato** (2026-07-17,
+  portato da `~/Documenti/mage-commando`): carica glb skinned via cgltf
+  (primitive interleaved, materiali+texture stb, skeleton dal primo skin, clip
+  per-canale con slerp; scale ignorata — ok per rig Mixamo), `AnimState` con
+  crossfade fra clip (lerp delle bone matrix su 0.2 s), `anim_bone_global` per
+  attachment (arma in mano). API in `float[16]` column-major; **cglm
+  (`vat/cglm/`, header-only) è INTERNO a model.c** — mai nell'header, il suo
+  `mat4` collide col typedef di `vat_gl.h`. Shader `assets/shaders/skinned.*`
+  (lighting identico a mesh.fs). In `vat_horde` (solo GAME_SHELL):
+  `assets/models/soldier.glb` → il soldato è il modello animato (idle/run da
+  velocità, heading=mira smussato, auto-scala bbox→`VAT_HORDE_SOL_H` def 1.8 m,
+  `VAT_HORDE_SOL_YAW` gradi di correzione forward, fallback sagoma verde se
+  manca il file). `make model_view` = previewer standalone (Tab cicla clip,
+  frecce orbita, `MODEL_VIEW_SHOT="clip_idx"` → filmstrip BMP headless: 6 pose
+  della clip — così Claude verifica da solo). Scelta skeletal-vs-VAT motivata
+  in SOLDIER_DESIGN.md: un istanza sola + twin-stick (gambe≠busto) + climb.
 - `mission.h` / `.c` — macchina a stati di missione (GAME_PLAN fase A, FATTA
   2026-07-04): PREP (exit muti, piazzamento aperto; `prep 0` = illimitata,
   si esce con `mission_go`/INVIO) → ASSAULT (un director per `exit` di scena,
@@ -546,8 +562,8 @@ eseguibili si lanciano dalla root del progetto.
   Mixamo (height auto-normalizzata; il root motion delle clip NON in place
   viene cancellato per frame misurando la XY world delle hips — verificato
   con FBX sintetico a deriva 2 m: personaggio centrato in ogni frame). Convenzione: riga k = heading
-  k·22.5° ORARIO da "verso camera". Blender locale: portatile 5.1 in
-  `~/Scaricati/blender-5.1.0-linux-x64/` (non nel PATH). Output in
+  k·22.5° ORARIO da "verso camera". Blender locale: portatile **5.2** in
+  `~/Scaricati/blender-5.2.0-linux-x64/` (non nel PATH; era 5.1). Output in
   `gfx/out/` (gitignored). Oltre al PNG, ogni sheet esce anche come
   `.zspr` (header binario ZSP3 + RGBA raw, formato in testa a
   sheet_pack.py): è quello che carica il sandbox, SDL3 non decodifica

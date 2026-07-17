@@ -46,6 +46,7 @@
 #include "bio.h"      // economia biomassa (BIOMASS_DESIGN): usata dalla shell
 #include "balance.h"  // tabella di bilanciamento runtime (assets/balance.cfg)
 #include "soldier.h"  // soldato giocabile (SOLDIER_DESIGN, LOOP_DESIGN F)
+#include "model.h"    // glb skinned + skeletal animation (render del soldato)
 #include "audio.h"    // sia sandbox che game (la sandbox ora suona: SFX vetro/boom)
 #ifdef GAME_SHELL
 // GAME_SHELL (GAME_APP_DESIGN.md): stessa sorgente compilata come eseguibile
@@ -1438,6 +1439,7 @@ static int upload_prop_mesh(GLuint vbo, const Scene *sc, const PropCatalog *cat,
 static Soldier *gSol;                // fwd (definito nella sezione biomassa):
                                      // il suo disco draggable si disegna soldato
 #endif
+static int gSolMdlOk;                // fwd (sezione soldato): glb skinned caricato
 static int build_drag_mesh(SimP *s, float *buf){
     int ndtot=simp_drag_count(s);
     int nd=ndtot; if(nd>DRAG_DRAW_CAP) nd=DRAG_DRAW_CAP;
@@ -1472,9 +1474,10 @@ static int build_drag_mesh(SimP *s, float *buf){
         float r=rad[i];
         float a=(vx[i]*vx[i]+vy[i]*vy[i]>1e-4f)?atan2f(vy[i],vx[i]):0.0f;
         float ca=cosf(a),sa=sinf(a), zb=ter_z(px[i],py[i]);
-        if(i==sol){   // soldato: sagoma in piedi verde militare (placeholder v1)
-            c=prop_box(buf,c, px[i],py[i], 0,0, zb, r*0.85f, r*0.55f, 1.80f, ca,sa,
-                       0.28f,0.42f,0.22f);
+        if(i==sol){   // soldato: modello skinned (draw a parte) o sagoma verde
+            if(!gSolMdlOk)
+                c=prop_box(buf,c, px[i],py[i], 0,0, zb, r*0.85f, r*0.55f, 1.80f, ca,sa,
+                           0.28f,0.42f,0.22f);
             continue;
         }
         c=prop_box(buf,c, px[i],py[i], 0,0, zb, r*0.95f, r*0.78f, r*2.0f, ca,sa,
@@ -1881,6 +1884,33 @@ static struct { int on; float t, ttot, ox, oy, x, y; } gGren;
 // barra HP world-space del soldato (transitoria come le barre di reload:
 // esiste solo in modalità — le barre permanenti restano bandite)
 static float gSolBarX, gSolBarY, gSolBarF; static int gSolBarOn = 0;
+// render skinned (model.h): assets/models/soldier.glb caricato al boot; se
+// manca resta la sagoma verde di build_drag_mesh. Auto-scala dalla bbox bind
+// pose a VAT_HORDE_SOL_H (default 1.80 m), piedi ancorati a bbox_min.y,
+// centrato in XZ. VAT_HORDE_SOL_YAW (gradi) corregge il forward del modello
+// (convenzione glTF: +Z verso camera). Clip: idle/run cercate per nome.
+static Model     gSolMdl;
+static AnimState gSolAnim;
+static int       gSolMdlOk = 0, gSolClipIdle = -1, gSolClipRun = -1;
+static GLuint    gSkinProg = 0;
+static float     gSolMdlScale = 1.0f, gSolMdlOff[3];
+static float     gSolYaw = 0.0f, gSolYawAdj = 0.0f;
+static int sol_pick_clip(const Model *m, const char **names, int n){
+    for(int i=0;i<n;i++){ int c=model_find_clip(m,names[i]); if(c>=0) return c; }
+    return -1;
+}
+// model matrix del soldato: T(mondo) * R_y(yaw) * S(scale) * T(ancora)
+static void sol_model_mat(mat4 m, float wx, float wy, float yaw){
+    float zb=ter_z(wx,wy), sc=gSolMdlScale, cy=cosf(yaw), sy=sinf(yaw);
+    m_identity(m);
+    m[0]=cy*sc;  m[2]=-sy*sc;
+    m[5]=sc;
+    m[8]=sy*sc;  m[10]=cy*sc;
+    float ox=gSolMdlOff[0]*sc, oy=gSolMdlOff[1]*sc, oz=gSolMdlOff[2]*sc;
+    m[12]=wx + cy*ox + sy*oz;
+    m[13]=zb + oy;
+    m[14]=wy - sy*ox + cy*oz;
+}
 // deploy: primo punto LIBERO (agenti+muri) su anelli attorno alla base — il
 // container LZ è solido, dentro non si spawna
 static int soldier_spot(SimP *s, float bx, float by, float r,
@@ -3984,6 +4014,32 @@ int main(int argc, char **argv){
     { const char *ms=getenv("VAT_HORDE_MINE_SCALE"); if(ms) gMineScale=atof(ms); }
     int mineOk=load_glb_soup("assets/models/landmine.glb","mina",gMineScale,&gMineM);
     printf("mina 3D: %s (scala %.2f)\n", mineOk?"ok":"placeholder", (double)gMineScale);
+    // soldato skinned (SOLDIER_DESIGN): glb con scheletro + clip, shader
+    // skinned.*. Se manca il file o lo shader resta la sagoma verde.
+#ifdef GAME_SHELL
+    gSkinProg=vg_shader("assets/shaders/skinned.vs","assets/shaders/skinned.fs");
+    if(gSkinProg && model_load(&gSolMdl,"assets/models/soldier.glb")){
+        gSolMdlOk=1;
+        anim_state_init(&gSolAnim);
+        { const char *ni[]={"idle","Idle","IDLE"};
+          const char *nr[]={"run","Run","walk","Walk"};
+          gSolClipIdle=sol_pick_clip(&gSolMdl,ni,3);
+          gSolClipRun =sol_pick_clip(&gSolMdl,nr,4); }
+        if(gSolClipIdle<0) gSolClipIdle=0;
+        if(gSolClipRun<0)  gSolClipRun=gSolClipIdle;
+        float solH=1.80f;
+        { const char *e=getenv("VAT_HORDE_SOL_H"); if(e) solH=atof(e); }
+        float bh=gSolMdl.bbox_max[1]-gSolMdl.bbox_min[1];
+        gSolMdlScale = bh>1e-3f ? solH/bh : 1.0f;
+        gSolMdlOff[0]=-0.5f*(gSolMdl.bbox_min[0]+gSolMdl.bbox_max[0]);
+        gSolMdlOff[1]=-gSolMdl.bbox_min[1];
+        gSolMdlOff[2]=-0.5f*(gSolMdl.bbox_min[2]+gSolMdl.bbox_max[2]);
+        { const char *e=getenv("VAT_HORDE_SOL_YAW");
+          if(e) gSolYawAdj=atof(e)*3.14159265f/180.0f; }
+        printf("soldato 3D: ok (%d clip, idle=%d run=%d, h %.2f m -> scala %.2f)\n",
+               gSolMdl.clip_count,gSolClipIdle,gSolClipRun,(double)bh,(double)gSolMdlScale);
+    } else printf("soldato 3D: sagoma placeholder (assets/models/soldier.glb assente)\n");
+#endif
     int mineVpe = gMineM.nv>0 ? gMineM.nv : 36;        // glb, o box placeholder
     int mineMaxV = TRAPS_MAX*mineVpe;
     float *mineBuf=malloc((size_t)mineMaxV*9*sizeof(float));
@@ -5272,6 +5328,36 @@ int main(int argc, char **argv){
                 glBindVertexArray(stVao);glBindBuffer(GL_ARRAY_BUFFER,stVbo);
                 glBufferSubData(GL_ARRAY_BUFFER,0,(GLsizeiptr)sv*9*sizeof(float),stBuf);
                 glDrawArrays(GL_TRIANGLES,0,sv); } }
+
+        // soldato skinned (SOLDIER_DESIGN): al posto della sagoma verde di
+        // build_drag_mesh. Animazione a tempo di frame (fiction, come l'heli):
+        // idle/run dalla velocità del corpo draggable; heading = mira in
+        // modalità, direzione di marcia altrimenti, smussato esponenziale.
+        // I blocchi successivi settano il loro program: nessuno stato ereditato.
+#ifdef GAME_SHELL
+        if(gSolMdlOk && gSol && soldier_active(gSol)){
+            int bi=soldier_body_index(gSol);
+            float sx=soldier_x(gSol), sy=soldier_y(gSol), svx=0, svy=0;
+            if(bi>=0 && bi<simp_drag_count(s)){
+                svx=simp_drag_vx(s)[bi]; svy=simp_drag_vy(s)[bi]; }
+            float sp=sqrtf(svx*svx+svy*svy), yawT=gSolYaw;
+            if(gSolMode){
+                float dx=gSolAimX-sx, dy=gSolAimY-sy;
+                if(dx*dx+dy*dy>1e-4f) yawT=atan2f(dx,dy);
+            } else if(sp>0.3f) yawT=atan2f(svx,svy);
+            float dyaw=yawT-gSolYaw;
+            while(dyaw> 3.14159265f) dyaw-=6.2831853f;
+            while(dyaw<-3.14159265f) dyaw+=6.2831853f;
+            gSolYaw+=dyaw*(1.0f-expf(-12.0f*(float)frame_t));
+            if(gSolMdl.clip_count>0){
+                anim_state_play(&gSolAnim, sp>0.5f?gSolClipRun:gSolClipIdle, true);
+                anim_state_update(&gSolAnim,&gSolMdl,(float)frame_t);
+            }
+            mat4 solmm; sol_model_mat(solmm,sx,sy,gSolYaw+gSolYawAdj);
+            model_render(&gSolMdl,gSkinProg,vp,solmm,
+                         gSolMdl.clip_count>0?&gSolAnim:NULL);
+        }
+#endif
 
 #ifdef GAME_SHELL
         // cinematiche elicottero (BASE_DESIGN §4): avanzano col tempo di frame

@@ -22,8 +22,18 @@ schermo, mouse mira, **LMB** mitra (tracer + `def_damage_agent`, resa bio
 `soldier.bio_yield`), **RMB** granata (una in aria, arco fiction come il
 mortaio → `host_blast`), **camera follow** esponenziale (il pan manuale vince
 durante il drag), barra HP world-space transitoria (verde→rossa sotto 40%),
-al down burst di sangue + rientro in modalità RTS. Render placeholder: sagoma
-in piedi verde militare sul disco draggable (`build_drag_mesh`).
+al down burst di sangue + rientro in modalità RTS. **Render: modello 3D a
+SKELETAL ANIMATION** (2026-07-17, deciso con l'utente: un solo soldato su
+schermo + range di movimenti ampio = skeletal, non VAT): modulo `vat/model.c/h`
+(portato da mage-commando: glb via cgltf, crossfade fra clip, cglm interno),
+shader `assets/shaders/skinned.*`, `assets/models/soldier.glb` (skeleton +
+clip; clip cercate per nome idle/run, auto-scala dalla bbox a
+`VAT_HORDE_SOL_H`, `VAT_HORDE_SOL_YAW` corregge il forward). Heading = mira in
+modalità / marcia altrimenti (smussato); idle/run dalla velocità del corpo.
+Se il glb manca resta la sagoma verde di `build_drag_mesh`. Previewer:
+`make model_view` (Tab cicla le clip, `MODEL_VIEW_SHOT` headless). Mitra:
+prop separato da attaccare al bone della mano (`anim_bone_global`), DA FARE
+col modello vero; clip Mixamo "rifle" + climb per lo scavalcamento.
 
 Decisioni prese con l'utente (2026-07-16):
 

@@ -227,11 +227,20 @@ vat_view: vat/vat_view.c vat/glad.c vat/stb_impl.c assets/shaders/vat.vs assets/
 	$(CC) -O2 -w -Ivat -c vat/stb_impl.c -o vat/stb_impl.o
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Ivat -o $@$(EXE) vat/vat_view.c vat/glad.o vat/stb_impl.o $(SDL_LIBS) $(PLAT_LIBS) $(LDLIBS) $(DL_LIB)
 
+# Previewer glb skinned (soldato, SOLDIER_DESIGN): riproduce le clip di un
+# .glb con lo scheletro (modello Sketchfab + clip Mixamo) prima del cablaggio
+# in vat_horde. MODEL_VIEW_SHOT="clip_idx" = filmstrip headless.
+model_view: vat/model_view.c vat/model.c vat/model.h vat/glad.c vat/stb_impl.c vat/cgltf_impl.c assets/shaders/skinned.vs assets/shaders/skinned.fs
+	$(CC) -O2 -w -Ivat $(SDL_CFLAGS) -c vat/glad.c -o vat/glad.o
+	$(CC) -O2 -w -Ivat -c vat/stb_impl.c -o vat/stb_impl.o
+	$(CC) -O2 -w -Ivat -c vat/cgltf_impl.c -o vat/cgltf_impl.o
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Ivat -o $@$(EXE) vat/model_view.c vat/model.c vat/glad.o vat/stb_impl.o vat/cgltf_impl.o $(SDL_LIBS) $(PLAT_LIBS) $(LDLIBS) $(DL_LIB)
+
 # Orda reale del core sim_particles resa in 3D VAT (vat_layer + vat_horde) su
 # scena vettoriale (scene.c). Ostacoli estrusi via assets/shaders/flat.vs/.fs.
 SHADERS = $(wildcard assets/shaders/*.vs) $(wildcard assets/shaders/*.fs)
-VAT_HORDE_SRC = vat/vat_horde.c vat/vat_layer.c sim_particles.c fx_particles.c scene.c defense.c place.c traps.c terrain.c props.c prop_world.c mission.c destruct.c anim.c bio.c balance.c soldier.c
-VAT_HORDE_DEP = $(VAT_HORDE_SRC) audio.c audio.h vat/glad.c vat/stb_impl.c vat/cgltf_impl.c $(SHADERS) sim_particles.h fx_particles.h vat/vat_layer.h vat/vat_gl.h vat/cgltf.h terrain.h scene.h defense.h place.h traps.h props.h destruct.h anim.h bio.h balance.h soldier.h
+VAT_HORDE_SRC = vat/vat_horde.c vat/vat_layer.c vat/model.c sim_particles.c fx_particles.c scene.c defense.c place.c traps.c terrain.c props.c prop_world.c mission.c destruct.c anim.c bio.c balance.c soldier.c
+VAT_HORDE_DEP = $(VAT_HORDE_SRC) audio.c audio.h vat/glad.c vat/stb_impl.c vat/cgltf_impl.c $(SHADERS) sim_particles.h fx_particles.h vat/vat_layer.h vat/vat_gl.h vat/cgltf.h vat/model.h terrain.h scene.h defense.h place.h traps.h props.h destruct.h anim.h bio.h balance.h soldier.h
 
 # audio.c NON è in VAT_HORDE_SRC (il target game lo compila già a parte): lo
 # aggiungiamo solo qui alla riga di link, con AUDIO_DEF, così la sandbox suona.
@@ -303,6 +312,6 @@ clean:
 	       test_corpses test_corpse_pile test_types test_density_route test_jam test_blood_fear test_scene \
 	       test_siege test_turret test_defense test_base test_director test_terrain bench_sim test_pick test_editor test_breakthrough test_props test_vat_layer test_drag test_hybrid test_car test_destruct test_place \
 	       test_app test_anim test_cover test_prop_world test_mission test_lure test_turret_arc test_turret_types test_blast test_traps game \
-	       sandbox sprite_view vat_view vat_horde frames *.exe vat/*.o
+	       sandbox sprite_view vat_view model_view vat_horde frames *.exe vat/*.o
 
 .PHONY: all test clean
