@@ -62,6 +62,12 @@ typedef struct {
 typedef struct {
     MdlBone bones[MODEL_MAX_BONES];
     int     bone_count;
+    /* World transform of the node chain ABOVE the skeleton root (e.g. the
+     * FBX "Armature" object: axis rotation + 0.01 unit scale). Those nodes
+     * are not skin joints, but glTF joint globals are defined from the scene
+     * root — dropping them renders Mixamo rigs lying down and 100x too big.
+     * Premultiplied onto every root bone (parent == -1). */
+    MdlMat4 root_pre;
 } MdlSkeleton;
 
 /* --- Animation keyframe --- */

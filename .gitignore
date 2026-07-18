@@ -82,3 +82,7 @@ progress.txt
 # audio single-header (lo scarica l'utente)
 vat/miniaudio.h
 *.blend1
+
+# previewer standalone (make model_view) + suo screenshot headless
+model_view
+model_view_shot.bmp

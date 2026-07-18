@@ -323,6 +323,13 @@ static void load_skeleton(Model *model, cgltf_data *data) {
     if (skin->inverse_bind_matrices)
         ibm_data = read_accessor_floats(skin->inverse_bind_matrices, 16);
 
+    /* see MdlSkeleton.root_pre: transform chain above the skeleton root
+     * (assumes all root joints share it, true for Mixamo's single Hips) */
+    m16_identity(model->skeleton.root_pre);
+    if (skin->joints_count > 0 && skin->joints[0]->parent)
+        cgltf_node_transform_world(skin->joints[0]->parent,
+                                   model->skeleton.root_pre);
+
     for (int i = 0; i < bone_count; i++) {
         MdlBone *b = &model->skeleton.bones[i];
         cgltf_node *node = skin->joints[i];
@@ -704,8 +711,11 @@ static void compute_pose(const Model *model, int clip_index, float time,
         if (skel->bones[i].parent >= 0)
             glm_mat4_mul(global_transforms[skel->bones[i].parent],
                          local_transforms[i], global_transforms[i]);
-        else
-            glm_mat4_copy(local_transforms[i], global_transforms[i]);
+        else {
+            mat4 pre;
+            memcpy(pre, skel->root_pre, sizeof(mat4));
+            glm_mat4_mul(pre, local_transforms[i], global_transforms[i]);
+        }
     }
 
     for (int i = 0; i < skel->bone_count; i++) {

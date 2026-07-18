@@ -81,11 +81,12 @@ static void grid_draw(GLuint prog, const mat4 vp) {
     glBindVertexArray(0);
 }
 
-static void cam_vp(mat4 vp, float yaw, float height, float dist, float cy) {
+static void cam_vp(mat4 vp, float yaw, float height, float dist, float cy,
+                   float aspect) {
     mat4 proj, view;
     float eye[3] = {sinf(yaw) * dist, height, cosf(yaw) * dist};
     float ctr[3] = {0, cy, 0}, up[3] = {0, 1, 0};
-    m_persp(proj, 50.0f * 3.14159265f / 180.0f, (float)SW / SH, 0.05f, 200.0f);
+    m_persp(proj, 50.0f * 3.14159265f / 180.0f, aspect, 0.05f, 200.0f);
     m_lookat(view, eye, ctr, up);
     m_mul(vp, proj, view);
 }
@@ -124,6 +125,18 @@ int main(int argc, char **argv) {
     anim_state_init(&anim);
     if (mdl.clip_count > 0) anim_state_play(&anim, 0, true);
 
+    /* auto-fit like vat_horde: bind-pose bbox scaled to 1.80 m, feet at the
+     * origin, centered in XZ (the raw data may be at any unit scale) */
+    mat4 fit; m_identity(fit);
+    {
+        float bh = mdl.bbox_max[1] - mdl.bbox_min[1];
+        float sc = bh > 1e-3f ? 1.80f / bh : 1.0f;
+        fit[0] = fit[5] = fit[10] = sc;
+        fit[12] = -0.5f * (mdl.bbox_min[0] + mdl.bbox_max[0]) * sc;
+        fit[13] = -mdl.bbox_min[1] * sc;
+        fit[14] = -0.5f * (mdl.bbox_min[2] + mdl.bbox_max[2]) * sc;
+    }
+
     glEnable(GL_DEPTH_TEST);
 
     /* ---- headless filmstrip: 6 poses of one clip side by side ---- */
@@ -142,10 +155,11 @@ int main(int argc, char **argv) {
                 anim_state_update(&anim, &mdl, t > 0 ? t : 1e-6f);
             }
             glViewport(k * cw, 0, cw, SH);
-            mat4 vp; cam_vp(vp, 0.5f, 1.2f, 3.5f, 0.9f);
+            /* per-column aspect: the projection must match the viewport or
+             * the strip squeezes horizontally by the column count */
+            mat4 vp; cam_vp(vp, 0.5f, 1.2f, 3.5f, 0.9f, (float)cw / SH);
             grid_draw(prog, vp);
-            mat4 id; m_identity(id);
-            model_render(&mdl, prog, vp, id, mdl.clip_count ? &anim : NULL);
+            model_render(&mdl, prog, vp, fit, mdl.clip_count ? &anim : NULL);
         }
         glFinish();
         unsigned char *rgb = malloc((size_t)SW * SH * 3);
@@ -203,10 +217,9 @@ int main(int argc, char **argv) {
         glViewport(0, 0, SW, SH);
         glClearColor(0.10f, 0.11f, 0.13f, 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        mat4 vp; cam_vp(vp, yaw, camh, dist, 0.9f);
+        mat4 vp; cam_vp(vp, yaw, camh, dist, 0.9f, (float)SW / SH);
         if (grid_on) grid_draw(prog, vp);
-        mat4 id; m_identity(id);
-        model_render(&mdl, prog, vp, id, mdl.clip_count ? &anim : NULL);
+        model_render(&mdl, prog, vp, fit, mdl.clip_count ? &anim : NULL);
         SDL_GL_SwapWindow(win);
     }
 
