@@ -1892,6 +1892,25 @@ static float gSolBarX, gSolBarY, gSolBarF; static int gSolBarOn = 0;
 static Model     gSolMdl;
 static AnimState gSolAnim;
 static int       gSolMdlOk = 0, gSolClipIdle = -1, gSolClipRun = -1;
+// gambe direzionali (twin-stick): clip scelta dall'angolo movimento-mira su
+// 8 settori, il busto resta sulla mira. Fallback = run avanti (glb vecchi).
+static int       gSolClipBack = -1, gSolClipLeft = -1, gSolClipRight = -1;
+static int       gSolClipFL = -1, gSolClipFR = -1;
+static int       gSolClipBL = -1, gSolClipBR = -1;
+// da fermo: sparo col fucile spianato; lancio granata = GESTO CON LOCK
+// (playtest 18/7: granata potente -> il costo è l'immobilità). La clip Mixamo
+// (3.23 s: cintura, sicura coi denti, lancio) parte da SOL_TOSS_START (salta
+// il rituale, tiene caricamento+lancio+recupero), il soldato resta FERMO per
+// SOL_TOSS_WINDOW e la granata parte AL RILASCIO del braccio
+// (SOL_TOSS_RELEASE dall'inizio finestra; picco velocità mano misurato a
+// t=1.8 della clip). Morso/recall a metà gesto = lancio annullato, bio resa.
+static int       gSolClipFire = -1, gSolClipToss = -1;
+#define SOL_TOSS_START   1.15f   // offset nella clip (s)
+#define SOL_TOSS_WINDOW  1.45f   // lock del soldato (s)
+#define SOL_TOSS_RELEASE 0.65f   // spawn granata, dall'inizio finestra (s)
+static float     gSolTossT  = 0.0f;
+static struct { int on; float x, y; } gGrenPend;   // pagata, in attesa del gesto
+static int       gSolFiring = 0;    // trigger valido nell'ultimo tick
 static GLuint    gSkinProg = 0;
 static float     gSolMdlScale = 1.0f, gSolMdlOff[3];
 static float     gSolYaw = 0.0f, gSolYawAdj = 0.0f;
@@ -1976,6 +1995,28 @@ static const PlWallet gBioWallet =
     { bio_wallet_price, bio_wallet_avail, bio_wallet_spend, 0 };
 static const int BUILD_CAT[] = { 0 /*Leggera*/, 4 /*Barricata*/ };
 #define BUILD_NCAT ((int)(sizeof(BUILD_CAT)/sizeof(BUILD_CAT[0])))
+// LOOP_DESIGN F+C (2026-07-18): col soldato IN CAMPO la costruzione d'assalto
+// è SUA — la card non lo recalla, il ghost è ancorato un passo davanti a lui
+// (verso la mira: piazzarla sotto i piedi lo murerebbe dentro), LMB piazza,
+// facing torretta = la sua mira. REGOLA in assalto col soldato in campo vale
+// solo a portata di braccio (è lui che la gira). Senza soldato in campo resta
+// il piazzamento a cursore di LOOP_DESIGN C.
+#define SOL_BUILD_AHEAD  1.2f   // m davanti al soldato
+#define SOL_ADJUST_REACH 3.5f   // m: oltre, il soldato deve avvicinarsi
+static int sol_builder(void){
+    return gSolMode && gSol && soldier_active(gSol);
+}
+static void sol_build_spot(float *bx, float *by){
+    float sx=soldier_x(gSol), sy=soldier_y(gSol);
+    float dx=gSolAimX-sx, dy=gSolAimY-sy, d=sqrtf(dx*dx+dy*dy);
+    if(d<1e-3f){ dx=sinf(gSolYaw); dy=cosf(gSolYaw); d=1.0f; }
+    *bx=sx+dx*(SOL_BUILD_AHEAD/d); *by=sy+dy*(SOL_BUILD_AHEAD/d);
+}
+// spegne gli altri verbi ma NON il soldato (variante di bio_mode_set per le
+// modalità che il soldato in campo possiede: COSTRUISCI e REGOLA)
+static void sol_verbs_off(void){
+    gAimMort=0; gAimRepair=0; gRepairHold=0; gAdjOn=0; gAdjTid=-1; gSolFire=0;
+}
 #endif
 
 // quota a cui la BASE del container appeso tocca terra alla lz
@@ -3216,6 +3257,7 @@ static void strikes_bar_draw(int SW, int SH) {
     // più difese. Prezzo bio maggiorato (wallet), barricata prezzata al metro.
     { Placement *p = gHost.plc;
       static const char *bt[BUILD_NCAT] = { "TORRETTA L", "BARRICATA" };
+      static const char *bk[BUILD_NCAT] = { "L", "B" };
       for (int i = 0; i < BUILD_NCAT; i++) {
           const PlItem *it = &PL_CAT_GAME[BUILD_CAT[i]];
           int price = bio_wallet_price(0, it->cost);
@@ -3223,7 +3265,7 @@ static void strikes_bar_draw(int SW, int SH) {
           snprintf(c, sizeof c, it->kind == PL_BARRICADE ? "%d BIO/M" : "%d BIO",
                    price);
           int on = p && p->active && p->sel == BUILD_CAT[i];
-          verb_button(&gBldR[i], on, tank >= (float)price, bt[i], "", c);
+          verb_button(&gBldR[i], on, tank >= (float)price, bt[i], bk[i], c);
       } }
     // riga hint contestuale in fondo alla barra
     Placement *pp = gHost.plc;
@@ -3233,6 +3275,10 @@ static void strikes_bar_draw(int SW, int SH) {
         snprintf(lhint, sizeof lhint, "LINEA %.1f M - %d BIO%s",
                  (double)gLineLen, gLineCost, gLineValid ? "" : " - NON VALIDA");
     const char *hint =
+        gSolMode && building ?
+                     "IL SOLDATO COSTRUISCE - LMB PIAZZA DAVANTI A LUI - RMB ANNULLA" :
+        gSolMode && gAdjOn ?
+                     "TRASCINA DA UNA TORRETTA VICINA = IL SOLDATO LA GIRA (RMB/V ANNULLA)" :
         gSolMode   ? "WASD MUOVE - MOUSE MIRA - LMB MITRA - RMB GRANATA - F RIENTRA" :
         gAimMort   ? "MIRA COL MOUSE - CLICK SINISTRO = FUOCO (RMB/M ANNULLA)" :
         gAimRepair ? "TIENI PREMUTO SU UNA STRUTTURA = RIPARA (RMB/R ANNULLA)" :
@@ -3241,6 +3287,17 @@ static void strikes_bar_draw(int SW, int SH) {
         building   ? "PIAZZA SUL TERRENO - RMB ANNULLA" :
         "CLICK SU UNA TORRETTA IN RICARICA = RICARICA SUBITO - M MORTAIO - R RIPARA - V REGOLA";
     ui_text_c((float)SW * 0.5f, y0 + 101, 1, hint, 0.65f, 0.65f, 0.65f, 1);
+}
+// toggle di una card COSTRUISCI (click in barra O hotkey L/B): stessa
+// semantica in entrambi i punti, soldato-costruttore incluso
+static void build_card_toggle(int i) {
+    Placement *p = gHost.plc;
+    if (!p || i < 0 || i >= BUILD_NCAT) return;
+    if (p->active && p->sel == BUILD_CAT[i]) p->active = 0;  // toggle
+    else { if (sol_builder()) sol_verbs_off();  // costruisce LUI, resta
+           else bio_mode_set(0, 0, 0);
+           pl_select(p, BUILD_CAT[i]); p->active = 1; }
+    au_play(SND_MENU_SELECT);
 }
 static int strikes_ui_click(float mx, float my, int SW, int SH) {
     strikes_ui_layout(SW, SH);
@@ -3255,17 +3312,16 @@ static int strikes_ui_click(float mx, float my, int SW, int SH) {
         if (gAimRepair && p) p->active = 0;
         au_play(SND_MENU_SELECT); return 1; }
     if (ui_hit(&gAdjR, mx, my)) {
-        bio_mode_set(0, 0, !gAdjOn);
+        int on = !gAdjOn;
+        if (sol_builder()) { sol_verbs_off(); gAdjOn = on; }  // il soldato resta
+        else bio_mode_set(0, 0, on);
         if (gAdjOn && p) p->active = 0;
         au_play(SND_MENU_SELECT); return 1; }
     if (ui_hit(&gSolR, mx, my)) {   // SOLDATO: toggle servito nel frame body
         gSolWant = 1; return 1; }   // (deploy vuole s; suono all'esito, la')
     for (int i = 0; i < BUILD_NCAT; i++)            // card = seleziona E attiva
         if (p && ui_hit(&gBldR[i], mx, my)) {
-            if (p->active && p->sel == BUILD_CAT[i]) p->active = 0;  // toggle
-            else { bio_mode_set(0, 0, 0);
-                   pl_select(p, BUILD_CAT[i]); p->active = 1; }
-            au_play(SND_MENU_SELECT); return 1; }
+            build_card_toggle(i); return 1; }
     return 1;                                       // sfondo barra: consumato (mai mondo)
 }
 
@@ -3474,8 +3530,14 @@ static void adjust_event(const SDL_Event *e, DefGame *g, const float *vp,
             int tid=gHovTurret; float wx,wy;
             if(tid<0 && pick_y0(vp,mxf,myf,SW,SH,&wx,&wy))
                 tid=adjust_pick_turret(g,wx,wy);
+            if(tid>=0 && sol_builder()){   // in campo la gira il soldato:
+                DefTurret *t=def_turret(g,tid);          // serve arrivarci
+                float dx=t->x-soldier_x(gSol), dy=t->y-soldier_y(gSol);
+                if(dx*dx+dy*dy>SOL_ADJUST_REACH*SOL_ADJUST_REACH) tid=-1;
+            }
             if(tid>=0){ gAdjTid=tid; gAdjFacing=def_turret(g,tid)->ang;
                         au_play(SND_MENU_MOVE); }
+            else au_play(SND_MENU_MOVE);
         } else if(e->button.button==SDL_BUTTON_RIGHT){
             if(gAdjTid>=0) gAdjTid=-1; else gAdjOn=0;
         }
@@ -4024,9 +4086,26 @@ int main(int argc, char **argv){
         { const char *ni[]={"idle","Idle","IDLE"};
           const char *nr[]={"run","Run","walk","Walk"};
           gSolClipIdle=sol_pick_clip(&gSolMdl,ni,3);
-          gSolClipRun =sol_pick_clip(&gSolMdl,nr,4); }
+          gSolClipRun =sol_pick_clip(&gSolMdl,nr,4);
+          gSolClipBack =model_find_clip(&gSolMdl,"run_back");
+          gSolClipLeft =model_find_clip(&gSolMdl,"run_left");
+          gSolClipRight=model_find_clip(&gSolMdl,"run_right");
+          gSolClipFL  =model_find_clip(&gSolMdl,"run_fl");
+          gSolClipFR  =model_find_clip(&gSolMdl,"run_fr");
+          gSolClipBL  =model_find_clip(&gSolMdl,"run_bl");
+          gSolClipBR  =model_find_clip(&gSolMdl,"run_br");
+          gSolClipFire=model_find_clip(&gSolMdl,"fire");
+          gSolClipToss=model_find_clip(&gSolMdl,"toss"); }
         if(gSolClipIdle<0) gSolClipIdle=0;
         if(gSolClipRun<0)  gSolClipRun=gSolClipIdle;
+        if(gSolClipBack<0)  gSolClipBack=gSolClipRun;   // glb vecchi: degrada
+        if(gSolClipLeft<0)  gSolClipLeft=gSolClipRun;
+        if(gSolClipRight<0) gSolClipRight=gSolClipRun;
+        if(gSolClipFL<0) gSolClipFL=gSolClipRun;        // diagonali -> cardinali
+        if(gSolClipFR<0) gSolClipFR=gSolClipRun;
+        if(gSolClipBL<0) gSolClipBL=gSolClipBack;
+        if(gSolClipBR<0) gSolClipBR=gSolClipBack;
+        // fire/toss senza fallback: -1 = resta idle/gambe (niente pantomima)
         float solH=1.80f;
         { const char *e=getenv("VAT_HORDE_SOL_H"); if(e) solH=atof(e); }
         float bh=gSolMdl.bbox_max[1]-gSolMdl.bbox_min[1];
@@ -4445,14 +4524,21 @@ int main(int argc, char **argv){
                         adjust_event(&e,g,vp,mxf,myf,SW,SH);
                         continue;
                     }
-                    if(gSolMode){             // SOLDATO: mouse = mira e grilletto
+                    // col ghost di costruzione attivo il click è del
+                    // piazzamento (soldato-costruttore): il blocco plc sotto.
+                    // Con SHIFT premuto il mouse passa alla CAMERA (ruota/pan
+                    // anche in modalità: la mira resta congelata, vedi tick).
+                    if(gSolMode && !plc.active &&
+                       !(SDL_GetModState()&SDL_KMOD_SHIFT)){
+                        // SOLDATO: mouse = mira e grilletto
                         if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
                             if(e.button.button==SDL_BUTTON_LEFT) gSolFire=1;
                             else if(e.button.button==SDL_BUTTON_RIGHT){
                                 // granata: una in aria (il volo è il rate limiter),
                                 // gittata clampata dal corpo, costo bio a colpo
                                 float wx,wy;
-                                if(!gGren.on && gSol && soldier_active(gSol) &&
+                                if(!gGren.on && gSolTossT<=0.0f &&
+                                   gSol && soldier_active(gSol) &&
                                    pick_y0(vp,mxf,myf,SW,SH,&wx,&wy)){
                                     float sx=soldier_x(gSol), sy=soldier_y(gSol);
                                     float dx=wx-sx, dy=wy-sy;
@@ -4461,9 +4547,9 @@ int main(int argc, char **argv){
                                     if(d>rng && d>1e-3f){
                                         wx=sx+dx*(rng/d); wy=sy+dy*(rng/d); d=rng; }
                                     if(bio_take(&gBio,gBal.soldier.grenade_cost)){
-                                        gGren.on=1; gGren.ox=sx; gGren.oy=sy;
-                                        gGren.x=wx; gGren.y=wy;
-                                        gGren.ttot=0.45f+0.05f*d; gGren.t=gGren.ttot;
+                                        // paga ORA, lancia AL RILASCIO del gesto
+                                        gGrenPend.on=1; gGrenPend.x=wx; gGrenPend.y=wy;
+                                        gSolTossT=SOL_TOSS_WINDOW;
                                         au_play(SND_MENU_SELECT);
                                     } else au_play(SND_MENU_MOVE); // bio insufficiente
                                 } else au_play(SND_MENU_MOVE);     // una alla volta
@@ -4529,8 +4615,33 @@ int main(int argc, char **argv){
                         plineOn=0; plineChain=0;   // esistono solo nella shell
 #endif
                         continue; }
-                    float wx,wy; if(pick_y0(vp,mxf,myf,SW,SH,&wx,&wy)) pl_set_cursor(&plc,wx,wy);
+                    float wx,wy;
 #ifdef GAME_SHELL
+                    if(sol_builder()){          // ghost inchiodato davanti al soldato
+                        sol_build_spot(&wx,&wy); pl_set_cursor(&plc,wx,wy);
+                    } else
+#endif
+                    if(pick_y0(vp,mxf,myf,SW,SH,&wx,&wy)) pl_set_cursor(&plc,wx,wy);
+#ifdef GAME_SHELL
+                    // soldato-costruttore: LMB piazza al punto davanti a lui
+                    // (torretta: facing = la sua mira), RMB chiude il ghost.
+                    // Niente gesto d'ancora né linea: un modulo per click.
+                    if(sol_builder()){
+                        if(e.type==SDL_EVENT_MOUSE_BUTTON_DOWN){
+                            if(e.button.button==SDL_BUTTON_LEFT){
+                                const PlItem *bsel=pl_selected(&plc);
+                                if(bsel && bsel->kind==PL_TURRET){
+                                    float sx=soldier_x(gSol), sy=soldier_y(gSol);
+                                    plc.facing=atan2f(plc.cy-sy,plc.cx-sx);
+                                }
+                                if(pl_commit(&plc,g,s)){ gStructOn=1;
+                                    au_play(SND_MENU_SELECT); }
+                                else au_play(SND_MENU_MOVE);   // invalido/bio corta
+                            } else if(e.button.button==SDL_BUTTON_RIGHT)
+                                plc.active=0;
+                        }
+                        continue;
+                    }
                     // barriere a LINEA (§5): LMB = ancora, rilascio = commit
                     // tutto-o-niente; RMB = annulla il drag (o esce dal ghost).
                     const PlItem *lsel=pl_selected(&plc);
@@ -4751,12 +4862,19 @@ int main(int argc, char **argv){
                     break;
                 case SDLK_V:  // REGOLA: riorienta una torretta (anche in PREP, §12.Q3)
                     if(gApp.state==APP_ASSAULT || gApp.state==APP_PREP){
-                        bio_mode_set(0,0,!gAdjOn);
+                        int on=!gAdjOn;
+                        if(sol_builder()){ sol_verbs_off(); gAdjOn=on; }
+                        else bio_mode_set(0,0,on);
                         if(gAdjOn) plc.active=0;      // esclusiva col ghost di piazzamento
                         au_play(gAdjOn?SND_MENU_SELECT:SND_MENU_MOVE); }
                     break;
                 case SDLK_F:  // SOLDATO: entra/esci (servito nel frame body)
                     if(gApp.state==APP_ASSAULT) gSolWant=1;
+                    break;
+                case SDLK_L:  // card COSTRUISCI: TORRETTA L (LOOP_DESIGN C)
+                    if(gApp.state==APP_ASSAULT &&
+                       (!gMissionOn || mission_placement_open(&gMission)))
+                        build_card_toggle(0);
                     break;
 #endif
                 case SDLK_RETURN: case SDLK_KP_ENTER:  // fase A: via all'assalto
@@ -4793,7 +4911,14 @@ int main(int argc, char **argv){
 #endif
                 case SDLK_COMMA:  if(plc.active) pl_rotate(&plc,-1); break;
                 case SDLK_PERIOD: if(plc.active) pl_rotate(&plc,+1); break;
-                case SDLK_B:{   // piazza un cassonetto draggable sotto il cursore
+                case SDLK_B:{   // in ASSALTO (shell): card BARRICATA; altrove
+                                // il debug: cassonetto draggable sotto il cursore
+#ifdef GAME_SHELL
+                    if(gApp.state==APP_ASSAULT){
+                        if(!gMissionOn || mission_placement_open(&gMission))
+                            build_card_toggle(1);
+                        break; }
+#endif
                     float wx,wy;
                     if(pick_y0(vp,mouse_px,mouse_py,SW,SH,&wx,&wy)){
                         float m=(e.key.mod&SDL_KMOD_SHIFT)?30.0f:12.0f;
@@ -4914,13 +5039,44 @@ int main(int argc, char **argv){
                         float sn=sinf(az), cn=cosf(az);
                         mvx=fwd*(-sn)+rgt*( cn);
                         mvy=fwd*(-cn)+rgt*(-sn);
-                        pick_y0(vp,mouse_px,mouse_py,SW,SH,&gSolAimX,&gSolAimY);
+                        // SHIFT = mouse alla camera: mira congelata, niente fuoco
+                        if(ks[SDL_SCANCODE_LSHIFT]||ks[SDL_SCANCODE_RSHIFT])
+                            gSolFire=0;
+                        else
+                            pick_y0(vp,mouse_px,mouse_py,SW,SH,&gSolAimX,&gSolAimY);
+                        if(gSolTossT>0.0f){   // gesto granata: fermo, faccia
+                            mvx=0.0f; mvy=0.0f;                 // al bersaglio
+                            if(gGrenPend.on){ gSolAimX=gGrenPend.x;
+                                              gSolAimY=gGrenPend.y; }
+                        }
+                    }
+                    // gesto granata: avanza col tick (gioco, non fiction — gata
+                    // movimento e spawn); morso/recall a metà = annullo+rimborso
+                    if(gSolTossT>0.0f){
+                        gSolTossT-=FIXED_DT;
+                        if(gSolMode && soldier_active(gSol)){
+                            if(gGrenPend.on &&
+                               SOL_TOSS_WINDOW-gSolTossT>=SOL_TOSS_RELEASE){
+                                float sx=soldier_x(gSol), sy=soldier_y(gSol);
+                                float dxp=gGrenPend.x-sx, dyp=gGrenPend.y-sy;
+                                float d=sqrtf(dxp*dxp+dyp*dyp);
+                                gGren.on=1; gGren.ox=sx; gGren.oy=sy;
+                                gGren.x=gGrenPend.x; gGren.y=gGrenPend.y;
+                                gGren.ttot=0.45f+0.05f*d; gGren.t=gGren.ttot;
+                                gGrenPend.on=0;
+                            }
+                        } else {                    // interrotto prima del lancio
+                            if(gGrenPend.on){ gGrenPend.on=0;
+                                bio_add(&gBio,gBal.soldier.grenade_cost); }
+                            gSolTossT=0.0f;
+                        }
                     }
                     int wasA=soldier_active(gSol);
                     SolShotCtx sctx={g,s};
+                    gSolFiring = gSolMode&&gSolFire&&combat&&!plc.active
+                                 &&gSolTossT<=0.0f;   // niente mitra a metà gesto
                     soldier_step(gSol,mvx,mvy,gSolAimX,gSolAimY,
-                                 gSolMode&&gSolFire&&combat,FIXED_DT,
-                                 on_soldier_shot,&sctx);
+                                 gSolFiring,FIXED_DT,on_soldier_shot,&sctx);
                     if(soldier_active(gSol)){
                         gSolLastX=soldier_x(gSol); gSolLastY=soldier_y(gSol);
                     } else if(wasA && gSolMode){     // sbranato: fuori modalità
@@ -5350,7 +5506,36 @@ int main(int argc, char **argv){
             while(dyaw<-3.14159265f) dyaw+=6.2831853f;
             gSolYaw+=dyaw*(1.0f-expf(-12.0f*(float)frame_t));
             if(gSolMdl.clip_count>0){
-                anim_state_play(&gSolAnim, sp>0.5f?gSolClipRun:gSolClipIdle, true);
+                // gambe direzionali: 8 settori da 45° dell'angolo movimento-
+                // facciata (0 avanti, +90 destra, -90 sinistra, ±180 indietro);
+                // il crossfade di 0.2 s assorbe i cambi al bordo dei settori.
+                // Priorità: lancio granata (one-shot) > fermo che spara (fire)
+                // > gambe > idle.
+                int clip=gSolClipIdle, loop=1;
+                if(sp>0.5f){
+                    float rel=atan2f(svx,svy)-gSolYaw;
+                    while(rel> 3.14159265f) rel-=6.2831853f;
+                    while(rel<-3.14159265f) rel+=6.2831853f;
+                    int sec=(int)floorf((rel*57.29578f+22.5f)/45.0f);
+                    clip = sec==0 ? gSolClipRun :
+                           sec==1 ? gSolClipFR :
+                           sec==2 ? gSolClipRight :
+                           sec==3 ? gSolClipBR :
+                           sec==-1 ? gSolClipFL :
+                           sec==-2 ? gSolClipLeft :
+                           sec==-3 ? gSolClipBL :
+                           gSolClipBack;              // ±4 = indietro
+                } else if(gSolFiring && gSolClipFire>=0)
+                    clip=gSolClipFire;
+                if(gSolTossT>0.0f && gSolClipToss>=0){
+                    // il timer lo decrementa il TICK; qui solo la fiction.
+                    // Al cambio clip si salta il rituale iniziale (SOL_TOSS_START)
+                    int fresh = gSolAnim.clip_index!=gSolClipToss;
+                    clip=gSolClipToss; loop=0;
+                    anim_state_play(&gSolAnim, clip, false);
+                    if(fresh) gSolAnim.time=SOL_TOSS_START;
+                } else
+                    anim_state_play(&gSolAnim, clip, loop!=0);
                 anim_state_update(&gSolAnim,&gSolMdl,(float)frame_t);
             }
             mat4 solmm; sol_model_mat(solmm,sx,sy,gSolYaw+gSolYawAdj);
@@ -5505,6 +5690,14 @@ int main(int argc, char **argv){
         // ghost di piazzamento (PLAY): disco verde se valido / rosso se no, al cursore.
         // Depth off → sempre visibile sopra l'orda. Riusa progFlat + il VBO overlay.
         if(plc.active && !ed.active){
+#ifdef GAME_SHELL
+            // soldato-costruttore: il ghost segue LUI anche senza eventi mouse,
+            // e il cono d'anteprima mostra il facing che verrà committato (mira)
+            if(sol_builder()){ float bx,by; sol_build_spot(&bx,&by);
+                               pl_set_cursor(&plc,bx,by);
+                               gTAimFacing=atan2f(by-soldier_y(gSol),
+                                                  bx-soldier_x(gSol)); }
+#endif
             const PlItem *it=pl_selected(&plc);
             int ov=0;
 #ifdef GAME_SHELL
