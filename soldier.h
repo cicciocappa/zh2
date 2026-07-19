@@ -81,6 +81,19 @@ void soldier_step(Soldier *sol, float mvx, float mvy,
                   float aimx, float aimy, bool fire, float dt,
                   SoldierShotFn shot, void *ud);
 
+/* --- climbing (wall vault, SOLDIER_DESIGN) ---------------------------------
+ * soldier_climb_begin removes the body (untouchable: no contact, no shove,
+ * lure lifted) and glides the REPORTED position from the current spot to
+ * (ex,ey) over dur seconds; when the timer expires the body re-appears at
+ * (ex,ey) with HP preserved (this is NOT a redeploy). The HOST owns the
+ * detection (which cells are climbable, where the landing is) and the whole
+ * climb fiction (clips, anchors); the module owns the body lifecycle so
+ * camera/HUD keep a valid soldier_x/y through the vault. Recall mid-climb
+ * cancels it. Fails if not deployed or already climbing. */
+bool  soldier_climb_begin(Soldier *sol, float ex, float ey, float dur);
+bool  soldier_climbing(const Soldier *sol);
+float soldier_climb_frac(const Soldier *sol);  /* 0..1 while climbing */
+
 bool  soldier_active(const Soldier *sol);
 float soldier_x(const Soldier *sol);       /* valid while active */
 float soldier_y(const Soldier *sol);

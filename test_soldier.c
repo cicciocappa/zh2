@@ -334,13 +334,62 @@ static void test_determinism(void) {
     CHECK(a < 1e299, "zero NaN");
 }
 
+/* ---- 6. climb (wall vault) -------------------------------------------------- */
+
+static void test_climb(void) {
+    printf("6. climb (vault oltre il muro: corpo assente, glide, HP conservati)\n");
+    SimP *s = make_world();
+    Soldier *sol = soldier_create(s, NULL);
+    CHECK(soldier_deploy(sol, 20.0f, 20.0f), "deploy");
+    for (int cy = 0; cy < 80; cy++) simp_set_wall(s, 44, cy, true);  /* x=22..22.5 */
+    simp_terrain_commit(s);
+
+    float ex = 24.0f, ey = 20.0f;
+    CHECK(soldier_climb_begin(sol, ex, ey, 2.0f), "climb_begin accettato");
+    CHECK(soldier_climbing(sol), "stato climbing");
+    CHECK(soldier_body_index(sol) < 0 && simp_drag_count(s) == 0,
+          "corpo rimosso durante il vault");
+    CHECK(!soldier_climb_begin(sol, ex, ey, 2.0f), "doppio begin rifiutato");
+
+    /* input e grilletto vanno ignorati per tutta la durata */
+    float half_x = 0.0f;
+    int steps = (int)(2.0f / DT), landed_at = -1;
+    Rec rec = { s, 0, 0, 0, 0, 0, 0 };
+    for (int k = 0; k < steps + 5; k++) {
+        soldier_step(sol, -1.0f, 0.5f, 0, 0, true, DT, on_shot, &rec);
+        simp_step(s, DT);
+        if (k == steps / 2) half_x = soldier_x(sol);
+        if (!soldier_climbing(sol)) { landed_at = k; break; }
+    }
+    printf("     meta' vault a x=%.2f (start 20, exit 24), atterrato allo step %d\n",
+           (double)half_x, landed_at);
+    CHECK(half_x > 20.5f && half_x < 23.5f, "posizione riportata scivola verso l'uscita");
+    CHECK(rec.shots == 0, "mitra muto durante il vault");
+    CHECK(landed_at >= steps - 2, "durata rispettata");
+    CHECK(soldier_body_index(sol) >= 0, "corpo ricomparso");
+    CHECK(fabsf(soldier_x(sol) - ex) < 0.05f && fabsf(soldier_y(sol) - ey) < 0.05f,
+          "corpo all'atterraggio");
+    CHECK(soldier_hp(sol) == soldier_hp_max(sol), "HP conservati (niente redeploy)");
+    CHECK(soldier_x(sol) > 22.5f, "e' OLTRE il muro");
+
+    /* recall a meta' vault annulla senza lockout */
+    CHECK(soldier_climb_begin(sol, 20.0f, 20.0f, 2.0f), "secondo vault");
+    soldier_recall(sol);
+    CHECK(!soldier_active(sol) && !soldier_climbing(sol), "recall a meta' annulla");
+    CHECK(soldier_down(sol) <= 0.0f, "nessun lockout dal recall");
+    CHECK(soldier_deploy(sol, 10.0f, 10.0f), "redeploy immediato ok");
+    soldier_destroy(sol);
+    simp_destroy(s);
+}
+
 int main(void) {
     test_drive();
     test_gun();
     test_contact();
     test_lure_drift();
     test_determinism();
+    test_climb();
     if (g_fail) { printf("test_soldier: FAIL\n"); return 1; }
-    printf("test_soldier: OK (drive, mitra, contatto/down, lure, determinismo)\n");
+    printf("test_soldier: OK (drive, mitra, contatto/down, lure, determinismo, climb)\n");
     return 0;
 }

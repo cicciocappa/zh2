@@ -36,7 +36,7 @@ prop vetrata 19.5 35 0
 # --- difese di partenza davanti alla LZ (contesto: c'e' qualcosa da difendere) ---
 turret 78 30 32
 turret 78 40 32
-wall 500 1.0 74 28 1.5 14
+wall 500 1.0 74.5 28 0.5 14   # mura a 1 cella (2026-07-19), mezzeria invariata
 
 # --- decor sparso, inerte, per riferimento visivo ---
 prop bench 40 35 20

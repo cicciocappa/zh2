@@ -17,15 +17,15 @@ poly 7 solid 112 84 126 84 126 92 112 92
 poly 7 solid 96 8 110 8 110 16 96 16
 poly 7 solid 48 30 64 30 64 44 48 44
 poly 7 solid 48 56 64 56 64 70 48 70
-wall 900 1.2 129.25 50 1.5 25.75
-wall 900 1.2 129.25 24.25 1.5 25.75
-wall 900 1.2 110 74.25 20.75 1.5
-wall 900 1.2 80.75 74.25 19.25 1.5
-wall 350 0.5 100 74.25 10 1.5
-wall 900 1.2 105 24.25 24.25 1.5
-wall 900 1.2 80.75 24.25 24.25 1.5
-wall 900 1.2 79.25 54 1.5 21.75
-wall 900 1.2 79.25 24.25 1.5 21.75
+wall 900 1.2 129.5 50 0.5 25   # mura a 1 cella (2026-07-19), mezzeria invariata
+wall 900 1.2 129.5 25 0.5 25   # mura a 1 cella (2026-07-19), mezzeria invariata
+wall 900 1.2 110 74.5 20 0.5   # mura a 1 cella (2026-07-19), mezzeria invariata
+wall 900 1.2 80.5 74.5 19.5 0.5   # mura a 1 cella (2026-07-19), mezzeria invariata
+wall 350 0.5 100 74.5 10 0.5   # mura a 1 cella (2026-07-19), mezzeria invariata
+wall 900 1.2 105 25 24.5 0.5   # mura a 1 cella (2026-07-19), mezzeria invariata
+wall 900 1.2 80.5 25 24.5 0.5   # mura a 1 cella (2026-07-19), mezzeria invariata
+wall 900 1.2 80 54 0.5 21   # mura a 1 cella (2026-07-19), mezzeria invariata
+wall 900 1.2 80 25 0.5 21   # mura a 1 cella (2026-07-19), mezzeria invariata
 exit 98 96 14 3 5 40 0
 exit 96 1 14 3 5 80 0
 exit 1 40 3 20 7 0 0

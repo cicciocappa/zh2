@@ -1908,6 +1908,85 @@ static int       gSolClipFire = -1, gSolClipToss = -1;
 #define SOL_TOSS_START   1.15f   // offset nella clip (s)
 #define SOL_TOSS_WINDOW  1.45f   // lock del soldato (s)
 #define SOL_TOSS_RELEASE 0.65f   // spawn granata, dall'inizio finestra (s)
+// SCAVALCAMENTO (SOLDIER_DESIGN): spingere contro una cella-struttura (muri
+// del giocatore/scena, barricate — palazzi/prop/torrette esclusi) per
+// SOL_CLIMB_PUSH s la scavalca. Il modulo soldier toglie il corpo e fa
+// scivolare la posizione riportata fino all'atterraggio; qui la FICTION:
+// clip "climb" ancorata al punto di partenza (root motion tenuta nel bake:
+// è LEI che porta la mesh su e oltre il muro), poi "jump_down" ancorata in
+// cima con scivolata dell'ancora a terra durante la caduta (il drop della
+// clip è 0.90 m contro i ~2 m del muro: la differenza la assorbe l'ancora).
+// Le costanti *_FWD/_UP/_HIP sono le misure model-space stampate da
+// gfx/soldier_glb_make.py (moltiplicate a runtime per gSolMdlScale).
+static int       gSolClipClimb = -1, gSolClipJump = -1;
+static struct {
+    int   on;                 // fiction attiva (il gioco è soldier_climbing)
+    float t;                  // orologio fiction, avanzato dal TICK
+    float x0, y0, yaw;        // ancora di partenza + direzione verso il muro
+    float ex, ey;             // punto d'atterraggio fisico
+} gSolClimb;
+static float     gSolPushT = 0.0f;  // s spesi a spingere contro un muro scavalcabile
+static float     gSolAimT  = 0.0f;  // coda "guarda la mira" dopo l'ultimo colpo
+#define SOL_AIM_LINGER   0.35f   // s: evita il flip-flop di heading col tap-fire
+// MITRA IN MANO (2026-07-19): fucile procedurale flat-color (4 box, canna
+// lungo +X locale) agganciato alla posizione WORLD del bone RightHand
+// (anim_bone_global x model matrix) e orientato ORIZZONTALE sull'heading di
+// render — niente assi del bone: a questa scala la canna livellata legge
+// meglio e la bocca resta prevedibile per tracer e vampa. Verts trasformati
+// su CPU ogni frame (progFlat, layout 9-float come il buffer strutture).
+// La bocca dell'ULTIMO frame disegnato (gGunMuz, world x/quota/z) è
+// l'origine di tracer+muzzle flash del tick successivo (1 frame di ritardo,
+// invisibile). Durante il TOSS il fucile passa alla mano SINISTRA (la destra
+// lancia la granata, la sinistra lo regge); nascosto solo in climb.
+static int    gSolHandBone = -1, gSolHandBoneL = -1;
+static float *gGunVerts = NULL, *gGunXf = NULL; static int gGunNV = 0;
+static GLuint gGunVao = 0, gGunVbo = 0;
+static float  gGunMuz[3]; static int gGunMuzOn = 0;
+static int    gGunFlash = 0; static float gGunFlashAng = 0.0f; // vampa pendente (dal tick)
+#define GUN_MUZ_X 0.60f          // punta della canna dal grip (m)
+static void gun_box(float *v, int *n, float x0, float x1, float y0, float y1,
+                    float z0, float z1, float r, float g, float b){
+    static const int F[6][4][3]={ // 6 facce come tri-strip srotolata (a,b,c / a,c,d)
+        {{1,0,0},{1,1,0},{1,1,1},{1,0,1}},   // +X
+        {{0,0,1},{0,1,1},{0,1,0},{0,0,0}},   // -X
+        {{0,1,0},{0,1,1},{1,1,1},{1,1,0}},   // +Y
+        {{0,0,0},{1,0,0},{1,0,1},{0,0,1}},   // -Y
+        {{0,0,1},{1,0,1},{1,1,1},{0,1,1}},   // +Z
+        {{0,0,0},{0,1,0},{1,1,0},{1,0,0}},   // -Z
+    };
+    static const float N[6][3]={{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+    const float X[2]={x0,x1}, Y[2]={y0,y1}, Z[2]={z0,z1};
+    for(int f=0;f<6;f++) for(int t=0;t<6;t++){
+        int k = t<3 ? t : (t==3?0:t-2);      // 0,1,2, 0,2,3
+        const int *c=F[f][k]; float *o=v+(*n)*9; (*n)++;
+        o[0]=X[c[0]]; o[1]=Y[c[1]]; o[2]=Z[c[2]];
+        o[3]=N[f][0]; o[4]=N[f][1]; o[5]=N[f][2];
+        o[6]=r; o[7]=g; o[8]=b;
+    }
+}
+static void build_gun_mesh(void){
+    gGunVerts=(float*)malloc(4*36*9*sizeof(float)); int n=0;
+    gun_box(gGunVerts,&n,-0.30f,-0.10f,-0.055f,0.015f,-0.018f,0.018f,0.16f,0.13f,0.10f); // calcio
+    gun_box(gGunVerts,&n,-0.12f, 0.28f,-0.030f,0.038f,-0.022f,0.022f,0.10f,0.10f,0.11f); // castello
+    gun_box(gGunVerts,&n, 0.28f,GUN_MUZ_X,-0.012f,0.014f,-0.012f,0.012f,0.07f,0.07f,0.08f); // canna
+    gun_box(gGunVerts,&n, 0.00f, 0.07f,-0.130f,-0.030f,-0.015f,0.015f,0.09f,0.09f,0.10f); // caricatore
+    gGunNV=n;
+    gGunXf=(float*)malloc((size_t)n*9*sizeof(float));
+    glGenVertexArrays(1,&gGunVao); glBindVertexArray(gGunVao);
+    glGenBuffers(1,&gGunVbo); glBindBuffer(GL_ARRAY_BUFFER,gGunVbo);
+    glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)n*9*sizeof(float),NULL,GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,0,9*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1,3,GL_FLOAT,0,9*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2,3,GL_FLOAT,0,9*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
+    glBindVertexArray(0);
+}
+#define SOL_CLIMB_PUSH   0.25f   // pressione richiesta per agganciare (s)
+#define SOL_CLIMB_FWD    1.40f   // avanzamento della climb trimmata (model m)
+#define SOL_CLIMB_ENDHIP 1.94f   // quota hips a fine climb (model m)
+#define SOL_JUMP_FWD     2.28f   // avanzamento del jump_down (model m)
+#define SOL_JUMP_HIP0    0.85f   // quota hips a inizio jump_down (model m)
+#define SOL_JUMP_T0      0.73f   // inizio caduta nella clip jump_down (s)
+#define SOL_JUMP_T1      1.47f   // atterraggio nella clip jump_down (s)
 static float     gSolTossT  = 0.0f;
 static struct { int on; float x, y; } gGrenPend;   // pagata, in attesa del gesto
 static int       gSolFiring = 0;    // trigger valido nell'ultimo tick
@@ -1955,7 +2034,13 @@ typedef struct { DefGame *g; SimP *s; } SolShotCtx;
 static void on_soldier_shot(void *ud, float ox, float oy,
                             float ex, float ey, int hit, float dmg){
     SolShotCtx *c = (SolShotCtx *)ud;
-    tracer_spawn(ox, ter_z(ox,oy)+1.25f, oy,
+    // tracer dalla BOCCA del mitra (posizione dell'ultimo frame disegnato);
+    // fallback petto se il fucile non è ancora stato disegnato. La vampa la
+    // emette il main dopo soldier_step (fx è un local del main): qui si arma.
+    float o0=ox, o1=ter_z(ox,oy)+1.25f, o2=oy;
+    if(gGunMuzOn){ o0=gGunMuz[0]; o1=gGunMuz[1]; o2=gGunMuz[2]; }
+    gGunFlash=1; gGunFlashAng=atan2f(ey-o2, ex-o0);
+    tracer_spawn(o0, o1, o2,
                  ex, ter_z(ex,ey)+(hit>=0?0.95f:0.25f), ey, 0);
     if(hit >= 0){
         SimPHandle h = simp_handle_of(c->s, hit);   // indice denso: convertire SUBITO
@@ -1974,12 +2059,18 @@ static void host_bio_kill(DefBody body){
 }
 #ifdef GAME_SHELL
 // una sola modalità-verbo alla volta (§4): accenderne una spegne le altre.
+// 2026-07-19: i verbi NON recallano più il soldato — col soldato in campo il
+// corpo RESTA dov'è (lure e morsi attivi: il costo di usare il mortaio è
+// l'immobilità e il rischio), il mouse passa al verbo (il blocco eventi
+// gAimMort/gAimRepair viene prima e consuma i click) e all'uscita dal verbo
+// il controllo torna da solo (gSolMode resta 1). Senza soldato in campo,
+// semantica di prima.
 static void bio_mode_set(int mort, int rep, int adj){
     gAimMort = mort; gAimRepair = rep; gAdjOn = adj;
     if (!rep) gRepairHold = 0;
     if (!adj) gAdjTid = -1;
-    gSolMode = 0; gSolFire = 0;   // il soldato è un verbo: esclusivo come gli
-                                  // altri (il tick del main recalla il corpo)
+    gSolFire = 0;
+    if (!(gSol && soldier_active(gSol))) gSolMode = 0;
 }
 // LOOP_DESIGN C: in ASSALTO si costruisce pagando BIOMASSA a prezzo maggiorato
 // (ceil(markup × costo $), bio.build_markup; budget e bio NON convertibili).
@@ -2181,10 +2272,12 @@ static void build_walls_from_scene(DefGame *g, SimP *s, const Scene *sc){
 // Sweep sul bbox mantenuto da defense (def_struct_bbox): include le barricate
 // piazzate a runtime (PLACEMENT_DESIGN.md) e resta stretto sulle mappe grandi
 // (lo sweep dell'intera griglia costava ms sulle mappe L). maxV protegge il VBO.
+#define WALL_TH 0.20f   // spessore VISIVO dei muri (la cella nav resta 0.5 m)
 static int build_struct_mesh(DefGame *g, float cell, float *buf, int maxV){
     int bx0,by0,bx1,by1;
     if(def_struct_count(g)==0 || !def_struct_bbox(g,&bx0,&by0,&bx1,&by1)) return 0;
-    int c=0; float H=2.8f;
+    int c=0; float H=1.95f;   // altezza render ~= top-out della clip climb
+                              // (hips a 1.94 m mondo a fine salita)
     for(int cy=by0; cy<=by1; cy++)
     for(int cx=bx0; cx<=bx1; cx++){
         if(c+30 > maxV) return c;                         // cap: non sforare il VBO
@@ -2201,19 +2294,34 @@ static int build_struct_mesh(DefGame *g, float cell, float *buf, int maxV){
         if(id==gCoreId){ cr=0.75f*t; cg=0.16f*t; cb=0.16f*t; }   // core = red
         else           { cr=0.55f*t; cg=0.57f*t; cb=0.62f*t; }   // ring = steel
         float x0=cx*cell, x1=x0+cell, z0=cy*cell, z1=z0+cell;
-        float zb=ter_z((x0+x1)*0.5f,(z0+z1)*0.5f), H1=zb+H;   // seat on terrain
+        // muri sottili a vista: le corse spesse UNA cella diventano lastre da
+        // WALL_TH lungo la direzione dei vicini struttura; celle con vicini in
+        // ENTRAMBE le direzioni (angoli, interni di muri spessi tipo i
+        // bastioni 3-celle di arena4) restano box pieni — all'angolo di un
+        // muro sottile il box fa da pilastro, i bastioni restano massicci.
+        // La cella isolata e' un pilastrino WALL_TH x WALL_TH.
+        float mx=(x0+x1)*0.5f, mz=(z0+z1)*0.5f, hth=0.5f*WALL_TH;
+        int runx = def_cell_struct(g,cx+1,cy)>=0 || def_cell_struct(g,cx-1,cy)>=0;
+        int runz = def_cell_struct(g,cx,cy+1)>=0 || def_cell_struct(g,cx,cy-1)>=0;
+        float zb=ter_z(mx,mz), H1=zb+H;                   // seat on terrain
 #define VS(PX,PY,PZ,NX,NY,NZ) do{float*o=buf+c*9;o[0]=PX;o[1]=PY;o[2]=PZ;\
         o[3]=NX;o[4]=NY;o[5]=NZ;o[6]=cr;o[7]=cg;o[8]=cb;c++;}while(0)
 #define QS(ax,ay,az,bx,by,bz,px2,py2,pz2,dx,dy,dz,nx,ny,nz) do{ \
         VS(ax,ay,az,nx,ny,nz);VS(bx,by,bz,nx,ny,nz);VS(px2,py2,pz2,nx,ny,nz); \
         VS(ax,ay,az,nx,ny,nz);VS(px2,py2,pz2,nx,ny,nz);VS(dx,dy,dz,nx,ny,nz);}while(0)
-        QS(x0,H1,z0, x1,H1,z0, x1,H1,z1, x0,H1,z1, 0,1,0);    // top
-        QS(x1,zb,z0, x1,zb,z1, x1,H1,z1, x1,H1,z0, 1,0,0);    // +X
-        QS(x0,zb,z1, x0,zb,z0, x0,H1,z0, x0,H1,z1, -1,0,0);   // -X
-        QS(x0,zb,z1, x1,zb,z1, x1,H1,z1, x0,H1,z1, 0,0,1);    // +Z
-        QS(x1,zb,z0, x0,zb,z0, x0,H1,z0, x1,H1,z0, 0,0,-1);   // -Z
+#define BX(X0,X1,Z0,Z1) do{ \
+        QS(X0,H1,Z0, X1,H1,Z0, X1,H1,Z1, X0,H1,Z1, 0,1,0);    /* top */ \
+        QS(X1,zb,Z0, X1,zb,Z1, X1,H1,Z1, X1,H1,Z0, 1,0,0);    /* +X  */ \
+        QS(X0,zb,Z1, X0,zb,Z0, X0,H1,Z0, X0,H1,Z1, -1,0,0);   /* -X  */ \
+        QS(X0,zb,Z1, X1,zb,Z1, X1,H1,Z1, X0,H1,Z1, 0,0,1);    /* +Z  */ \
+        QS(X1,zb,Z0, X0,zb,Z0, X0,H1,Z0, X1,H1,Z0, 0,0,-1);}while(0)
+        if(runx&&runz)    BX(x0,x1, z0,z1);
+        else if(runx)     BX(x0,x1, mz-hth,mz+hth);
+        else if(runz)     BX(mx-hth,mx+hth, z0,z1);
+        else              BX(mx-hth,mx+hth, mz-hth,mz+hth);
 #undef VS
 #undef QS
+#undef BX
     }
 #ifdef GAME_SHELL
     // moduli di linea (PREP_UI §5): box ruotati lungo la linea al posto delle
@@ -4095,7 +4203,22 @@ int main(int argc, char **argv){
           gSolClipBL  =model_find_clip(&gSolMdl,"run_bl");
           gSolClipBR  =model_find_clip(&gSolMdl,"run_br");
           gSolClipFire=model_find_clip(&gSolMdl,"fire");
-          gSolClipToss=model_find_clip(&gSolMdl,"toss"); }
+          gSolClipToss=model_find_clip(&gSolMdl,"toss");
+          gSolClipClimb=model_find_clip(&gSolMdl,"climb");
+          gSolClipJump =model_find_clip(&gSolMdl,"jump_down");
+          // mitra in mano: bone d'aggancio (nome esatto, poi qualsiasi
+          // suffisso RightHand: i rig Mixamo re-esportati cambiano prefisso)
+          gSolHandBone=model_find_bone(&gSolMdl,"mixamorig:RightHand");
+          if(gSolHandBone<0)
+              for(int b=0;b<gSolMdl.skeleton.bone_count;b++)
+                  if(strstr(gSolMdl.skeleton.bones[b].name,"RightHand")){
+                      gSolHandBone=b; break; }
+          gSolHandBoneL=model_find_bone(&gSolMdl,"mixamorig:LeftHand");
+          if(gSolHandBoneL<0)
+              for(int b=0;b<gSolMdl.skeleton.bone_count;b++)
+                  if(strstr(gSolMdl.skeleton.bones[b].name,"LeftHand")){
+                      gSolHandBoneL=b; break; }
+          if(gSolHandBone>=0) build_gun_mesh(); }
         if(gSolClipIdle<0) gSolClipIdle=0;
         if(gSolClipRun<0)  gSolClipRun=gSolClipIdle;
         if(gSolClipBack<0)  gSolClipBack=gSolClipRun;   // glb vecchi: degrada
@@ -5022,6 +5145,7 @@ int main(int argc, char **argv){
                                 gSolMode=1;          // ...che azzera anche gSolMode
                                 plc.active=0;        // ...e col ghost di costruzione
                                 gSolLastX=dxp; gSolLastY=dyp;
+                                gGunMuzOn=0;         // bocca stantia del deploy prima
                                 au_play(SND_MENU_SELECT);
                             } else au_play(SND_MENU_MOVE);   // base assediata/lockout
                         } else au_play(SND_MENU_MOVE);
@@ -5039,8 +5163,15 @@ int main(int argc, char **argv){
                         float sn=sinf(az), cn=cosf(az);
                         mvx=fwd*(-sn)+rgt*( cn);
                         mvy=fwd*(-cn)+rgt*(-sn);
+                        if(gAimMort||gAimRepair){
+                            // verbo col mouse attivo: il soldato resta FERMO
+                            // dove sta (mira congelata, niente fuoco) finché
+                            // il verbo non si chiude — fare in fretta, il
+                            // lure continua ad attirare l'orda su di lui.
+                            mvx=0.0f; mvy=0.0f; gSolFire=0;
+                        }
                         // SHIFT = mouse alla camera: mira congelata, niente fuoco
-                        if(ks[SDL_SCANCODE_LSHIFT]||ks[SDL_SCANCODE_RSHIFT])
+                        else if(ks[SDL_SCANCODE_LSHIFT]||ks[SDL_SCANCODE_RSHIFT])
                             gSolFire=0;
                         else
                             pick_y0(vp,mouse_px,mouse_py,SW,SH,&gSolAimX,&gSolAimY);
@@ -5071,12 +5202,81 @@ int main(int argc, char **argv){
                             gSolTossT=0.0f;
                         }
                     }
+                    // SCAVALCAMENTO: WASD tenuto contro una cella-struttura
+                    // scavalcabile per SOL_CLIMB_PUSH s -> vault. Atterraggio =
+                    // primo punto libero oltre il muro lungo la spinta; muri
+                    // più spessi di ~3 celle (doppie cinte accostate) non si
+                    // scavalcano. Durata = clip climb + jump_down native.
+                    if(gSolMode && soldier_active(gSol) &&
+                       !soldier_climbing(gSol) && gSolTossT<=0.0f){
+                        float ml=sqrtf(mvx*mvx+mvy*mvy); int push=0;
+                        if(ml>0.5f){
+                            float dxn=mvx/ml, dyn=mvy/ml;
+                            float sx=soldier_x(gSol), sy=soldier_y(gSol);
+                            float cs=sc.cell, t0=gBal.soldier.radius+0.30f;
+                            int pcx=(int)((sx+dxn*t0)/cs), pcy=(int)((sy+dyn*t0)/cs);
+                            int id=def_cell_struct(g,pcx,pcy);
+                            if(id>=0 && simp_is_wall(s,pcx,pcy) &&
+                               !def_struct_is_turret(g,id) && id!=gLzCore &&
+                               !(id<PROP_WORLD_MAX_STRUCT && gPropW.struct_is_prop[id])){
+                                push=1; gSolPushT+=FIXED_DT;
+                                if(gSolPushT>=SOL_CLIMB_PUSH){
+                                    float d=t0;
+                                    while(d<=t0+1.6f &&
+                                          simp_is_wall(s,(int)((sx+dxn*d)/cs),
+                                                         (int)((sy+dyn*d)/cs)))
+                                        d+=0.20f;
+                                    int okl=0; float ex=0,ey=0;
+                                    if(d<=t0+1.6f){
+                                        float r=gBal.soldier.radius;
+                                        for(float e=d+r+0.05f;e<=d+r+2.0f;e+=0.25f){
+                                            float qx=sx+dxn*e, qy=sy+dyn*e;
+                                            if(simp_free_at(s,qx,qy,r)){
+                                                ex=qx; ey=qy; okl=1; break; }
+                                        }
+                                    }
+                                    float dc=gSolClipClimb>=0?
+                                             gSolMdl.clips[gSolClipClimb].duration:1.8f;
+                                    float dj=gSolClipJump>=0?
+                                             gSolMdl.clips[gSolClipJump].duration:1.0f;
+                                    if(okl && soldier_climb_begin(gSol,ex,ey,dc+dj)){
+                                        gSolClimb.on=1; gSolClimb.t=0.0f;
+                                        gSolClimb.x0=sx; gSolClimb.y0=sy;
+                                        gSolClimb.yaw=atan2f(dxn,dyn);
+                                        gSolClimb.ex=ex; gSolClimb.ey=ey;
+                                        gSolYaw=gSolClimb.yaw;   // niente piroetta
+                                        gSolFire=0;
+                                    }
+                                    gSolPushT=0.0f;
+                                }
+                            }
+                        }
+                        if(!push) gSolPushT=0.0f;
+                    }
+                    if(gSolClimb.on){                 // orologio della fiction
+                        gSolClimb.t+=FIXED_DT;
+                        if(!gSol || !soldier_active(gSol) ||
+                           !soldier_climbing(gSol))   // atterrato o recall
+                            gSolClimb.on=0;
+                    }
                     int wasA=soldier_active(gSol);
                     SolShotCtx sctx={g,s};
                     gSolFiring = gSolMode&&gSolFire&&combat&&!plc.active
-                                 &&gSolTossT<=0.0f;   // niente mitra a metà gesto
+                                 &&gSolTossT<=0.0f&&!soldier_climbing(gSol);
+                    // heading: il soldato guarda la MIRA solo quando spara
+                    // (+ una coda SOL_AIM_LINGER che assorbe il tap-fire);
+                    // altrimenti guarda dove cammina (2026-07-19, da testare —
+                    // il render legge gSolAimT).
+                    if(gSolFiring) gSolAimT=SOL_AIM_LINGER;
+                    else if(gSolAimT>0.0f) gSolAimT-=FIXED_DT;
                     soldier_step(gSol,mvx,mvy,gSolAimX,gSolAimY,
                                  gSolFiring,FIXED_DT,on_soldier_shot,&sctx);
+                    if(gGunFlash){        // vampa armata da on_soldier_shot
+                        gGunFlash=0;
+                        if(gGunMuzOn)
+                            fx_emit(&fx,gGunMuz,&MUZZLE_FLASH_DEF,
+                                    gGunFlashAng,0.30f);
+                    }
                     if(soldier_active(gSol)){
                         gSolLastX=soldier_x(gSol); gSolLastY=soldier_y(gSol);
                     } else if(wasA && gSolMode){     // sbranato: fuori modalità
@@ -5491,13 +5691,57 @@ int main(int argc, char **argv){
         // modalità, direzione di marcia altrimenti, smussato esponenziale.
         // I blocchi successivi settano il loro program: nessuno stato ereditato.
 #ifdef GAME_SHELL
-        if(gSolMdlOk && gSol && soldier_active(gSol)){
+        if(gSolMdlOk && gSol && soldier_active(gSol) &&
+           soldier_climbing(gSol) && gSolClimb.on &&
+           gSolClipClimb>=0 && gSolClipJump>=0){
+            // fiction scavalcamento: la clip climb (root motion bakata) porta
+            // la mesh su e oltre dal punto di partenza; il jump_down parte
+            // ancorato in cima (raccordo hips fine-climb -> inizio-jump) e
+            // durante la finestra di caduta l'ancora scivola a terra verso
+            // l'atterraggio fisico (il drop della clip è più corto del muro).
+            // I metri delle clip arrivano al mondo attraverso root_pre (0.01
+            // dell'Armature FBX) *e* l'auto-scala: il fattore è il prodotto
+            // (= 1.0 col default VAT_HORDE_SOL_H su rig alto 1.8).
+            const float *rp=gSolMdl.skeleton.root_pre;
+            float s_=gSolMdlScale*sqrtf(rp[0]*rp[0]+rp[1]*rp[1]+rp[2]*rp[2]);
+            float dxn=sinf(gSolClimb.yaw), dyn=cosf(gSolClimb.yaw);
+            float dc=gSolMdl.clips[gSolClipClimb].duration;
+            float t=gSolClimb.t, ax,az_, ayoff=0.0f; int clip;
+            if(t<dc){
+                clip=gSolClipClimb; ax=gSolClimb.x0; az_=gSolClimb.y0;
+            } else {
+                clip=gSolClipJump; float tj=t-dc;
+                float f=(tj-SOL_JUMP_T0)/(SOL_JUMP_T1-SOL_JUMP_T0);
+                if(f<0.0f)f=0.0f; if(f>1.0f)f=1.0f;
+                float bx=gSolClimb.x0+dxn*SOL_CLIMB_FWD*s_,
+                      bz=gSolClimb.y0+dyn*SOL_CLIMB_FWD*s_;
+                float lx=gSolClimb.ex-dxn*SOL_JUMP_FWD*s_,
+                      lz=gSolClimb.ey-dyn*SOL_JUMP_FWD*s_;
+                ax=bx+(lx-bx)*f; az_=bz+(lz-bz)*f;
+                ayoff=(SOL_CLIMB_ENDHIP-SOL_JUMP_HIP0)*s_*(1.0f-f);
+            }
+            int fresh = gSolAnim.clip_index!=clip;
+            anim_state_play(&gSolAnim,clip,false);
+            if(fresh && clip==gSolClipJump){
+                // niente crossfade climb->jump: fonderebbe due quote hips
+                // diverse (fine climb 1.94 vs inizio jump 0.85+ancora) con un
+                // pop verticale; le pose di confine sono entrambe in piedi.
+                gSolAnim.blend_timer=0.0f; gSolAnim.prev_clip_index=-1;
+            }
+            anim_state_update(&gSolAnim,&gSolMdl,(float)frame_t);
+            mat4 solmm; sol_model_mat(solmm,ax,az_,gSolClimb.yaw+gSolYawAdj);
+            solmm[13]+=ayoff;
+            model_render(&gSolMdl,gSkinProg,vp,solmm,&gSolAnim);
+        } else if(gSolMdlOk && gSol && soldier_active(gSol)){
             int bi=soldier_body_index(gSol);
             float sx=soldier_x(gSol), sy=soldier_y(gSol), svx=0, svy=0;
             if(bi>=0 && bi<simp_drag_count(s)){
                 svx=simp_drag_vx(s)[bi]; svy=simp_drag_vy(s)[bi]; }
             float sp=sqrtf(svx*svx+svy*svy), yawT=gSolYaw;
-            if(gSolMode){
+            if(gSolMode && (gSolFiring || gSolAimT>0.0f || gSolTossT>0.0f)){
+                // guarda la MIRA solo sparando (o nel gesto granata, o nella
+                // coda SOL_AIM_LINGER); camminando senza sparare guarda dove
+                // va — run forward naturale (tweak 2026-07-19, da testare)
                 float dx=gSolAimX-sx, dy=gSolAimY-sy;
                 if(dx*dx+dy*dy>1e-4f) yawT=atan2f(dx,dy);
             } else if(sp>0.3f) yawT=atan2f(svx,svy);
@@ -5541,6 +5785,36 @@ int main(int argc, char **argv){
             mat4 solmm; sol_model_mat(solmm,sx,sy,gSolYaw+gSolYawAdj);
             model_render(&gSolMdl,gSkinProg,vp,solmm,
                          gSolMdl.clip_count>0?&gSolAnim:NULL);
+            // mitra in mano (v. statics): posizione = bone RightHand in
+            // world (LeftHand durante il toss: la destra lancia), canna
+            // orizzontale sull'heading; aggiorna gGunMuz per tracer+vampa.
+            int ghb = (gSolTossT>0.0f && gSolHandBoneL>=0) ? gSolHandBoneL
+                                                           : gSolHandBone;
+            if(gGunVbo && ghb>=0 && gSolMdl.clip_count>0){
+                MdlMat4 hg; anim_bone_global(&gSolAnim,&gSolMdl,ghb,hg);
+                float hx=hg[12], hy=hg[13], hz=hg[14];
+                float gx=solmm[0]*hx+solmm[4]*hy+solmm[8]*hz+solmm[12];
+                float gy=solmm[1]*hx+solmm[5]*hy+solmm[9]*hz+solmm[13];
+                float gz=solmm[2]*hx+solmm[6]*hy+solmm[10]*hz+solmm[14];
+                float ca=sinf(gSolYaw), sa=cosf(gSolYaw);  // +X locale -> heading
+                for(int k=0;k<gGunNV;k++){
+                    const float *i=gGunVerts+k*9; float *o=gGunXf+k*9;
+                    o[0]=gx + i[0]*ca - i[2]*sa;
+                    o[1]=gy + i[1];
+                    o[2]=gz + i[0]*sa + i[2]*ca;
+                    o[3]=i[3]*ca - i[5]*sa; o[4]=i[4]; o[5]=i[3]*sa + i[5]*ca;
+                    o[6]=i[6]; o[7]=i[7]; o[8]=i[8];
+                }
+                glUseProgram(progFlat);glUniformMatrix4fv(uVPflat,1,GL_FALSE,vp);
+                glBindVertexArray(gGunVao);glBindBuffer(GL_ARRAY_BUFFER,gGunVbo);
+                glBufferSubData(GL_ARRAY_BUFFER,0,
+                                (GLsizeiptr)gGunNV*9*sizeof(float),gGunXf);
+                glDrawArrays(GL_TRIANGLES,0,gGunNV);
+                glBindVertexArray(0);
+                gGunMuz[0]=gx+GUN_MUZ_X*ca; gGunMuz[1]=gy;
+                gGunMuz[2]=gz+GUN_MUZ_X*sa;
+                gGunMuzOn=1;
+            } else gGunMuzOn=0;
         }
 #endif
 

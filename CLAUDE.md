@@ -416,6 +416,18 @@ eseguibili si lanciano dalla root del progetto.
   frecce orbita, `MODEL_VIEW_SHOT="clip_idx"` → filmstrip BMP headless: 6 pose
   della clip — così Claude verifica da solo). Scelta skeletal-vs-VAT motivata
   in SOLDIER_DESIGN.md: un istanza sola + twin-stick (gambe≠busto) + climb.
+  **SCAVALCAMENTO FATTO (2026-07-19, attende playtest)**: WASD contro una
+  cella-struttura per 0.25 s = vault (palazzi/prop/torrette/LZ esclusi);
+  `soldier_climb_begin` nel modulo (corpo rimosso, posizione in glide, HP
+  conservati — `test_soldier` §6), fiction = clip `climb` (trimmata della
+  corsa iniziale al bake, root motion TENUTA: porta la mesh su e oltre) +
+  `jump_down` con scivolata d'ancora nella caduta; costanti misurate
+  SOL_CLIMB_*/SOL_JUMP_* in vat_horde.c, dettagli in SOLDIER_DESIGN.md.
+  Contestuale: mura RENDER sottili (corse di celle-muro 1-cella = lastre
+  0.20 m, angoli pilastrini, bastioni multi-cella pieni; altezza 2.8→2.05 m
+  ≈ top-out della climb) e muri di scena dei livelli giocabili portati a
+  1 cella di spessore, mezzeria invariata (level1, wave/mission_demo,
+  spawn_house_demo; i banchi arena* restano 3 celle).
 - `mission.h` / `.c` — macchina a stati di missione (GAME_PLAN fase A, FATTA
   2026-07-04): PREP (exit muti, piazzamento aperto; `prep 0` = illimitata,
   si esce con `mission_go`/INVIO) → ASSAULT (un director per `exit` di scena,

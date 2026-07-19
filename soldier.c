@@ -12,8 +12,14 @@ struct Soldier {
     SoldierDef def;
 
     bool  active;
-    int   drag;                 /* draggable pool index while active */
+    int   drag;                 /* draggable pool index while active (and not
+                                   climbing: -1 mid-vault, body removed) */
     float hp;
+
+    /* climb (wall vault): body absent, reported position glides start->exit */
+    bool  climbing;
+    float cl_t, cl_T;
+    float cl_x0, cl_y0, cl_x1, cl_y1;
     float fire_cd;              /* s until the gun may fire again */
     float down_t;               /* respawn lockout left */
     int   touchers;             /* contact count last step (HUD/FX) */
@@ -139,10 +145,41 @@ bool soldier_deploy(Soldier *sol, float x, float y) {
 void soldier_recall(Soldier *sol) {
     if (!sol->active) return;
     if (sol->stamped) lure_remove(sol);
-    simp_drag_remove(sol->s, sol->drag);
+    if (sol->drag >= 0) simp_drag_remove(sol->s, sol->drag);
     sol->drag = -1;
+    sol->climbing = false;
     sol->active = false;
     sol->touchers = 0;
+}
+
+/* ---- climb ----------------------------------------------------------------- */
+
+bool soldier_climb_begin(Soldier *sol, float ex, float ey, float dur) {
+    if (!sol->active || sol->climbing || dur <= 0.0f) return false;
+    sol->cl_x0 = simp_drag_px(sol->s)[sol->drag];
+    sol->cl_y0 = simp_drag_py(sol->s)[sol->drag];
+    if (sol->stamped) lure_remove(sol);
+    simp_drag_remove(sol->s, sol->drag);
+    sol->drag = -1;
+    sol->climbing = true;
+    sol->cl_t = 0.0f;
+    sol->cl_T = dur;
+    sol->cl_x1 = ex;
+    sol->cl_y1 = ey;
+    sol->touchers = 0;
+    return true;
+}
+
+bool soldier_climbing(const Soldier *sol) { return sol->active && sol->climbing; }
+
+float soldier_climb_frac(const Soldier *sol) {
+    if (!sol->climbing || sol->cl_T <= 0.0f) return 0.0f;
+    float f = sol->cl_t / sol->cl_T;
+    return f > 1.0f ? 1.0f : f;
+}
+
+static float climb_lerp(const Soldier *sol, float a, float b) {
+    return a + (b - a) * soldier_climb_frac(sol);
 }
 
 static void go_down(Soldier *sol) {
@@ -163,6 +200,17 @@ void soldier_step(Soldier *sol, float mvx, float mvy,
         return;
     }
     SimP *s = sol->s;
+    if (sol->climbing) {
+        /* body absent: only the vault clock ticks; input/contact/gun off */
+        sol->cl_t += dt;
+        if (sol->cl_t < sol->cl_T) return;
+        int i = simp_drag_add(s, sol->cl_x1, sol->cl_y1,
+                              sol->def.radius, sol->def.mass);
+        if (i < 0) { sol->cl_t = sol->cl_T; return; }  /* pool full: retry */
+        sol->drag = i;
+        sol->climbing = false;
+        return;     /* lure re-stamps on the next normal step */
+    }
     float x = simp_drag_px(s)[sol->drag], y = simp_drag_py(s)[sol->drag];
     float vx = simp_drag_vx(s)[sol->drag], vy = simp_drag_vy(s)[sol->drag];
 
@@ -268,13 +316,19 @@ void soldier_step(Soldier *sol, float mvx, float mvy,
 /* ---- getters ---------------------------------------------------------------- */
 
 bool  soldier_active(const Soldier *sol)   { return sol->active; }
-float soldier_x(const Soldier *sol)
-{ return sol->active ? simp_drag_px(sol->s)[sol->drag] : 0.0f; }
-float soldier_y(const Soldier *sol)
-{ return sol->active ? simp_drag_py(sol->s)[sol->drag] : 0.0f; }
+float soldier_x(const Soldier *sol) {
+    if (!sol->active) return 0.0f;
+    if (sol->climbing) return climb_lerp(sol, sol->cl_x0, sol->cl_x1);
+    return simp_drag_px(sol->s)[sol->drag];
+}
+float soldier_y(const Soldier *sol) {
+    if (!sol->active) return 0.0f;
+    if (sol->climbing) return climb_lerp(sol, sol->cl_y0, sol->cl_y1);
+    return simp_drag_py(sol->s)[sol->drag];
+}
 float soldier_hp(const Soldier *sol)       { return sol->hp; }
 float soldier_hp_max(const Soldier *sol)   { return sol->def.hp_max; }
 float soldier_down(const Soldier *sol)     { return sol->down_t; }
 int   soldier_touchers(const Soldier *sol) { return sol->touchers; }
 int   soldier_body_index(const Soldier *sol)
-{ return sol->active ? sol->drag : -1; }
+{ return (sol->active && !sol->climbing) ? sol->drag : -1; }

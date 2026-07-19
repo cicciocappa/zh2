@@ -53,7 +53,23 @@ CLIPS = [
     ("run_br",    os.path.join(ROOT, "blend", "Run Backward Right.fbx")),
     ("toss",      os.path.join(ROOT, "blend", "Toss Grenade.fbx")),
     ("fire",      os.path.join(ROOT, "blend", "Firing Rifle.fbx")),
+    # scavalcamento (SOLDIER_DESIGN): salita sul muro + salto giù dall'altra
+    # parte. Root motion KEPT (see KEEP_ROOT below).
+    ("climb",     os.path.join(ROOT, "blend", "Climbing.fbx")),
+    ("jump_down", os.path.join(ROOT, "blend", "Jumping Down.fbx")),
 ]
+
+# Clips whose root motion IS the move (the climb rise + mantle-over, the jump
+# drop): keep it — the host anchors the model at the wall base / wall top and
+# the baked hips motion carries the mesh up and over. Only the horizontal
+# start offset is rebased to zero so the clip begins on the anchor.
+KEEP_ROOT = {"climb", "jump_down"}
+# Frame windows (inclusive start, exclusive-ish end, None = keep to the end).
+# Climbing ships with a ~24-frame run-up (2.7 m of forward travel) that would
+# walk the soldier INTO the wall — cut at the pre-jump crouch. Jumping Down
+# has ~0.4 s of dead standing at the head and ~1 s of idle tail past the
+# landing recovery (hips settle by frame 72).
+TRIM = {"climb": (24, None), "jump_down": (12, 72)}
 OUT = os.path.join(ROOT, "assets", "models", "soldier.glb")
 DIFFUSE = os.path.join(ROOT, "blend", "soldier_diffuse.png")
 ATLAS_UV = os.path.join(ROOT, "blend", "soldier_atlas_uv.bin")
@@ -120,6 +136,49 @@ def cancel_root_motion(act, clip_name):
               % (clip_name, fc.array_index, v1 - v0))
 
 
+def trim_action(act, f0, f1, clip_name):
+    """Cut every fcurve to [f0, f1] (Mixamo bakes a key per frame, so f0/f1
+    land on existing keys) and shift left so the clip starts at frame 0."""
+    for fc in action_fcurves(act):
+        kps = fc.keyframe_points
+        for i in range(len(kps) - 1, -1, -1):
+            f = kps[i].co[0]
+            if f < f0 or (f1 is not None and f > f1):
+                kps.remove(kps[i], fast=True)
+        for k in kps:
+            k.co[0] -= f0
+            k.handle_left[0] -= f0
+            k.handle_right[0] -= f0
+        fc.update()
+    fr = act.frame_range
+    print("%s: trimmed to frames %.0f..%.0f (was %s..%s)"
+          % (clip_name, fr[0], fr[1], f0, f1 if f1 is not None else "end"))
+
+
+def rebase_root_start(act, clip_name):
+    """KEEP_ROOT clips: zero the HORIZONTAL start offset of the hips (axes 0
+    and 2 — axis 1 is the vertical rise/drop, measured on both clips) so the
+    baked travel starts on the model anchor. Print the net motion: the host
+    hardcodes these as SOL_CLIMB_*/SOL_JUMP_* anchor constants."""
+    for fc in action_fcurves(act):
+        if not (fc.data_path.endswith('"mixamorig:Hips"].location')
+                or fc.data_path.endswith("'mixamorig:Hips'].location")):
+            continue
+        kps = fc.keyframe_points
+        if len(kps) < 2:
+            continue
+        if fc.array_index != 1:
+            v0 = kps[0].co[1]
+            for k in kps:
+                k.co[1] -= v0
+                k.handle_left[1] -= v0
+                k.handle_right[1] -= v0
+            fc.update()
+        print("%s: hips axis %d  start %.3f  end %.3f  (net %.3f)"
+              % (clip_name, fc.array_index, kps[0].co[1],
+                 kps[len(kps) - 1].co[1], kps[len(kps) - 1].co[1] - kps[0].co[1]))
+
+
 def import_fbx(path):
     if not os.path.isfile(path):
         die("missing file: " + path)
@@ -174,7 +233,12 @@ def main():
             die(clip_name + ": bone-name match below threshold — not the same "
                 "Mixamo skeleton as the rig?")
 
-        cancel_root_motion(act, clip_name)
+        if clip_name in TRIM:
+            trim_action(act, TRIM[clip_name][0], TRIM[clip_name][1], clip_name)
+        if clip_name in KEEP_ROOT:
+            rebase_root_start(act, clip_name)
+        else:
+            cancel_root_motion(act, clip_name)
         act.name = clip_name
         act.use_fake_user = True
         # detach so removing the clip's objects doesn't take the action with them

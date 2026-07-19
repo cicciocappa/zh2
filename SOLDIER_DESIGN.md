@@ -2,12 +2,53 @@
 
 **Stato: v1 IMPLEMENTATA e committata (2026-07-16), lavoro in corso.**
 Il playtest delle ondate annunciate (LOOP_DESIGN A) è passato; il soldato è
-la F del pacchetto. **PROSSIMA FEATURE (dal primo playtest): lo
-SCAVALCAMENTO dei muri.** Oggi il soldato è correttamente bloccato dalla
-collisione SDF come tutti — ma così resta confinato dentro la cinta della
-base: deve poter scavalcare (vault sui muri bassi del giocatore, wall_h
-2 m — piste: hop balistico host-side sopra la cella muro quando preme
-contro, o uno stato "flying" per i draggable sul modello di SIMP_FLYING).
+la F del pacchetto. **SCAVALCAMENTO: FATTO (2026-07-19), attende playtest.**
+Meccanica: spingere con WASD contro una cella-struttura (muri del
+giocatore/scena, barricate — palazzi, prop, torrette e LZ esclusi) per
+0.25 s aggancia il vault. Il modulo `soldier.c` toglie il corpo draggable
+(intoccabile: niente morsi, niente lure) e fa scivolare la posizione
+riportata (camera/HUD) fino all'atterraggio = primo punto `simp_free_at`
+oltre il muro lungo la spinta (muri più spessi di ~3 celle non si
+scavalcano); allo scadere il corpo ricompare lì con gli HP CONSERVATI
+(`soldier_climb_begin/climbing/climb_frac`, verificato in `test_soldier`
+§6: glide, input/mitra ignorati, recall a metà annulla senza lockout,
+determinismo). Fiction in vat_horde: clip Mixamo `climb` (trimmata al bake
+— la corsa iniziale avrebbe fatto entrare il soldato nel muro; root motion
+TENUTA: è lei che porta la mesh su e oltre, salita ~2 m ≈ altezza muro
+render 2.05) ancorata al punto di partenza, poi `jump_down` ancorata in
+cima con scivolata dell'ancora a terra durante la finestra di caduta (il
+drop della clip è 0.90 m: la differenza la assorbe l'ancora); niente
+crossfade climb→jump (quote hips diverse = pop verticale, il taglio secco
+è fra due pose in piedi). Costanti misurate stampate da
+`gfx/soldier_glb_make.py` (SOL_CLIMB_*/SOL_JUMP_* in vat_horde.c).
+Contestuale (stessa sessione): mura VISIVAMENTE sottili — le corse di
+celle-muro spesse 1 cella si disegnano come lastre da 0.20 m (angoli =
+pilastrini, bastioni multi-cella restano pieni, `build_struct_mesh`) e i
+muri di scena dei livelli giocabili sono passati a 1 cella di spessore
+(mezzeria invariata); altezza render 2.8 → 1.95 m per combaciare col
+top-out della climb (hips a 1.94 m mondo).
+
+Rifiniture 2026-07-19 (seconda passata, attende playtest):
+- **I verbi non recallano più il soldato** (`bio_mode_set`): con soldato in
+  campo MORTAIO/RIPARA lasciano il corpo DOV'È — fermo, mira congelata,
+  lure e morsi attivi (usare il mortaio col soldato fuori costa
+  immobilità/rischio); il blocco eventi del verbo consuma il mouse e
+  all'uscita (RMB/M/R) il controllo torna da solo. COSTRUISCI/REGOLA
+  restavano già del soldato (sol_verbs_off).
+- **Mitra in mano**: fucile procedurale flat-color (4 box, canna +X,
+  `build_gun_mesh`) agganciato alla POSIZIONE world del bone
+  `mixamorig:RightHand` (`anim_bone_global` × model matrix), orientato
+  orizzontale sull'heading di render (scelta deliberata: niente assi del
+  bone, bocca prevedibile). Tracer e MUZZLE_FLASH_DEF partono dalla bocca
+  (`gGunMuz`, ultimo frame disegnato; la vampa è armata dal callback e
+  emessa dal main — fx è un local). Durante il TOSS passa alla mano
+  SINISTRA (la destra lancia, la sinistra lo regge — indicazione utente);
+  nascosto solo in climb (entrambe le mani arrampicano).
+- **Heading = mira solo sparando** (tweak controlli, da giudicare al
+  playtest): camminando senza sparare il soldato guarda dove va (run
+  forward naturale); spara/gesto granata → guarda la mira, con coda
+  `SOL_AIM_LINGER` 0.35 s anti flip-flop sul tap-fire. Revert = togliere
+  la condizione su gSolFiring/gSolAimT nel render.
 
 Com'è fatto: modulo game-side `soldier.h/.c` (zero-dep sul core, verificato da
 `test_soldier`: drive/knockback, mitra con occlusione/trasmittanza, contatto→

@@ -19,7 +19,7 @@ exit 46 2 14 3 6 25 0
 # difese di partenza davanti alla LZ
 turret 70 28 35
 turret 70 42 35
-wall 500 1.0 66 26 1.5 18
+wall 500 1.0 66.5 26 0.5 18   # mura a 1 cella (2026-07-19), mezzeria invariata
 
 # arredo urbano (assi §6: bus/building solidi, fence assediabili, decor)
 prop building 50 18 0
